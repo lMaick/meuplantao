@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, CircleDollarSign, Clock3, Contacts, House, LogOut, MapPin, Menu, Plus, Settings, UserRound, X } from "lucide-react";
+import { CalendarDays, CircleDollarSign, Clock3, Contact, House, LogOut, MapPin, Menu, Plus, Settings, UserRound, X } from "lucide-react";
 import { useState } from "react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ const primary = [
 ];
 const more = [
   { href: "/locais", label: "Locais", icon: MapPin },
-  { href: "/contatos", label: "Contatos", icon: Contacts },
+  { href: "/contatos", label: "Contatos", icon: Contact },
   { href: "/perfil", label: "Perfil", icon: UserRound },
   { href: "/configuracoes", label: "Configurações", icon: Settings },
 ];
