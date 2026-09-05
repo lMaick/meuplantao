@@ -51,7 +51,8 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && isAuthPage) {
+  const isSessionRecovery = request.nextUrl.pathname === "/login" && request.nextUrl.searchParams.get("reason") === "session-expired";
+  if (user && isAuthPage && !isSessionRecovery) {
     return NextResponse.redirect(new URL(safeNext(request.nextUrl.searchParams.get("next") ?? undefined), request.url));
   }
 
