@@ -14,7 +14,7 @@ import { resolveOAuthNext } from "@/lib/auth/oauth";
 export async function GET(request: NextRequest) {
   const config = getSupabaseConfig();
   if (!config) {
-    return new NextResponse("Supabase n„o configurado.", { status: 503 });
+    return new NextResponse("Supabase n√£o configurado.", { status: 503 });
   }
 
   const url = new URL(request.url);
