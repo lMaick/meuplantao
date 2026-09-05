@@ -30,7 +30,6 @@ begin
   if tg_op <> 'DELETE' then
     select * into v_shift from public.shifts where id = new.shift_id and user_id = new.user_id;
     if not found then raise exception using errcode = '23503', message = 'Plantao nao encontrado para este usuario'; end if;
-    if v_shift.status = 'realizado' and new.valor_devido is null then raise exception using errcode = '23514', message = 'Obrigacao realizada exige valor devido'; end if;
   end if;
   select coalesce(sum(valor), 0)::numeric(12,2) into v_registered from public.payments where obligation_id = old.id and user_id = old.user_id and status = 'registrado';
   if tg_op = 'DELETE' and v_registered > 0 then raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao com pagamentos registrados'; end if;
@@ -68,3 +67,33 @@ create or replace view public.obligations_with_balance with (security_invoker = 
 select o.*, o.valor_devido - coalesce(sum(p.valor) filter (where p.status = 'registrado'), 0)::numeric(12,2) as saldo,
   (o.valor_devido is not null and o.valor_devido > coalesce(sum(p.valor) filter (where p.status = 'registrado'), 0) and o.data_prevista < current_date) as atrasada
 from public.obligations o left join public.payments p on p.obligation_id = o.id and p.user_id = o.user_id group by o.id;
+
+alter table public.shifts alter column valor_previsto drop not null;
+
+create or replace function public.ensure_realized_obligation()
+returns trigger language plpgsql security invoker set search_path = public as $$
+begin
+  if new.status = 'realizado' and old.status is distinct from 'realizado' then
+    insert into public.obligations (user_id, shift_id, valor_devido, data_prevista, responsavel_place_id)
+      values (new.user_id, new.id, new.valor_previsto, new.data, new.place_id)
+      on conflict (shift_id, user_id) do update set
+        valor_devido = coalesce(public.obligations.valor_devido, excluded.valor_devido),
+        data_prevista = excluded.data_prevista,
+        responsavel_place_id = excluded.responsavel_place_id,
+        updated_at = now();
+  end if;
+  return new;
+end; $$;
+drop trigger if exists shifts_realized_obligation on public.shifts;
+create trigger shifts_realized_obligation after update of status on public.shifts
+for each row execute function public.ensure_realized_obligation();
+
+create or replace function public.validate_shift_financial_integrity() returns trigger language plpgsql security invoker set search_path = public as $$
+declare v_registered numeric(12,2);
+begin
+  select coalesce(sum(p.valor), 0)::numeric(12,2) into v_registered from public.payments p join public.obligations o on o.id = p.obligation_id where o.shift_id = old.id and p.user_id = old.user_id and p.status = 'registrado';
+  if tg_op = 'DELETE' and v_registered > 0 then raise exception using errcode = '23514', message = 'Nao e possivel excluir plantao com pagamentos registrados'; end if;
+  if tg_op = 'UPDATE' and new.valor_previsto is not null and new.valor_previsto < v_registered then raise exception using errcode = '23514', message = 'A alteracao deixaria o plantao inconsistente'; end if;
+  if tg_op = 'UPDATE' and v_registered > 0 and old.status = 'realizado' and new.status in ('agendado', 'cancelado') then raise exception using errcode = '23514', message = 'Nao e possivel reverter ou cancelar plantao com pagamentos registrados'; end if;
+  return coalesce(new, old);
+end; $$;
