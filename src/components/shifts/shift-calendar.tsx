@@ -1,5 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { createShift, removeShift, updateShift, type Shift, type ShiftStatus } from "@/lib/shifts";
@@ -11,8 +12,8 @@ const labels: Record<ShiftStatus,string> = { agendado:"Agendado", realizado:"Rea
 const colors: Record<ShiftStatus,string> = { agendado:"bg-amber-100 text-amber-800", realizado:"bg-emerald-100 text-emerald-800", cancelado:"bg-slate-100 text-slate-500" };
 const iso = (d: Date) => d.toISOString().slice(0,10);
 
-export function ShiftCalendar({ initialShifts, places }: { initialShifts: Shift[]; places: Place[] }) {
-  const today = new Date(); const [cursor,setCursor] = useState(new Date(today.getFullYear(),today.getMonth(),1)); const [selected,setSelected] = useState(iso(today)); const [shifts,setShifts] = useState(initialShifts); const [filter,setFilter] = useState<ShiftStatus|"todos">("todos"); const [editing,setEditing] = useState<Shift|null|false>(false);
+export function ShiftCalendar({ initialShifts, places, initialOpen = false }: { initialShifts: Shift[]; places: Place[]; initialOpen?: boolean }) {
+  const today = new Date(); const query = useSearchParams(); const [cursor,setCursor] = useState(new Date(today.getFullYear(),today.getMonth(),1)); const [selected,setSelected] = useState(iso(today)); const [shifts,setShifts] = useState(initialShifts); const [filter,setFilter] = useState<ShiftStatus|"todos">("todos"); const [editing,setEditing] = useState<Shift|null|false>(initialOpen || query.get("novo") === "1" ? null : false);
   const days = useMemo(() => { const start=new Date(cursor.getFullYear(),cursor.getMonth(),1).getDay(); const count=new Date(cursor.getFullYear(),cursor.getMonth()+1,0).getDate(); return Array.from({length:Math.ceil((start+count)/7)*7},(_,i)=>i<start||i>=start+count?null:new Date(cursor.getFullYear(),cursor.getMonth(),i-start+1)); },[cursor]);
   const visible=shifts.filter(s=>filter==="todos"||s.status===filter); const selectedShifts=visible.filter(s=>s.data===selected).sort((a,b)=>a.hora_inicio.localeCompare(b.hora_inicio)); const name=(id:string)=>places.find(p=>p.id===id)?.nome??"Local não encontrado";
   async function save(data: FormData) { const input={place_id:String(data.get("place_id")),data:String(data.get("data")),hora_inicio:String(data.get("hora_inicio")),hora_fim:String(data.get("hora_fim")),valor_previsto:Number(data.get("valor_previsto")),status:String(data.get("status")) as ShiftStatus}; const result=editing?await updateShift(editing.id,input):await createShift(input); setShifts(list=>editing?list.map(s=>s.id===result.id?result:s):[result,...list]); setSelected(result.data); setEditing(false); }

@@ -7,6 +7,7 @@ import { CalendarDays, CircleDollarSign, Clock3, Contact, House, LogOut, MapPin,
 import { useState } from "react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
+import { LogoutButton } from "@/lib/auth/logout-button";
 
 const primary = [
   { href: "/dashboard", label: "Início", short: "Início", icon: House },
@@ -34,7 +35,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         {primary.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={cn("flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium", active(href) ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><Icon className="size-4" />{label}</Link>)}
         <p className="mb-1 mt-7 px-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Mais</p>
         {more.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={cn("flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium", active(href) ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><Icon className="size-4" />{label}</Link>)}
-        <div className="mt-auto border-t pt-4"><button className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-muted-foreground hover:bg-muted"><LogOut className="size-4" />Sair</button></div>
+        <div className="mt-auto border-t pt-4"><LogoutButton /></div>
       </nav>
     </aside>
     <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b bg-background/95 px-4 backdrop-blur lg:hidden"><Link href="/dashboard" className="flex items-center gap-2 font-bold"><span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">M</span> MeuPlantao</Link><Button size="icon" variant="ghost" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></Button></header>
