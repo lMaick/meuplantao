@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPayment, listPayments, removePayment, type Payment } from "@/lib/payments";
 import { listShifts, type Shift } from "@/lib/shifts";
+import { listObligations, type Obligation } from "@/lib/obligations";
 import { Button } from "@/components/ui/button";
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -11,6 +12,7 @@ const date = (value: string) => new Intl.DateTimeFormat("pt-BR", { timeZone: "UT
 export default function PaymentsPage() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [obligations, setObligations] = useState<Obligation[]>([]);
   const [shiftId, setShiftId] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
@@ -18,9 +20,10 @@ export default function PaymentsPage() {
   const [saving, setSaving] = useState(false);
 
   async function load() {
-    const [nextPayments, nextShifts] = await Promise.all([listPayments(), listShifts()]);
+    const [nextPayments, nextShifts, nextObligations] = await Promise.all([listPayments(), listShifts(), listObligations()]);
     setPayments(nextPayments);
     setShifts(nextShifts);
+    setObligations(nextObligations);
   }
 
   useEffect(() => {
@@ -29,9 +32,10 @@ export default function PaymentsPage() {
 
   const realized = shifts.filter((shift) => shift.status === "realizado");
   const paidByShift = useMemo(() => payments.filter((payment) => payment.status === "registrado").reduce<Record<string, number>>((result, payment) => {
-    result[payment.shift_id] = (result[payment.shift_id] ?? 0) + Number(payment.valor);
+    const shiftId = obligations.find((obligation) => obligation.id === payment.obligation_id)?.shift_id;
+    if (shiftId) result[shiftId] = (result[shiftId] ?? 0) + Number(payment.valor);
     return result;
-  }, {}), [payments]);
+  }, {}), [payments, obligations]);
   const totals = useMemo(() => realized.reduce((result, shift) => {
     const paid = paidByShift[shift.id] ?? 0;
     result.expected += Number(shift.valor_previsto); result.paid += paid; result.balance += Math.max(0, Number(shift.valor_previsto) - paid); return result;
@@ -43,7 +47,7 @@ export default function PaymentsPage() {
     event.preventDefault(); setError(""); const value = Number(amount);
     if (!selected || !Number.isFinite(value) || value <= 0 || value > remaining) { setError("Informe um valor positivo, até o saldo restante do plantão."); return; }
     setSaving(true);
-    try { await createPayment({ shift_id: selected.id, valor: value, data_pagamento: paymentDate }); setAmount(""); await load(); }
+    try { const obligation = obligations.find((item) => item.shift_id === selected.id); if (!obligation) throw new Error("Obrigacao financeira nao encontrada."); await createPayment({ obligation_id: obligation.id, valor: value, data_pagamento: paymentDate }); setAmount(""); await load(); }
     catch (reason: unknown) { setError(reason instanceof Error ? reason.message : "Não foi possível registrar o pagamento."); }
     finally { setSaving(false); }
   }

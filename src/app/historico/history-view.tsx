@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { Payment } from "@/lib/payments";
 import type { Place } from "@/lib/places";
 import type { Shift } from "@/lib/shifts";
+import { listObligations, type Obligation } from "@/lib/obligations";
 
 type Props = { shifts: Shift[]; payments: Payment[]; places: Place[] };
 type StatusFilter = "todos" | Shift["status"];
@@ -18,9 +19,12 @@ export default function HistoryView({ shifts, payments, places }: Props) {
   const [status, setStatus] = useState<StatusFilter>("todos");
   const [place, setPlace] = useState("todos");
   const [query, setQuery] = useState("");
+  const [obligations, setObligations] = useState<Obligation[]>([]);
+  useState(() => { void listObligations().then(setObligations); });
 
   const rows = useMemo(() => shifts.map((shift) => {
-    const received = payments.filter((payment) => payment.shift_id === shift.id && payment.status === "registrado").reduce((sum, payment) => sum + Number(payment.valor), 0);
+    const ids = new Set(obligations.filter((o) => o.shift_id === shift.id).map((o) => o.id));
+    const received = payments.filter((payment) => ids.has(payment.obligation_id) && payment.status === "registrado").reduce((sum, payment) => sum + Number(payment.valor), 0);
     return { shift, received, balance: Number(shift.valor_previsto) - received, placeName: places.find((item) => item.id === shift.place_id)?.nome ?? "Local removido" };
   }).filter(({ shift, placeName }) => (!from || shift.data >= from) && (!to || shift.data <= to) && (status === "todos" || shift.status === status) && (place === "todos" || shift.place_id === place) && (!query || placeName.toLocaleLowerCase().includes(query.toLocaleLowerCase()))).sort((a, b) => b.shift.data.localeCompare(a.shift.data)), [from, to, status, place, query, shifts, payments, places]);
 
