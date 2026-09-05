@@ -1,8 +1,5 @@
-import { ShiftCalendar } from "@/components/shifts/shift-calendar";
-import { listPlaces } from "@/lib/places";
-import { listShifts } from "@/lib/shifts";
+import { redirect } from "next/navigation";
 
-export default async function Home() {
-  const [shifts, places] = await Promise.all([listShifts(), listPlaces()]);
-  return <ShiftCalendar initialShifts={shifts} places={places} />;
+export default function Home() {
+  redirect("/dashboard");
 }
