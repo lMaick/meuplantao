@@ -1,10 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { getSupabaseConfig } from "@/lib/supabase/config";
 
-function createRequestClient(request: NextRequest, response: NextResponse) {
+function createRequestClient(request: NextRequest, response: NextResponse, config: { url: string; key: string }) {
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    config.url,
+    config.key,
     {
       cookies: {
         getAll() {
@@ -22,8 +23,20 @@ function createRequestClient(request: NextRequest, response: NextResponse) {
 }
 
 export async function updateSession(request: NextRequest) {
+  const config = getSupabaseConfig();
+  if (!config) {
+    return new NextResponse(`<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MeuPlantao — configuração pendente</title></head>
+<body><main><h1>MeuPlantao temporariamente indisponível</h1>
+<p>A configuração do Supabase está ausente ou inválida.</p>
+<p>Para executar localmente, preencha <code>NEXT_PUBLIC_SUPABASE_URL</code> e <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> no arquivo <code>.env.local</code>, seguindo o <code>README.md</code>, e reinicie o servidor. Se estiver usando um build, gere-o novamente.</p>
+</main></body></html>`, {
+      status: 503,
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
   const response = NextResponse.next({ request });
-  const supabase = createRequestClient(request, response);
+  const supabase = createRequestClient(request, response, config);
   const {
     data: { user },
   } = await supabase.auth.getUser();
