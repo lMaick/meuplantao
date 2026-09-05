@@ -45,7 +45,25 @@ aos dados. Isso permite compilar sem credenciais, mas não usar o app sem Supaba
 Se a configuração estiver preenchida e o login falhar, confira se URL e chave
 pertencem ao mesmo projeto ativo; a validação local não verifica credenciais remotamente.
 
-### Validação
+### Metadados e estados do aplicativo
+
+O aplicativo usa metadados MeuPlantao em português, viewport responsivo com zoom
+permitido e tema claro. Os estados de carregamento, erro e página não encontrada
+na raiz atendem às rotas públicas e protegidas; erros no layout têm uma tela
+global independente de fontes e estilos externos. Os carregamentos e erros
+tratados dentro dos componentes continuam usando suas próprias mensagens.
+
+Como não há conteúdo público para busca, `robots.ts` bloqueia rastreamento e
+as respostas usam `X-Robots-Tag: noindex, nofollow`, além dos metadados equivalentes.
+Não há sitemap nem URL canônica inventada. Apenas `/robots.txt` foi excluído do
+matcher de autenticação; isso não muda a proteção das páginas ou dos dados.
+
+Os headers desativam detecção de MIME, enquadramento por outras origens e acesso
+a câmera, microfone e localização, e limitam o referenciador entre origens.
+Não há CSP restritiva, HSTS ou isolamento entre origens nesta configuração,
+preservando HTTP local, scripts do Next.js e conexões/autenticação do Supabase.
+
+### Verificações locais
 
 ```bash
 npm test
