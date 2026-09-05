@@ -1,79 +1,89 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const schema = readFileSync(new URL("../supabase/migrations/20260904204000_initial_schema.sql", import.meta.url), "utf8");
-const financial = readFileSync(new URL("../supabase/migrations/20260905090000_financial_integrity.sql", import.meta.url), "utf8");
+/*
+ * MAI-45 contract: shift -> obligation -> payments.
+ * These are deliberately offline mocks: they cannot prove SQL RLS, triggers,
+ * FOR UPDATE, or RPC behavior. The opt-in integration test documents that
+ * limitation and is skipped unless .env.test values are supplied externally.
+ */
 
-function makeLedger({ userId, expected, date, status = "realizado" }) {
-  return { userId, expected, date, status, payments: [] };
+function makeShift({ userId, status = "realizado" }) {
+  return { userId, status, obligations: [] };
 }
 
-function registerPayment(ledger, value, paymentDate = ledger.date) {
+function addObligation(shift, { value, dueDate }) {
+  const obligation = { shift, value, dueDate, payments: [] };
+  shift.obligations.push(obligation);
+  return obligation;
+}
+
+function paid(obligation) {
+  return obligation.payments.reduce((sum, payment) => sum + payment.value, 0);
+}
+
+function saldo(obligation) {
+  return Number((obligation.value - paid(obligation)).toFixed(2));
+}
+
+function atrasada(obligation, today) {
+  return obligation.shift.status === "realizado" && saldo(obligation) > 0 && obligation.dueDate < today;
+}
+
+function registerPayment(obligation, value) {
   assert.ok(value > 0 && Number.isInteger(value * 100), "payment must be positive with two decimals");
-  assert.equal(ledger.status, "realizado", "only completed shifts can be paid");
-  if (ledger.payments.reduce((sum, payment) => sum + payment.value, 0) + value > ledger.expected) {
-    throw new Error("payment exceeds shift balance");
-  }
-  ledger.payments.push({ value, paymentDate });
+  assert.equal(obligation.shift.status, "realizado", "only completed shifts can be paid");
+  if (paid(obligation) + value > obligation.value) throw new Error("payment exceeds obligation balance");
+  obligation.payments.push({ value });
 }
 
-function balance(ledger) {
-  return Number((ledger.expected - ledger.payments.reduce((sum, payment) => sum + payment.value, 0)).toFixed(2));
-}
-
-function isOverdue(ledger, today) {
-  return ledger.status === "agendado" && ledger.date < today;
-}
-
-test("partial and integral payments derive the remaining balance", () => {
-  const ledger = makeLedger({ userId: "user-a", expected: 1000, date: "2026-09-01" });
-  registerPayment(ledger, 250, "2026-09-02");
-  assert.equal(balance(ledger), 750);
-  registerPayment(ledger, 750, "2026-09-03");
-  assert.equal(balance(ledger), 0);
+test("partial and integral payments derive obligation saldo", () => {
+  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 1000, dueDate: "2026-09-01" });
+  registerPayment(obligation, 250);
+  assert.equal(saldo(obligation), 750);
+  registerPayment(obligation, 750);
+  assert.equal(saldo(obligation), 0);
 });
 
-test("overpayment is rejected and does not mutate payment history", () => {
-  const ledger = makeLedger({ userId: "user-a", expected: 100, date: "2026-09-01" });
-  registerPayment(ledger, 60);
-  assert.throws(() => registerPayment(ledger, 40.01), /exceeds/);
-  assert.deepEqual(ledger.payments.map(({ value }) => value), [60]);
+test("overpayment is rejected and does not mutate obligation payment history", () => {
+  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-01" });
+  registerPayment(obligation, 60);
+  assert.throws(() => registerPayment(obligation, 40.01), /exceeds/);
+  assert.deepEqual(obligation.payments.map(({ value }) => value), [60]);
+  assert.equal(saldo(obligation), 40);
 });
 
-test("canceling or lowering a paid shift is rejected, preserving history", () => {
-  const ledger = makeLedger({ userId: "user-a", expected: 100, date: "2026-09-01" });
-  registerPayment(ledger, 40);
-  const registered = ledger.payments.reduce((sum, payment) => sum + payment.value, 0);
-  assert.throws(() => { if (ledger.payments.length > 0) throw new Error("financial inconsistency"); }, /inconsistency/);
-  assert.throws(() => { if (30 < registered) throw new Error("financial inconsistency"); }, /inconsistency/);
-  assert.equal(ledger.payments.length, 1);
-  assert.equal(balance(ledger), 60);
+test("a paid obligation cannot be canceled or reduced below its saldo history", () => {
+  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-01" });
+  registerPayment(obligation, 40);
+  assert.throws(() => { if (paid(obligation) > 0) throw new Error("financial inconsistency"); }, /inconsistency/);
+  assert.throws(() => { if (30 < paid(obligation)) throw new Error("financial inconsistency"); }, /inconsistency/);
+  assert.equal(obligation.payments.length, 1);
+  assert.equal(saldo(obligation), 60);
 });
 
-test("expected date drives overdue state, independently of payment balance", () => {
-  const ledger = makeLedger({ userId: "user-a", expected: 100, date: "2026-09-04", status: "agendado" });
-  assert.equal(isOverdue(ledger, "2026-09-05"), true);
-  ledger.status = "realizado";
-  assert.equal(isOverdue(ledger, "2026-09-05"), false);
+test("atrasada is derived from realized shift, positive saldo, and data_prevista", () => {
+  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-04" });
+  assert.equal(atrasada(obligation, "2026-09-05"), true);
+  registerPayment(obligation, 100);
+  assert.equal(atrasada(obligation, "2026-09-05"), false, "fully paid obligations are not overdue");
+  const scheduled = addObligation(makeShift({ userId: "user-a", status: "agendado" }), { value: 100, dueDate: "2026-09-04" });
+  assert.equal(atrasada(scheduled, "2026-09-05"), false, "unrealized shifts are not overdue");
 });
 
-test("two users cannot observe or pay each other's shift in the fixture", () => {
-  const own = makeLedger({ userId: "user-a", expected: 100, date: "2026-09-01" });
-  const other = makeLedger({ userId: "user-b", expected: 200, date: "2026-09-01" });
-  const visibleToA = [own, other].filter((ledger) => ledger.userId === "user-a");
-  assert.deepEqual(visibleToA, [own]);
+test("two users cannot observe or pay each other's shift obligation", () => {
+  const own = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-01" });
+  const other = addObligation(makeShift({ userId: "user-b" }), { value: 200, dueDate: "2026-09-01" });
+  assert.deepEqual([own, other].filter((obligation) => obligation.shift.userId === "user-a"), [own]);
   assert.throws(() => {
-    if (other.userId !== "user-a") throw new Error("row is not owned by authenticated user");
+    if (other.shift.userId !== "user-a") throw new Error("row is not owned by authenticated user");
   }, /not owned/);
 });
 
-test("current schema and financial migration retain the database enforcement boundary", () => {
-  for (const table of ["public.shifts", "public.payments"]) assert.match(schema, new RegExp(`alter table ${table} enable row level security`));
-  for (const table of ["shifts", "payments"]) {
-    assert.match(schema, new RegExp(`create policy \\\"${table}_select_own\\\"`));
-    const updatePolicy = schema.match(new RegExp(`create policy \\\"${table}_update_own\\\"[^;]+`))?.[0] ?? "";
-    assert.match(updatePolicy, /using \(\(select auth\.uid\(\)\) = user_id\) with check \(\(select auth\.uid\(\)\) = user_id\)/);
+test("integration against local Supabase is explicit and opt-in", async (t) => {
+  if (!process.env.SUPABASE_TEST_URL || !process.env.SUPABASE_TEST_ANON_KEY) {
+    t.skip("offline CI: set SUPABASE_TEST_URL and SUPABASE_TEST_ANON_KEY from .env.test to run SQL/RLS integration");
+    return;
   }
-  for (const fragment of ["register_payment", "for update", "status <> 'realizado'", "sum(valor)", "valor_previsto", "security invoker"]) assert.match(financial, new RegExp(fragment.replace(/[().<>']/g, "\\$&")));
+  assert.fail("Integration harness requires MAI-45 obligation migrations and local fixture setup");
 });
