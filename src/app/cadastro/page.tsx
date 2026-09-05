@@ -1,0 +1,6 @@
+import Link from "next/link";
+import { AuthForm } from "@/lib/auth/auth-forms";
+
+export default function CadastroPage() {
+  return <main className="flex min-h-screen items-center justify-center bg-muted/40 px-4 py-8"><section className="w-full max-w-md space-y-6 rounded-xl border bg-background p-6 shadow-sm sm:p-8"><div className="space-y-2 text-center"><p className="text-sm font-semibold text-primary">MeuPlantao</p><h1 className="text-2xl font-semibold tracking-tight">Crie sua conta</h1><p className="text-sm text-muted-foreground">Organize seus plantões em um só lugar.</p></div><AuthForm mode="signup" /><p className="text-center text-sm text-muted-foreground">Já tem uma conta? <Link href="/login" className="font-medium text-foreground underline underline-offset-4">Entrar</Link></p></section></main>;
+}
