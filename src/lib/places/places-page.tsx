@@ -16,11 +16,11 @@ export default function PlacesPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  async function refresh() {
-    setLoading(true);
-    try { setPlaces(await listPlaces()); setError(""); }
-    catch (e) { setError(e instanceof Error ? e.message : "Não foi possível carregar os locais."); }
-    finally { setLoading(false); }
+  function refresh() {
+    return listPlaces()
+      .then((result) => { setPlaces(result); setError(""); })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Não foi possível carregar os locais."))
+      .finally(() => setLoading(false));
   }
   useEffect(() => { void refresh(); }, []);
 
