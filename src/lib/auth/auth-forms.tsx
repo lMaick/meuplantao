@@ -5,6 +5,8 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { GoogleAuthButton } from "@/lib/auth/google-button";
+import { getPublicSiteOrigin } from "@/lib/auth/oauth";
 
 type Mode = "login" | "signup";
 
@@ -23,9 +25,12 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
     setLoading(true);
     try {
       const supabase = createClient();
+      // emailRedirectTo points the confirmation email back to our own site so the
+      // user lands on /login after clicking the link, with the original next intact.
+      const emailRedirectTo = `${getPublicSiteOrigin(window.location.origin)}/login?next=${encodeURIComponent(next)}`;
       const result = mode === "login"
         ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
+        : await supabase.auth.signUp({ email, password, options: { emailRedirectTo } });
 
       if (result.error) {
         setError(result.error.message);
@@ -33,36 +38,44 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
       }
 
       if (mode === "signup" && !result.data.session) {
-        setMessage("Confira seu e-mail para confirmar a conta, se o cadastro foi aceito. Veja também a pasta de spam. Após confirmar, volte aqui e entre com sua senha. Se já possui conta, tente entrar.");
+        setMessage("Confira seu e-mail para confirmar a conta, se o cadastro foi aceito. Veja tambï¿½m a pasta de spam. Apï¿½s confirmar, volte aqui e entre com sua senha. Se jï¿½ possui conta, tente entrar.");
         return;
       }
 
       router.push(next);
       router.refresh();
     } catch {
-      setError("Não foi possível conectar. Verifique sua conexão e tente novamente.");
+      setError("Nï¿½o foi possï¿½vel conectar. Verifique sua conexï¿½o e tente novamente.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5" aria-busy={loading}>
-      <div className="space-y-2">
-        <label htmlFor="email" className="text-sm font-medium">E-mail</label>
-        <input id="email" name="email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
+    <div className="space-y-5">
+      <form onSubmit={handleSubmit} className="space-y-5" aria-busy={loading}>
+        <div className="space-y-2">
+          <label htmlFor="email" className="text-sm font-medium">E-mail</label>
+          <input id="email" name="email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
+        </div>
+        <div className="space-y-2">
+          <label htmlFor="password" className="text-sm font-medium">Senha</label>
+          <input id="password" name="password" type="password" minLength={mode === "signup" ? 6 : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
+        </div>
+        {mode === "signup" && <p id="password-help" className="text-sm text-muted-foreground">Use pelo menos 6 caracteres. Podemos pedir a confirmaï¿½ï¿½o do seu e-mail antes do primeiro acesso.</p>}
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {message && <p role="status" className="text-sm text-emerald-600">{message}</p>}
+        {message && <Link href={`/login?next=${encodeURIComponent(next)}`} className="block py-2 text-sm font-medium underline">Jï¿½ confirmei meu e-mail: entrar</Link>}
+        <Button type="submit" className="h-11 w-full" disabled={loading}>
+          {loading ? "Aguarde..." : mode === "login" ? "Entrar" : "Criar conta"}
+        </Button>
+      </form>
+      <div className="flex items-center gap-3" aria-hidden="true">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">ou</span>
+        <span className="h-px flex-1 bg-border" />
       </div>
-      <div className="space-y-2">
-        <label htmlFor="password" className="text-sm font-medium">Senha</label>
-        <input id="password" name="password" type="password" minLength={mode === "signup" ? 6 : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
-      </div>
-      {mode === "signup" && <p id="password-help" className="text-sm text-muted-foreground">Use pelo menos 6 caracteres. Podemos pedir a confirmação do seu e-mail antes do primeiro acesso.</p>}
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {message && <p role="status" className="text-sm text-emerald-600">{message}</p>}
-      {message && <Link href={`/login?next=${encodeURIComponent(next)}`} className="block py-2 text-sm font-medium underline">Já confirmei meu e-mail: entrar</Link>}
-      <Button type="submit" className="h-11 w-full" disabled={loading}>
-        {loading ? "Aguarde..." : mode === "login" ? "Entrar" : "Criar conta"}
-      </Button>
-    </form>
+      <GoogleAuthButton mode={mode} next={next} />
+    </div>
   );
 }

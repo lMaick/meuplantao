@@ -113,3 +113,89 @@ Para enviar confirmações com seu remetente:
 
 Referência: [SMTP personalizado do Supabase](https://supabase.com/docs/guides/auth/auth-smtp).
 Esta seção documenta a configuração; nenhuma alteração no serviço é feita pelo código.
+
+### Diagnostico do e-mail de confirmacao (MAI-44)
+
+Quando o cadastro aceita os dados mas o e-mail de confirmacao nao chega,
+a causa costuma estar na configuracao do projeto Supabase, nao no codigo
+do app. O fluxo de cadastro ja passa `emailRedirectTo` apontando para
+`/login?next=...` da propria origem, e a UI mostra a mensagem orientando
+sobre spam e reenvio. Antes de investigar o codigo, confira os pontos
+abaixo no painel do projeto:
+
+1. **SMTP padrao limitado.** O SMTP interno do Supabase so envia para o
+   proprio dono do projeto e para destinatarios previamente autorizados.
+   Para envio em producao, ative **Custom SMTP** (veja a secao anterior)
+   ou adicione o destinatario de teste em **Authentication -> Users -> Add
+   user**. Sem isso, o e-mail nunca sai para outros enderecos.
+2. **Confirmacao de e-mail habilitada.** Em **Authentication -> Providers
+   -> Email** verifique se **Confirm email** esta ligado. Quando esta
+   desligado, `signUp` retorna uma sessao imediatamente e nenhum e-mail
+   e enviado.
+3. **Site URL e Redirect URLs.** Em **Authentication -> URL
+   Configuration** o **Site URL** deve ser a origem publica do app
+   (`http://localhost:3000` em desenvolvimento, o dominio real em
+   producao). O link gerado no template usa esse valor; se estiver errado
+   ou ausente, o link aponta para outro lugar ou falha na verificacao.
+4. **Destinos permitidos.** Adicione as origens de callback a **Additional
+   Redirect URLs**: `http://localhost:3000/auth/callback` e
+   `http://localhost:3000/login` (mais a versao HTTPS em producao).
+   Sem isso, o Supabase recusa o `redirectTo` enviado no `signUp`.
+5. **Modelo de confirmacao.** Em **Authentication -> Email Templates ->
+   Confirm signup** revise o corpo. Garanta que `{{ .ConfirmationURL }}`
+   permanece no template. P?? de "Safe Links" do Microsoft 365 ou
+   servicos de "email tracking" podem consumir o token antes do clique;
+   desative-os ou troque o template por um link que receba o token via
+   `verifyOtp` no app.
+6. **Limite de envio.** O provedor pode aplicar rate limits por hora/dia.
+   Aguarde a janela ou use outro endereco de teste. Consulte **Auth
+   Logs** no painel para ver tentativas e respostas do provedor SMTP.
+7. **Caixa de spam e aliases.** Verifique spam, lixo, "Promocoes" e aliases
+   do destinatario. Dominios gratuitos (ex.: disposable mail) sao
+   frequentemente bloqueados.
+
+O codigo nao le nem registra credenciais SMTP, Google, ou chaves do
+Supabase. Essas configuracoes vivem apenas no painel. Nenhum segredo
+entra em commit, `.env.local` ou variavel `NEXT_PUBLIC_*`. Para inspecionar
+o que o app envia, abra o DevTools do navegador e veja a aba **Network**
+nas requisicoes a `/auth/v1/*` ou leia **Auth Logs** no Supabase.
+
+### Login e cadastro com Google (MAI-44)
+
+O app expoe um botao "Entrar com Google" em `/login` e "Cadastrar com
+Google" em `/cadastro`. O fluxo segue a recomendacao do Supabase para
+SSR: o cliente redireciona o navegador para o Google com `redirectTo`
+apontando para `/auth/callback` da propria origem, e essa rota troca o
+codigo de uso unico por uma sessao via `exchangeCodeForSession`.
+
+Para ativar o provedor no projeto:
+
+1. **Habilite o provider.** Em **Authentication -> Providers -> Google**
+   ative o provider. Nao cole credenciais neste repositorio; elas ficam
+   apenas no painel.
+2. **Origens permitidas.** Em **Authentication -> URL Configuration**,
+   confirme o **Site URL** e adicione `https://<seu-dominio>/auth/callback`
+   em **Additional Redirect URLs** (incluindo `http://localhost:3000/auth/callback`
+   para desenvolvimento). O Supabase so redireciona para destinos
+   previamente aprovados.
+3. **Vincular o Google Cloud.** Se for a primeira vez, o painel pedira o
+   Client ID/Secret do projeto Google Cloud. Crie as credenciais em
+   **Google Cloud Console -> APIs e Services -> Credentials -> OAuth
+   client ID -> Web application** com o mesmo Site URL e o callback
+   `/auth/callback`. O segredo fica somente no painel Supabase.
+4. **Teste o fluxo.** Em desenvolvimento, abra `/cadastro`, clique em
+   "Cadastrar com Google", autorize no Google e confira se o app cai em
+   `/dashboard` (ou no `next` original) com a sessao ativa. Se o Google
+   recusar o redirect, revise o **Authorized redirect URIs** no Google
+   Cloud e o callback URL configurado no Supabase.
+5. **Perfis existentes.** O trigger que cria linhas em `public.profiles`
+   ao confirmar o e-mail nao cobre cadastros por OAuth. Para garantir o
+   isolamento por `user_id`, a policy "profiles_insert_own" continua
+   exigindo `auth.uid() = user_id`; o app cria o perfil no primeiro acesso
+   autenticado, sem depender do trigger.
+
+O codigo do app nao armazena Client ID/Secret do Google nem tokens de
+acesso do provedor. Eles vivem no Supabase e no Google Cloud. Nenhum
+valor real e versionado em `.env.example` ou `.env.local`.
+
+Referencia: [Sign in with Google no Supabase SSR](https://supabase.com/docs/guides/auth/social-login/auth-google).
