@@ -23,7 +23,9 @@ export default function PaymentsPage() {
     setShifts(nextShifts);
   }
 
-  useEffect(() => { load().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar os pagamentos.")); }, []);
+  useEffect(() => {
+    void Promise.resolve().then(load).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar os pagamentos."));
+  }, []);
 
   const realized = shifts.filter((shift) => shift.status === "realizado");
   const paidByShift = useMemo(() => payments.filter((payment) => payment.status === "registrado").reduce<Record<string, number>>((result, payment) => {
