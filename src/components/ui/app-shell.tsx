@@ -25,7 +25,7 @@ const more = [
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  if (["/login", "/cadastro"].includes(pathname)) return <>{children}</>;
+  if (["/login", "/cadastro", "/privacidade", "/termos", "/suporte"].includes(pathname)) return <>{children}</>;
   const active = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   return <div className="min-h-screen bg-muted/30">
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r bg-background px-4 py-6 lg:flex">
