@@ -2,40 +2,77 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 /*
- * ESTE TESTE SIMULA as regras offline e NÃO prova RLS, trigger, RPC ou FOR UPDATE.
- * Integração real: forneça SUPABASE_TEST_URL e SUPABASE_TEST_ANON_KEY via .env.test.
+ * ESTES TESTES SIMULAM o domínio offline. Eles NÃO provam RLS, triggers, RPC,
+ * FOR UPDATE, constraints ou concorrência real do Postgres.
+ * TODO: adicionar harness real contra Supabase/Postgres local, com configuração
+ * externa (.env.test) e sem credenciais versionadas.
  */
-const limitation = "ESTE TESTE SIMULA a regra e NAO prova RLS/trigger/RPC/FOR UPDATE";
-const make = ({ userId = "user-a", status = "agendado", value, dueDate = "2026-09-01" } = {}) => ({ userId, status, value, dueDate, obligation: status === "realizado" ? { value, payments: [] } : null, payments: [], deleted: false });
-function create(input = {}) { if (input.status === "realizado" && input.value == null) throw Error("realizado exige valor"); return make(input); }
-const paid = (s) => s.payments.reduce((sum, p) => sum + p.value, 0);
-const balance = (s) => s.status === "cancelado" || !s.obligation ? 0 : s.obligation.value - paid(s);
-function pay(s, value) { if (s.status !== "realizado") throw Error("pagamento exige realizado"); if (paid(s) + value > s.obligation.value) throw Error("pagamento excede saldo"); s.payments.push({ value }); }
-function status(s, next) {
-  if (s.status === "realizado" && next === "agendado") throw Error("pago não pode voltar a agendado");
-  if (next === "cancelado" && paid(s) === s.obligation?.value) throw Error("pago não pode ser cancelado");
-  if (next === "realizado") { if (s.value == null) throw Error("realizado exige valor"); s.obligation ??= { value: s.value, payments: [] }; }
-  s.status = next;
-}
-function updateValue(s, value) { if (value < paid(s)) throw Error("valor_devido abaixo do recebido"); s.value = value; if (s.obligation) s.obligation.value = value; }
-function remove(s) { if (paid(s)) throw Error("plantão com pagamento não pode ser excluído"); s.deleted = true; }
-const overdue = (s, today) => s.status === "realizado" && balance(s) > 0 && s.dueDate < today;
 
-test("agendado sem valor pode existir", () => assert.equal(create().value, undefined));
-test("agendado sem obrigação ainda não tem obligation", () => assert.equal(create().obligation, null));
-test("realizado exige valor", () => assert.throws(() => create({ status: "realizado" }), /exige valor/));
-test("realizado cria exatamente uma obligation", () => assert.equal(create({ status: "realizado", value: 100 }).obligation ? 1 : 0, 1));
-test("criação direta de realizado também cria obligation", () => assert.equal(create({ status: "realizado", value: 250 }).obligation.value, 250));
-test("pagamento parcial", () => { const s = create({ status: "realizado", value: 1000 }); pay(s, 250); assert.equal(balance(s), 750); });
-test("pagamento integral", () => { const s = create({ status: "realizado", value: 1000 }); pay(s, 1000); assert.equal(balance(s), 0); });
-test("overpayment rejeitado", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 60); assert.throws(() => pay(s, 40.01), /excede/); assert.deepEqual(s.payments.map((p) => p.value), [60]); });
-test("cancelamento lógico preserva pagamento (status=cancelado, não delete)", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 40); status(s, "cancelado"); assert.equal(s.status, "cancelado"); assert.equal(s.payments.length, 1); assert.equal(s.deleted, false); });
-test("cancelado não entra no saldo", () => { const s = create({ status: "realizado", value: 100 }); status(s, "cancelado"); assert.equal(balance(s), 0); });
-test("pago não pode voltar a agendado", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 100); assert.throws(() => status(s, "agendado"), /agendado/); });
-test("pago não pode ser cancelado", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 100); assert.throws(() => status(s, "cancelado"), /cancelado/); });
-test("pago não pode ser excluído", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 100); assert.throws(() => remove(s), /excluído/); assert.equal(s.deleted, false); });
-test("valor_devido não pode ficar abaixo do recebido", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 80); assert.throws(() => updateValue(s, 79.99), /abaixo/); });
-test("atraso usa data_prevista (realizado + saldo > 0)", () => { const s = create({ status: "realizado", value: 100, dueDate: "2026-09-04" }); assert.equal(overdue(s, "2026-09-05"), true); pay(s, 100); assert.equal(overdue(s, "2026-09-05"), false); });
-test("usuário A não acessa dados de B (RLS simulado offline)", () => { const rows = [create({ userId: "user-a", status: "realizado", value: 100 }), create({ userId: "user-b", status: "realizado", value: 200 })]; assert.deepEqual(rows.filter((s) => s.userId === "user-a").map((s) => s.userId), ["user-a"]); assert.match(limitation, /NAO prova RLS/); });
-test("concorrência não permite ultrapassar saldo (simulação offline)", async () => { const s = create({ status: "realizado", value: 100 }); const results = await Promise.allSettled([Promise.resolve().then(() => pay(s, 60)), Promise.resolve().then(() => pay(s, 60))]); assert.equal(results.filter((r) => r.status === "fulfilled").length, 1); assert.equal(paid(s), 60); });
-test("integração local é opt-in e sem credenciais versionadas", async (t) => { if (!process.env.SUPABASE_TEST_URL || !process.env.SUPABASE_TEST_ANON_KEY) { t.skip("offline CI: .env.test externo valida RLS/trigger/RPC/FOR UPDATE"); return; } assert.fail("Harness será conectado às migrations finais do MAI-45"); });
+const makeShift = ({ userId = "user-a", status = "agendado", valorDevido, dataPrevista = "2026-09-01" } = {}) => ({
+  userId, status, obligation: status === "realizado" ? { valor_devido: valorDevido, payments: [] } : null,
+  data_prevista: dataPrevista, deleted: false,
+});
+
+function createShift(input = {}) {
+  if (input.status === "realizado" && input.valorDevido == null) throw Error("realizado exige valor");
+  return makeShift(input);
+}
+
+const registered = (obligation) => obligation.payments.filter((payment) => payment.status === "registrado");
+const received = (shift) => registered(shift.obligation).reduce((sum, payment) => sum + payment.valor, 0);
+const saldo = (shift) => shift.status === "cancelado" || !shift.obligation ? 0 : shift.obligation.valor_devido - received(shift);
+
+function registerPayment(shift, valor) {
+  if (shift.status !== "realizado") throw Error("pagamento exige plantão realizado");
+  if (received(shift) + valor > shift.obligation.valor_devido) throw Error("pagamento excede saldo");
+  shift.obligation.payments.push({ valor, status: "registrado" });
+}
+
+function cancelPayment(shift, payment) {
+  assert.equal(shift.obligation.payments.includes(payment), true);
+  payment.status = "cancelado";
+}
+
+function transition(shift, nextStatus) {
+  if (received(shift) > 0 && (nextStatus === "agendado" || nextStatus === "cancelado")) {
+    throw Error("pagamento registrado impede transição");
+  }
+  if (nextStatus === "realizado") {
+    if (shift.obligation == null) throw Error("realizado exige valor");
+  }
+  shift.status = nextStatus;
+}
+
+function updateValorDevido(shift, valorDevido) {
+  if (valorDevido < received(shift)) throw Error("valor_devido abaixo do recebido");
+  shift.obligation.valor_devido = valorDevido;
+}
+
+function removeShift(shift) {
+  if (received(shift) > 0) throw Error("plantão com pagamento não pode ser excluído");
+  shift.deleted = true;
+}
+
+const atrasado = (shift, hoje) => shift.status === "realizado" && saldo(shift) > 0 && shift.data_prevista < hoje;
+
+test("agendado sem valor pode existir", () => assert.equal(createShift().obligation, null));
+test("agendado sem obligation ainda não tem obrigação financeira", () => assert.equal(createShift().obligation, null));
+test("realizado exige valor", () => assert.throws(() => createShift({ status: "realizado" }), /exige valor/));
+test("realizado cria exatamente uma obligation", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); assert.ok(shift.obligation); assert.equal(shift.obligation.payments.length, 0); });
+test("criação direta de realizado também cria obligation", () => assert.equal(createShift({ status: "realizado", valorDevido: 250 }).obligation.valor_devido, 250));
+test("pagamento parcial reduz o saldo da obligation", () => { const shift = createShift({ status: "realizado", valorDevido: 1000 }); registerPayment(shift, 250); assert.equal(saldo(shift), 750); });
+test("pagamento integral zera o saldo", () => { const shift = createShift({ status: "realizado", valorDevido: 1000 }); registerPayment(shift, 1000); assert.equal(saldo(shift), 0); });
+test("overpayment é rejeitado sem alterar pagamentos", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 60); assert.throws(() => registerPayment(shift, 40.01), /excede/); assert.deepEqual(shift.obligation.payments.map((payment) => payment.valor), [60]); });
+test("cancelamento lógico do pagamento preserva registro, ignora valor e aumenta saldo", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 40); const payment = shift.obligation.payments[0]; cancelPayment(shift, payment); assert.equal(payment.status, "cancelado"); assert.equal(shift.obligation.payments.length, 1); assert.equal(received(shift), 0); assert.equal(saldo(shift), 100); assert.equal(shift.status, "realizado"); });
+test("cancelado não entra no saldo", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 100); cancelPayment(shift, shift.obligation.payments[0]); assert.equal(saldo(shift), 100); });
+test("pagamento registrado parcial impede realizado->agendado", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 1); assert.throws(() => transition(shift, "agendado"), /impede/); });
+test("pagamento registrado parcial impede realizado->cancelado", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 1); assert.throws(() => transition(shift, "cancelado"), /impede/); });
+test("pagamento registrado parcial impede exclusão", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 1); assert.throws(() => removeShift(shift), /não pode ser excluído/); });
+test("valor_devido não pode ficar abaixo do recebido", () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); registerPayment(shift, 80); assert.throws(() => updateValorDevido(shift, 79.99), /abaixo/); assert.equal(shift.obligation.valor_devido, 100); });
+test("atraso usa data_prevista: vence em 05/09, atrasa em 06/09 e some após pagamento integral", () => { const shift = createShift({ status: "realizado", valorDevido: 100, dataPrevista: "2026-09-05" }); assert.equal(atrasado(shift, "2026-09-05"), false); assert.equal(atrasado(shift, "2026-09-06"), true); registerPayment(shift, 100); assert.equal(saldo(shift), 0); assert.equal(atrasado(shift, "2026-09-06"), false); });
+test("usuário A não acessa dados de B (RLS simulado offline)", () => { const rows = [createShift({ userId: "user-a", status: "realizado", valorDevido: 100 }), createShift({ userId: "user-b", status: "realizado", valorDevido: 200 })]; assert.deepEqual(rows.filter((shift) => shift.userId === "user-a").map((shift) => shift.userId), ["user-a"]); });
+test("concorrência não permite ultrapassar saldo (simulação offline)", async () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); const results = await Promise.allSettled([Promise.resolve().then(() => registerPayment(shift, 60)), Promise.resolve().then(() => registerPayment(shift, 60))]); assert.equal(results.filter((result) => result.status === "fulfilled").length, 1); assert.equal(received(shift), 60); });
+
+test("integração Supabase/Postgres local: TODO, ainda não implementada", (t) => {
+  t.skip("sem harness real; não executar assert.fail nem apresentar este teste como integração");
+});
