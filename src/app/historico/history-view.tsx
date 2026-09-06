@@ -1,19 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Payment } from "@/lib/payments";
 import type { Place } from "@/lib/places";
 import type { Shift } from "@/lib/shifts";
-import type { Obligation } from "@/lib/obligations";
+import { financialAmounts, type Obligation } from "@/lib/obligations";
 
-type Props = { shifts: Shift[]; payments: Payment[]; places: Place[]; obligations: Obligation[] };
+type Props = { shifts: Shift[]; places: Place[]; obligations: Obligation[] };
 type StatusFilter = "todos" | Shift["status"];
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const date = (value: string) => new Intl.DateTimeFormat("pt-BR").format(new Date(`${value}T12:00:00`));
 const csvCell = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
 
-export default function HistoryView({ shifts, payments, places, obligations }: Props) {
+export default function HistoryView({ shifts, places, obligations }: Props) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState<StatusFilter>("todos");
@@ -21,16 +20,14 @@ export default function HistoryView({ shifts, payments, places, obligations }: P
   const [query, setQuery] = useState("");
 
   const rows = useMemo(() => shifts.map((shift) => {
-    const ids = new Set(obligations.filter((o) => o.shift_id === shift.id).map((o) => o.id));
-    const received = payments.filter((payment) => ids.has(payment.obligation_id) && payment.status === "registrado").reduce((sum, payment) => sum + Number(payment.valor), 0);
     const obligation = obligations.find((o) => o.shift_id === shift.id);
-    return { shift, obligation, received, balance: Number(obligation?.saldo ?? 0), placeName: places.find((item) => item.id === shift.place_id)?.nome ?? "Local removido" };
-  }).filter(({ shift, placeName }) => (!from || shift.data >= from) && (!to || shift.data <= to) && (status === "todos" || shift.status === status) && (place === "todos" || shift.place_id === place) && (!query || placeName.toLocaleLowerCase().includes(query.toLocaleLowerCase()))).sort((a, b) => b.shift.data.localeCompare(a.shift.data)), [from, to, status, place, query, shifts, payments, places, obligations]);
+    const amounts = financialAmounts(shift.status, obligation); return { shift, obligation, received: amounts.received, balance: amounts.balance, placeName: places.find((item) => item.id === shift.place_id)?.nome ?? "Local removido" };
+  }).filter(({ shift, placeName }) => (!from || shift.data >= from) && (!to || shift.data <= to) && (status === "todos" || shift.status === status) && (place === "todos" || shift.place_id === place) && (!query || placeName.toLocaleLowerCase().includes(query.toLocaleLowerCase()))).sort((a, b) => b.shift.data.localeCompare(a.shift.data)), [from, to, status, place, query, shifts, places, obligations]);
 
-  const totals = rows.reduce((sum, row) => ({ expected: sum.expected + Number(row.obligation?.valor_devido ?? 0), received: sum.received + row.received, balance: sum.balance + row.balance }), { expected: 0, received: 0, balance: 0 });
+  const totals = rows.reduce((sum, row) => { const amounts = financialAmounts(row.shift.status, row.obligation); return { expected: sum.expected + amounts.expected, received: sum.received + amounts.received, balance: sum.balance + amounts.balance }; }, { expected: 0, received: 0, balance: 0 });
 
   function exportCsv() {
-    const lines = [["Data", "Local", "Status", "Previsto", "Recebido", "Saldo"], ...rows.map(({ shift, obligation, placeName, received, balance }) => [date(obligation?.data_prevista ?? shift.data), placeName, shift.status, Number(obligation?.valor_devido ?? 0).toFixed(2).replace(".", ","), received.toFixed(2).replace(".", ","), balance.toFixed(2).replace(".", ",")])].map((line) => line.map((cell) => csvCell(cell)).join(";"));
+    const lines = [["Data", "Local", "Status", "Previsto", "Recebido", "Saldo"], ...rows.map(({ shift, obligation, placeName, received, balance }) => [date(obligation?.data_prevista ?? shift.data), placeName, shift.status, (shift.status === "realizado" ? Number(obligation?.valor_devido ?? 0) : 0).toFixed(2).replace(".", ","), received.toFixed(2).replace(".", ","), balance.toFixed(2).replace(".", ",")])].map((line) => line.map((cell) => csvCell(cell)).join(";"));
     const blob = new Blob([`\uFEFF${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "historico-financeiro.csv"; link.click(); URL.revokeObjectURL(url);
   }

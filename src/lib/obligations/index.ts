@@ -1,14 +1,9 @@
 import { createClient } from "@/lib/supabase/client";
 import { getAuthenticatedUserId, throwOnError } from "@/lib/dal";
+export { financialAmounts, isOverdue } from "@/lib/obligations/financial";
 
 export type Obligation = { id: string; user_id: string; shift_id: string; valor_devido: number | null; data_prevista: string; responsavel_place_id: string | null; responsavel_contact_id: string | null; saldo: number | null; atrasada: boolean; created_at: string; updated_at: string };
 export type ObligationInput = Pick<Obligation, "shift_id" | "valor_devido" | "data_prevista" | "responsavel_place_id" | "responsavel_contact_id">;
-export function isOverdue(dataPrevista: string, today = new Date()): boolean {
-  const todayIso = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(today);
-  const due = new Date(`${dataPrevista}T00:00:00-03:00`);
-  const todayStart = new Date(`${todayIso}T00:00:00-03:00`);
-  return due.getTime() < todayStart.getTime();
-}
 export type ObligationUpdate = Partial<Omit<ObligationInput, "shift_id">>;
 export async function listObligations(): Promise<Obligation[]> { const u = await getAuthenticatedUserId(); const { data, error } = await createClient().from("obligations_with_balance").select("*").eq("user_id", u).order("data_prevista", { ascending: true }); await throwOnError(error); return (data ?? []) as Obligation[]; }
 export async function getObligation(id: string): Promise<Obligation | null> { const u = await getAuthenticatedUserId(); const { data, error } = await createClient().from("obligations_with_balance").select("*").eq("id", id).eq("user_id", u).maybeSingle(); await throwOnError(error); return data as Obligation | null; }
