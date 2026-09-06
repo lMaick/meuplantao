@@ -41,6 +41,10 @@ function updatePayment(payment, patch) {
   payment.status = "cancelado";
 }
 
+function deletePayment() {
+  throw Error("DELETE de pagamentos nao autorizado");
+}
+
 function transition(shift, nextStatus) {
   if (received(shift) > 0 && (nextStatus === "agendado" || nextStatus === "cancelado")) {
     throw Error("pagamento registrado impede transição");
@@ -92,6 +96,18 @@ test("UPDATE financeiro permite apenas cancelamento e preserva historico e saldo
   assert.equal(shift.obligation.payments.length, 1);
   assert.equal(saldo(shift), 100);
   assert.throws(() => updatePayment(payment, { status: "registrado" }), /somente registrados/);
+});
+
+test("DELETE fisico nao faz parte do contrato, inclusive entre usuarios", () => {
+  const shiftA = createShift({ userId: "user-a", status: "realizado", valorDevido: 100 });
+  registerPayment(shiftA, 40);
+  const paymentA = shiftA.obligation.payments[0];
+  assert.throws(() => deletePayment(paymentA), /nao autorizado/);
+  assert.throws(() => deletePayment({ ...paymentA, userId: "user-b" }), /nao autorizado/);
+  assert.equal(shiftA.obligation.payments.length, 1);
+  updatePayment(paymentA, { status: "cancelado" });
+  assert.equal(shiftA.obligation.payments.length, 1);
+  assert.equal(saldo(shiftA), 100);
 });
 
 test("integração Supabase/Postgres local: TODO, ainda não implementada", (t) => {

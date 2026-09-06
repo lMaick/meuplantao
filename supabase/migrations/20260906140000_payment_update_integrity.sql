@@ -16,6 +16,7 @@ begin
   end if;
 
   if tg_op = 'INSERT' then
+    new.created_at := now();
     if new.status <> 'registrado' then
       raise exception using errcode = '23514', message = 'Novo pagamento deve ser registrado';
     end if;
