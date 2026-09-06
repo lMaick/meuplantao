@@ -1,7 +1,6 @@
-import { listPayments } from "@/lib/payments";
 import { listPlaces } from "@/lib/places";
 import { listShifts, type Shift } from "@/lib/shifts";
-import { listObligations } from "@/lib/obligations";
+import { isOverdue, listObligations } from "@/lib/obligations";
 
 export type Alert = {
   id: string;
@@ -14,22 +13,13 @@ export type Alert = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function dateOnly(value: string): Date {
-  return new Date(`${value}T00:00:00`);
-}
-
 export async function listAlerts(): Promise<Alert[]> {
-  const [shifts, payments, places, obligations] = await Promise.all([
+  const [shifts, places, obligations] = await Promise.all([
     listShifts(),
-    listPayments(),
     listPlaces(),
     listObligations(),
   ]);
   const obligationByShift = new Map(obligations.map((obligation) => [obligation.shift_id, obligation]));
-  const paidByShift = new Map<string, number>();
-  payments
-    .filter((payment) => payment.status === "registrado")
-    .forEach((payment) => paidByShift.set(payment.shift_id, (paidByShift.get(payment.shift_id) ?? 0) + Number(payment.valor)));
   const placeNames = new Map(places.map((place) => [place.id, place.nome]));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -38,11 +28,11 @@ export async function listAlerts(): Promise<Alert[]> {
   return shifts
     .flatMap((shift): Alert[] => {
       const obligation = obligationByShift.get(shift.id);
-      const shiftDate = dateOnly(shift.data);
-      const dueDate = obligation ? dateOnly(obligation.data_prevista) : shiftDate;
+      const shiftDate = new Date(`${shift.data}T00:00:00`);
+      if (!obligation) return [];
       const placeName = placeNames.get(shift.place_id) ?? "Local não encontrado";
-      const remaining = Number(shift.valor_previsto) - (paidByShift.get(shift.id) ?? 0);
-      if (shift.status === "realizado" && remaining > 0 && dueDate < today) {
+      const remaining = Number(obligation.saldo ?? 0);
+      if (shift.status === "realizado" && remaining > 0 && isOverdue(obligation.data_prevista)) {
         return [{ id: `atraso-${shift.id}`, kind: "atraso", title: "Recebimento em atraso", description: `${placeName} · saldo de R$ ${remaining.toFixed(2).replace(".", ",")} pendente`, shift, placeName }];
       }
       if (shift.status === "agendado" && shiftDate >= today && shiftDate <= nextWeek) {
