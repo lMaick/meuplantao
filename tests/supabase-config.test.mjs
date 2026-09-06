@@ -51,3 +51,14 @@ test("financial invariants live in the database boundary", () => {
   for (const invariant of ["auth.uid()", "for update", "status <> 'realizado'", "sum(valor)", "register_payment", "valor_previsto", "security invoker"]) assert.match(sql, new RegExp(invariant.replace(/[().]/g, "\\$&")));
   assert.match(fs.readFileSync(path.join(process.cwd(), "src/lib/payments/index.ts"), "utf8"), /\.rpc\("register_payment"/);
 });
+
+test("payment hardening removes physical delete without removing CRUD ownership policies", () => {
+  const initial = fs.readFileSync(path.join(process.cwd(), "supabase/migrations/20260904204000_initial_schema.sql"), "utf8");
+  const hardening = fs.readFileSync(path.join(process.cwd(), "supabase/migrations/20260906140000_payment_update_integrity.sql"), "utf8");
+  const deletion = fs.readFileSync(path.join(process.cwd(), "supabase/migrations/20260906150000_remove_payments_delete_policy.sql"), "utf8");
+  assert.match(deletion, /drop policy if exists "payments_delete_own" on public\.payments;/);
+  assert.doesNotMatch(deletion, /payments_(insert|select|update)_own.*drop policy/is);
+  for (const policy of ["payments_insert_own", "payments_select_own", "payments_update_own"]) assert.match(initial, new RegExp(policy));
+  assert.match(hardening, /new\.created_at\s*:=\s*now\(\)/);
+  assert.doesNotMatch(deletion, /create trigger|delete from|drop policy if exists "payments_(insert|select|update)_own"/i);
+});

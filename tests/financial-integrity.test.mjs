@@ -33,6 +33,18 @@ function cancelPayment(shift, payment) {
   payment.status = "cancelado";
 }
 
+function updatePayment(payment, patch) {
+  if (Object.keys(patch).some((key) => ["valor", "obligation_id", "user_id", "data_pagamento"].includes(key))) {
+    throw Error("pagamentos nao podem ser editados");
+  }
+  if (payment.status === "cancelado" || patch.status !== "cancelado") throw Error("somente registrados podem ser cancelados");
+  payment.status = "cancelado";
+}
+
+function deletePayment() {
+  throw Error("DELETE de pagamentos nao autorizado");
+}
+
 function transition(shift, nextStatus) {
   if (received(shift) > 0 && (nextStatus === "agendado" || nextStatus === "cancelado")) {
     throw Error("pagamento registrado impede transição");
@@ -72,6 +84,31 @@ test("valor_devido não pode ficar abaixo do recebido", () => { const shift = cr
 test("atraso usa data_prevista: vence em 05/09, atrasa em 06/09 e some após pagamento integral", () => { const shift = createShift({ status: "realizado", valorDevido: 100, dataPrevista: "2026-09-05" }); assert.equal(atrasado(shift, "2026-09-05"), false); assert.equal(atrasado(shift, "2026-09-06"), true); registerPayment(shift, 100); assert.equal(saldo(shift), 0); assert.equal(atrasado(shift, "2026-09-06"), false); });
 test("usuário A não acessa dados de B (RLS simulado offline)", () => { const rows = [createShift({ userId: "user-a", status: "realizado", valorDevido: 100 }), createShift({ userId: "user-b", status: "realizado", valorDevido: 200 })]; assert.deepEqual(rows.filter((shift) => shift.userId === "user-a").map((shift) => shift.userId), ["user-a"]); });
 test("concorrência não permite ultrapassar saldo (simulação offline)", async () => { const shift = createShift({ status: "realizado", valorDevido: 100 }); const results = await Promise.allSettled([Promise.resolve().then(() => registerPayment(shift, 60)), Promise.resolve().then(() => registerPayment(shift, 60))]); assert.equal(results.filter((result) => result.status === "fulfilled").length, 1); assert.equal(received(shift), 60); });
+
+test("UPDATE financeiro permite apenas cancelamento e preserva historico e saldo", () => {
+  const shift = createShift({ status: "realizado", valorDevido: 100 });
+  registerPayment(shift, 40);
+  const payment = shift.obligation.payments[0];
+  assert.throws(() => updatePayment(payment, { valor: 90 }), /nao podem/);
+  assert.throws(() => updatePayment(payment, { obligation_id: "outra" }), /nao podem/);
+  updatePayment(payment, { status: "cancelado" });
+  assert.equal(payment.status, "cancelado");
+  assert.equal(shift.obligation.payments.length, 1);
+  assert.equal(saldo(shift), 100);
+  assert.throws(() => updatePayment(payment, { status: "registrado" }), /somente registrados/);
+});
+
+test("DELETE fisico nao faz parte do contrato, inclusive entre usuarios", () => {
+  const shiftA = createShift({ userId: "user-a", status: "realizado", valorDevido: 100 });
+  registerPayment(shiftA, 40);
+  const paymentA = shiftA.obligation.payments[0];
+  assert.throws(() => deletePayment(paymentA), /nao autorizado/);
+  assert.throws(() => deletePayment({ ...paymentA, userId: "user-b" }), /nao autorizado/);
+  assert.equal(shiftA.obligation.payments.length, 1);
+  updatePayment(paymentA, { status: "cancelado" });
+  assert.equal(shiftA.obligation.payments.length, 1);
+  assert.equal(saldo(shiftA), 100);
+});
 
 test("integração Supabase/Postgres local: TODO, ainda não implementada", (t) => {
   t.skip("sem harness real; não executar assert.fail nem apresentar este teste como integração");
