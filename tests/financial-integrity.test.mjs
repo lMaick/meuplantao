@@ -2,88 +2,40 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 /*
- * MAI-45 contract: shift -> obligation -> payments.
- * These are deliberately offline mocks: they cannot prove SQL RLS, triggers,
- * FOR UPDATE, or RPC behavior. The opt-in integration test documents that
- * limitation and is skipped unless .env.test values are supplied externally.
+ * ESTE TESTE SIMULA as regras offline e NÃO prova RLS, trigger, RPC ou FOR UPDATE.
+ * Integração real: forneça SUPABASE_TEST_URL e SUPABASE_TEST_ANON_KEY via .env.test.
  */
-
-function makeShift({ userId, status = "realizado" }) {
-  return { userId, status, obligations: [] };
+const limitation = "ESTE TESTE SIMULA a regra e NAO prova RLS/trigger/RPC/FOR UPDATE";
+const make = ({ userId = "user-a", status = "agendado", value, dueDate = "2026-09-01" } = {}) => ({ userId, status, value, dueDate, obligation: status === "realizado" ? { value, payments: [] } : null, payments: [], deleted: false });
+function create(input = {}) { if (input.status === "realizado" && input.value == null) throw Error("realizado exige valor"); return make(input); }
+const paid = (s) => s.payments.reduce((sum, p) => sum + p.value, 0);
+const balance = (s) => s.status === "cancelado" || !s.obligation ? 0 : s.obligation.value - paid(s);
+function pay(s, value) { if (s.status !== "realizado") throw Error("pagamento exige realizado"); if (paid(s) + value > s.obligation.value) throw Error("pagamento excede saldo"); s.payments.push({ value }); }
+function status(s, next) {
+  if (s.status === "realizado" && next === "agendado") throw Error("pago não pode voltar a agendado");
+  if (next === "cancelado" && paid(s) === s.obligation?.value) throw Error("pago não pode ser cancelado");
+  if (next === "realizado") { if (s.value == null) throw Error("realizado exige valor"); s.obligation ??= { value: s.value, payments: [] }; }
+  s.status = next;
 }
+function updateValue(s, value) { if (value < paid(s)) throw Error("valor_devido abaixo do recebido"); s.value = value; if (s.obligation) s.obligation.value = value; }
+function remove(s) { if (paid(s)) throw Error("plantão com pagamento não pode ser excluído"); s.deleted = true; }
+const overdue = (s, today) => s.status === "realizado" && balance(s) > 0 && s.dueDate < today;
 
-function addObligation(shift, { value, dueDate }) {
-  const obligation = { shift, value, dueDate, payments: [] };
-  shift.obligations.push(obligation);
-  return obligation;
-}
-
-function paid(obligation) {
-  return obligation.payments.reduce((sum, payment) => sum + payment.value, 0);
-}
-
-function saldo(obligation) {
-  return Number((obligation.value - paid(obligation)).toFixed(2));
-}
-
-function atrasada(obligation, today) {
-  return obligation.shift.status === "realizado" && saldo(obligation) > 0 && obligation.dueDate < today;
-}
-
-function registerPayment(obligation, value) {
-  assert.ok(value > 0 && Number.isInteger(value * 100), "payment must be positive with two decimals");
-  assert.equal(obligation.shift.status, "realizado", "only completed shifts can be paid");
-  if (paid(obligation) + value > obligation.value) throw new Error("payment exceeds obligation balance");
-  obligation.payments.push({ value });
-}
-
-test("partial and integral payments derive obligation saldo", () => {
-  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 1000, dueDate: "2026-09-01" });
-  registerPayment(obligation, 250);
-  assert.equal(saldo(obligation), 750);
-  registerPayment(obligation, 750);
-  assert.equal(saldo(obligation), 0);
-});
-
-test("overpayment is rejected and does not mutate obligation payment history", () => {
-  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-01" });
-  registerPayment(obligation, 60);
-  assert.throws(() => registerPayment(obligation, 40.01), /exceeds/);
-  assert.deepEqual(obligation.payments.map(({ value }) => value), [60]);
-  assert.equal(saldo(obligation), 40);
-});
-
-test("a paid obligation cannot be canceled or reduced below its saldo history", () => {
-  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-01" });
-  registerPayment(obligation, 40);
-  assert.throws(() => { if (paid(obligation) > 0) throw new Error("financial inconsistency"); }, /inconsistency/);
-  assert.throws(() => { if (30 < paid(obligation)) throw new Error("financial inconsistency"); }, /inconsistency/);
-  assert.equal(obligation.payments.length, 1);
-  assert.equal(saldo(obligation), 60);
-});
-
-test("atrasada is derived from realized shift, positive saldo, and data_prevista", () => {
-  const obligation = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-04" });
-  assert.equal(atrasada(obligation, "2026-09-05"), true);
-  registerPayment(obligation, 100);
-  assert.equal(atrasada(obligation, "2026-09-05"), false, "fully paid obligations are not overdue");
-  const scheduled = addObligation(makeShift({ userId: "user-a", status: "agendado" }), { value: 100, dueDate: "2026-09-04" });
-  assert.equal(atrasada(scheduled, "2026-09-05"), false, "unrealized shifts are not overdue");
-});
-
-test("two users cannot observe or pay each other's shift obligation", () => {
-  const own = addObligation(makeShift({ userId: "user-a" }), { value: 100, dueDate: "2026-09-01" });
-  const other = addObligation(makeShift({ userId: "user-b" }), { value: 200, dueDate: "2026-09-01" });
-  assert.deepEqual([own, other].filter((obligation) => obligation.shift.userId === "user-a"), [own]);
-  assert.throws(() => {
-    if (other.shift.userId !== "user-a") throw new Error("row is not owned by authenticated user");
-  }, /not owned/);
-});
-
-test("integration against local Supabase is explicit and opt-in", async (t) => {
-  if (!process.env.SUPABASE_TEST_URL || !process.env.SUPABASE_TEST_ANON_KEY) {
-    t.skip("offline CI: set SUPABASE_TEST_URL and SUPABASE_TEST_ANON_KEY from .env.test to run SQL/RLS integration");
-    return;
-  }
-  assert.fail("Integration harness requires MAI-45 obligation migrations and local fixture setup");
-});
+test("agendado sem valor pode existir", () => assert.equal(create().value, undefined));
+test("agendado sem obrigação ainda não tem obligation", () => assert.equal(create().obligation, null));
+test("realizado exige valor", () => assert.throws(() => create({ status: "realizado" }), /exige valor/));
+test("realizado cria exatamente uma obligation", () => assert.equal(create({ status: "realizado", value: 100 }).obligation ? 1 : 0, 1));
+test("criação direta de realizado também cria obligation", () => assert.equal(create({ status: "realizado", value: 250 }).obligation.value, 250));
+test("pagamento parcial", () => { const s = create({ status: "realizado", value: 1000 }); pay(s, 250); assert.equal(balance(s), 750); });
+test("pagamento integral", () => { const s = create({ status: "realizado", value: 1000 }); pay(s, 1000); assert.equal(balance(s), 0); });
+test("overpayment rejeitado", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 60); assert.throws(() => pay(s, 40.01), /excede/); assert.deepEqual(s.payments.map((p) => p.value), [60]); });
+test("cancelamento lógico preserva pagamento (status=cancelado, não delete)", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 40); status(s, "cancelado"); assert.equal(s.status, "cancelado"); assert.equal(s.payments.length, 1); assert.equal(s.deleted, false); });
+test("cancelado não entra no saldo", () => { const s = create({ status: "realizado", value: 100 }); status(s, "cancelado"); assert.equal(balance(s), 0); });
+test("pago não pode voltar a agendado", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 100); assert.throws(() => status(s, "agendado"), /agendado/); });
+test("pago não pode ser cancelado", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 100); assert.throws(() => status(s, "cancelado"), /cancelado/); });
+test("pago não pode ser excluído", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 100); assert.throws(() => remove(s), /excluído/); assert.equal(s.deleted, false); });
+test("valor_devido não pode ficar abaixo do recebido", () => { const s = create({ status: "realizado", value: 100 }); pay(s, 80); assert.throws(() => updateValue(s, 79.99), /abaixo/); });
+test("atraso usa data_prevista (realizado + saldo > 0)", () => { const s = create({ status: "realizado", value: 100, dueDate: "2026-09-04" }); assert.equal(overdue(s, "2026-09-05"), true); pay(s, 100); assert.equal(overdue(s, "2026-09-05"), false); });
+test("usuário A não acessa dados de B (RLS simulado offline)", () => { const rows = [create({ userId: "user-a", status: "realizado", value: 100 }), create({ userId: "user-b", status: "realizado", value: 200 })]; assert.deepEqual(rows.filter((s) => s.userId === "user-a").map((s) => s.userId), ["user-a"]); assert.match(limitation, /NAO prova RLS/); });
+test("concorrência não permite ultrapassar saldo (simulação offline)", async () => { const s = create({ status: "realizado", value: 100 }); const results = await Promise.allSettled([Promise.resolve().then(() => pay(s, 60)), Promise.resolve().then(() => pay(s, 60))]); assert.equal(results.filter((r) => r.status === "fulfilled").length, 1); assert.equal(paid(s), 60); });
+test("integração local é opt-in e sem credenciais versionadas", async (t) => { if (!process.env.SUPABASE_TEST_URL || !process.env.SUPABASE_TEST_ANON_KEY) { t.skip("offline CI: .env.test externo valida RLS/trigger/RPC/FOR UPDATE"); return; } assert.fail("Harness será conectado às migrations finais do MAI-45"); });
