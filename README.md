@@ -35,6 +35,21 @@ Nunca use chaves secret/service_role nessas variáveis públicas. Não versione
 `.env.local` nem compartilhe seus valores em commits, logs ou capturas de tela.
 A configuração dos clientes segue a [documentação SSR do Supabase](https://supabase.com/docs/guides/auth/server-side/creating-a-client).
 
+### Google OAuth
+
+O login e o cadastro também oferecem **Continuar com Google**. O callback local
+é `http://localhost:3000/auth/callback`; em produção, use a mesma rota sob a
+origem pública do app (por exemplo, `https://seu-dominio.example/auth/callback`).
+
+No Supabase, em **Authentication → Providers → Google**, habilite Google e
+informe o Client ID e o Client Secret obtidos no Google Cloud Console. Em
+**Authentication → URL Configuration**, adicione as origens do app e os
+callbacks permitidos, incluindo a URL local e a URL de produção. No Google
+Cloud Console, configure a URI de redirecionamento autorizada do provedor como
+`https://<project-ref>.supabase.co/auth/v1/callback` (a URL exata aparece no
+painel do Supabase), e cadastre as origens autorizadas do app. Nunca coloque
+segredos no repositório, no `.env.local` versionado ou no navegador.
+
 Reinicie `npm run dev` após editar o ambiente. Para `npm start`, configure antes de
 `npm run build` e gere um novo build quando os valores mudarem: as variáveis
 `NEXT_PUBLIC_` são incorporadas ao JavaScript do navegador.
