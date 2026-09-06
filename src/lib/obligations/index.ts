@@ -7,7 +7,7 @@ export function isOverdue(dataPrevista: string, today = new Date()): boolean {
   const todayIso = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(today);
   const due = new Date(`${dataPrevista}T00:00:00-03:00`);
   const todayStart = new Date(`${todayIso}T00:00:00-03:00`);
-  return due.getTime() < todayStart.getTime() - 24 * 60 * 60 * 1000;
+  return due.getTime() < todayStart.getTime();
 }
 export type ObligationUpdate = Partial<Omit<ObligationInput, "shift_id">>;
 export async function listObligations(): Promise<Obligation[]> { const u = await getAuthenticatedUserId(); const { data, error } = await createClient().from("obligations_with_balance").select("*").eq("user_id", u).order("data_prevista", { ascending: true }); await throwOnError(error); return (data ?? []) as Obligation[]; }
