@@ -5,3 +5,11 @@ export function safeNext(value?: string | string[]): string {
   if (path === "/login" || path === "/cadastro") return "/dashboard";
   return value;
 }
+
+export function authCallbackUrl(origin: string, next: string): string {
+  const parsed = new URL(origin);
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("Origem inválida para callback de autenticação");
+  const url = new URL("/auth/callback", parsed);
+  url.searchParams.set("next", safeNext(next));
+  return url.toString();
+}

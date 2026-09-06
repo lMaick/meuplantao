@@ -105,3 +105,24 @@ test("recovery login remains reachable when middleware still sees a valid Auth u
     delete globalThis.jwtTestClient;
   }
 });
+
+test("anonymous OAuth callback reaches the route handler without middleware redirect", async () => {
+  const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "http://localhost:54321";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-key";
+  globalThis.jwtTestClient = { auth: { getUser: async () => ({ data: { user: null }, error: null }) } };
+  try {
+    const { NextRequest } = await import("next/server.js");
+    const { updateSession } = await import("../src/lib/auth/session.ts");
+    const callback = await updateSession(new NextRequest("http://localhost/auth/callback?code=test&next=/dashboard"));
+    assert.equal(callback.status, 200);
+    assert.equal(callback.headers.get("location"), null);
+  } finally {
+    if (originalUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+    if (originalKey === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+    delete globalThis.jwtTestClient;
+  }
+});
