@@ -42,9 +42,9 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isAuthPage = request.nextUrl.pathname === "/login" || request.nextUrl.pathname === "/cadastro";
+  const isPublicPage = ["/login", "/cadastro", "/privacidade", "/termos", "/suporte"].includes(request.nextUrl.pathname);
 
-  if (!user && !isAuthPage) {
+  if (!user && !isPublicPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);
@@ -52,7 +52,7 @@ export async function updateSession(request: NextRequest) {
   }
 
   const isSessionRecovery = request.nextUrl.pathname === "/login" && request.nextUrl.searchParams.get("reason") === "session-expired";
-  if (user && isAuthPage && !isSessionRecovery) {
+  if (user && ["/login", "/cadastro"].includes(request.nextUrl.pathname) && !isSessionRecovery) {
     return NextResponse.redirect(new URL(safeNext(request.nextUrl.searchParams.get("next") ?? undefined), request.url));
   }
 
