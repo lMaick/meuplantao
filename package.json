@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.test.mjs"
+    "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
