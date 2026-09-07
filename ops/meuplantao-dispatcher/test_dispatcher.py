@@ -17,6 +17,14 @@ ISSUE = {"id": "uuid-60", "identifier": "MAI-60", "title": "Auto sync"}
 WORKTREE = {"id": "wt-60", "path": "C:/work/MAI-60", "displayName": "MAI-60-auto", "linkedLinearIssue": "MAI-60"}
 
 class DispatcherBehaviourTests(unittest.TestCase):
+    def test_dry_run_is_read_only_and_skips_mutating_paths(self):
+        state = {"issues": {}}
+        lock = type("Lock", (), {"seek": lambda self, *_: None, "fileno": lambda self: 0, "close": lambda self: None})()
+        with patch.object(dispatcher, "acquire_lock", return_value=lock), patch.object(dispatcher.msvcrt, "locking"), patch.object(dispatcher, "load_state", return_value=state), patch.object(dispatcher, "orca", return_value={"runtime": {"reachable": True}}), patch.object(dispatcher, "list_worktrees", return_value=[]), patch.object(dispatcher, "list_eligible_issues", return_value=[ISSUE]), patch.object(dispatcher, "dispatch_issue") as dispatch, patch.object(dispatcher, "reconcile_dispatches") as reconcile, patch.object(dispatcher, "monitor_deliveries") as monitor, patch.object(dispatcher, "save_state") as save, patch.object(sys, "argv", ["dispatcher.py", "--dry-run"]):
+            self.assertEqual(dispatcher.main(), 0)
+        dispatch.assert_called_once_with(ISSUE, state, [], True)
+        reconcile.assert_not_called(); monitor.assert_not_called(); save.assert_not_called()
+
     def test_config_absent_or_incomplete_fails_closed(self):
         with self.assertRaises(RuntimeError): dispatcher.load_config(Path("missing-config.toml"))
         with tempfile.TemporaryDirectory() as d:

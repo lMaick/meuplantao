@@ -18,6 +18,8 @@ falha antes de acessar Orca, Linear, GitHub ou criar qualquer recurso.
 Em clone limpo, rode `python test_dispatcher.py`. Na máquina configurada, rode
 `run-dispatcher.cmd --dry-run` para validar conectividade e filtros sem criar
 recursos; depois remova `--dry-run` para execução normal.
+O wrapper define `MEUPLANTAO_DISPATCHER_CONFIG` para `%~dp0config.toml` somente
+quando a variável está vazia; um override explícito é preservado.
 
 ## Task Scheduler
 

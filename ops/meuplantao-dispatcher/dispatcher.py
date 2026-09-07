@@ -504,8 +504,9 @@ def main() -> int:
         if not status.get("runtime", {}).get("reachable"):
             raise RuntimeError("Orca runtime is not reachable")
         worktrees = list_worktrees()
-        reconcile_dispatches(state, worktrees)
-        monitor_deliveries(state, worktrees)
+        if not args.dry_run:
+            reconcile_dispatches(state, worktrees)
+            monitor_deliveries(state, worktrees)
         issues = list_eligible_issues()
         if args.issue:
             issues = [issue for issue in issues if issue.get("identifier", "").upper() == args.issue.upper()]
@@ -516,7 +517,8 @@ def main() -> int:
             if dispatch_issue(issue, state, worktrees, args.dry_run):
                 dispatched += 1
                 worktrees = list_worktrees()
-        monitor_deliveries(state, worktrees)
+        if not args.dry_run:
+            monitor_deliveries(state, worktrees)
         LOG.info("Run complete eligible=%d dispatched=%d dry_run=%s", len(issues), dispatched, args.dry_run)
         return 0
     except Exception as exc:
