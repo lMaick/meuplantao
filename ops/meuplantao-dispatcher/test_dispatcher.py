@@ -81,6 +81,24 @@ class DispatcherBehaviourTests(unittest.TestCase):
             dispatcher.reconcile_dispatches(state, [WORKTREE])
         self.assertEqual(state["issues"]["MAI-60"]["status"], "dispatched"); create.assert_not_called()
 
+    def test_reconcile_removes_residual_ready_and_reads_back_without_creation(self):
+        state = {"issues": {}}
+        wt = dict(WORKTREE)
+        responses = [
+            {"issue": {"state": {"name": "In Progress"}, "labels": [{"name": "Orca Ready"}]}},
+            {}, {},
+            {"issue": {"state": {"name": "In Progress"}, "labels": []}},
+            {"terminals": [{"handle": "term-60", "agentIdentity": "codex"}]},
+            {"terminal": {"tail": ["model:       gpt-5.6-luna low"]}},
+        ]
+        with patch.object(dispatcher, "orca", side_effect=responses) as fake, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"), patch.object(dispatcher, "create_workspace") as create:
+            dispatcher.reconcile_dispatches(state, [wt])
+        self.assertEqual(state["issues"]["MAI-60"]["status"], "dispatched")
+        calls = [c.args for c in fake.call_args_list]
+        self.assertIn(("linear", "label", "remove", "MAI-60", "--label", dispatcher.READY_LABEL, "--workspace", dispatcher.LINEAR_WORKSPACE_ID), calls)
+        self.assertEqual(sum(1 for c in calls if c[:2] == ("worktree", "create")), 0)
+        self.assertEqual(sum(1 for c in calls if c[:2] == ("terminal", "create")), 0)
+
     def test_review_new_pr_writes_expected_commands_but_never_done(self):
         state = {"issues": {}}; pr = {"number": 32, "headRefOid": "abc123", "url": "https://example.test/pr/32", "statusCheckRollup": []}
         with patch.object(dispatcher, "orca") as fake, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):

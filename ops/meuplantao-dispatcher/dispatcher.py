@@ -378,8 +378,10 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
         try:
             current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
             labels = {label.get("name") for label in current.get("labels", [])}
-            if current.get("state", {}).get("name") != "In Progress" or READY_LABEL in labels:
+            if current.get("state", {}).get("name") != "In Progress":
                 continue
+            if READY_LABEL in labels:
+                sync_started(issue_id)
             terminals = codex_terminals(path)
             if len(terminals) != 1:
                 continue
