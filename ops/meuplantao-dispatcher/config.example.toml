@@ -1,10 +1,12 @@
 orca_dir = "C:/Program Files/Orca"
+gh_executable = ""
+github_repo = "<OWNER>/<REPOSITORY>"
 repo_name = "meuplantao"
 repo_path = "C:/work/meuplantao"
 worktree_root = "C:/workspaces/meuplantao"
 linear_workspace_id = "<LINEAR_WORKSPACE_ID>"
 team = "MaickAgent"
-project = "MeuPlantao - Operacao"
+project = "MeuPlantao — Operação"
 ready_label = "Orca Ready"
 review_label = "Needs Review"
 max_dispatch_per_run = 1

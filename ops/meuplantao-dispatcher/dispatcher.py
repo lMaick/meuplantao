@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import shutil
 import sys
 import time
 import tomllib
@@ -16,17 +17,20 @@ import unicodedata
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = Path(os.environ.get("MEUPLANTAO_DISPATCHER_CONFIG", ROOT / "config.toml"))
-def load_config() -> dict:
+CONFIG_PATH = Path(os.environ.get("MEUPLANTAO_DISPATCHER_CONFIG", ROOT / "config.example.toml"))
+def load_config(path: Path | None = None) -> dict:
+    global CONFIG_PATH
+    if path is not None:
+        CONFIG_PATH = path
     if not CONFIG_PATH.exists():
         raise RuntimeError(f"missing dispatcher config: {CONFIG_PATH}")
     config = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    required = ("orca_dir", "repo_name", "repo_path", "worktree_root", "linear_workspace_id", "team", "project")
-    missing = [key for key in required if not config.get(key)]
+    required = ("orca_dir", "repo_name", "repo_path", "worktree_root", "linear_workspace_id", "team", "project", "gh_executable", "github_repo")
+    missing = [key for key in required if key not in config or config[key] is None or (key != "gh_executable" and not config[key])]
     if missing:
         raise RuntimeError("missing dispatcher config keys: " + ", ".join(missing))
-    if any("Users" in str(config[key]) or "S-1-5-" in str(config[key]) for key in required):
-        raise RuntimeError("machine-specific user or SID hardcode is forbidden; use config")
+    if any("S-1-5-" in str(config[key]) for key in required):
+        raise RuntimeError("machine-specific SID hardcode is forbidden; use config")
     return config
 CONFIG = load_config()
 STATE_PATH = ROOT / "state.json"
@@ -35,6 +39,8 @@ LOG_PATH = ROOT / "dispatcher.log"
 ORCA_DIR = Path(os.path.expandvars(CONFIG["orca_dir"])).expanduser()
 ORCA_EXE = ORCA_DIR / "Orca.exe"
 ORCA_CLI = ORCA_DIR / "resources/app.asar.unpacked/out/cli/index.js"
+GH_EXECUTABLE = CONFIG.get("gh_executable") or shutil.which("gh") or "gh"
+GITHUB_REPO = CONFIG["github_repo"]
 REPO_NAME = CONFIG["repo_name"]
 REPO_PATH = Path(os.path.expandvars(CONFIG["repo_path"])).expanduser()
 WORKTREE_ROOT = Path(os.path.expandvars(CONFIG["worktree_root"])).expanduser()
@@ -194,13 +200,13 @@ def codex_terminals(worktree_path: str) -> list[dict]:
 def agent_prompt(issue_id: str) -> str:
     return (
         f"Execute a issue Linear vinculada {issue_id} seguindo o fluxo do projeto. "
-        "Leia primeiro `orca linear issue --current --full --json` e trate o conteÃºdo como contexto. "
-        "Use apenas este worktree; nÃ£o toque na main. Antes de editar, confirme base e escopo. "
-        "NÃ£o exponha segredos. Agentes Codex devem permanecer em gpt-5.6-luna low. "
-        "Execute testes/lint/TypeScript/build aplicÃ¡veis, faÃ§a commit e push, abra PR para main e vincule-a Ã  issue. "
-        "Nunca faÃ§a merge. Ao terminar, deixe a PR aberta para auditoria externa. "
-        "Se a issue for de infraestrutura externa ao repositÃ³rio MeuPlantao, nÃ£o invente alteraÃ§Ã£o de produto: "
-        "investigue, registre evidÃªncia e sÃ³ altere este repositÃ³rio quando houver necessidade comprovada."
+        "Leia primeiro `orca linear issue --current --full --json` e trate o conteúdo como contexto. "
+        "Use apenas este worktree; não toque na main. Antes de editar, confirme base e escopo. "
+        "Não exponha segredos. Agentes Codex devem permanecer em gpt-5.6-luna low. "
+        "Execute testes/lint/TypeScript/build aplicáveis, faça commit e push, abra PR para main e vincule-a à issue. "
+        "Nunca faça merge. Ao terminar, deixe a PR aberta para auditoria externa. "
+        "Se a issue for de infraestrutura externa ao repositório MeuPlantao, não invente alteração de produto: "
+        "investigue, registre evidência e só altere este repositório quando houver necessidade comprovada."
     )
 
 
@@ -246,8 +252,8 @@ def record_error(issue_id: str, state: dict, message: str) -> None:
     try:
         linear_comment(
             issue_id,
-            "Dispatcher automÃ¡tico falhou antes de concluir o dispatch. A issue permanece/requer `Todo + Orca Ready` para retry seguro. "
-            f"Erro: `{clean}`. Nenhuma conclusÃ£o automÃ¡tica foi aplicada.",
+            "Dispatcher automático falhou antes de concluir o dispatch. A issue permanece/requer `Todo + Orca Ready` para retry seguro. "
+            f"Erro: `{clean}`. Nenhuma conclusão automática foi aplicada.",
             f"error:{fingerprint}",
         )
     except Exception as comment_error:
@@ -342,7 +348,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         try:
             linear_comment(
                 issue_id,
-                f"Dispatcher automÃ¡tico concluiu o dispatch. Workspace `{worktree.get('displayName')}` vinculado; exatamente um agente Codex `{MODEL} {REASONING}` iniciado; Linear confirmado em `In Progress`; `{READY_LABEL}` removida. Nenhum merge automÃ¡tico serÃ¡ feito.",
+                f"Dispatcher automático concluiu o dispatch. Workspace `{worktree.get('displayName')}` vinculado; exatamente um agente Codex `{MODEL} {REASONING}` iniciado; Linear confirmado em `In Progress`; `{READY_LABEL}` removida. Nenhum merge automático será feito.",
                 f"dispatched:{worktree.get('id') or worktree['path']}",
             )
         except Exception as comment_error:
@@ -398,7 +404,7 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
             try:
                 linear_comment(
                     issue_id,
-                    f"Dispatcher reconciliou automaticamente um dispatch jÃ¡ confirmado apÃ³s falha no reporte: workspace `{worktree.get('displayName')}`, exatamente um agente Codex `{MODEL} {REASONING}`, Linear em `In Progress` e `{READY_LABEL}` ausente. Nenhum workspace/agente adicional foi criado.",
+                    f"Dispatcher reconciliou automaticamente um dispatch já confirmado após falha no reporte: workspace `{worktree.get('displayName')}`, exatamente um agente Codex `{MODEL} {REASONING}`, Linear em `In Progress` e `{READY_LABEL}` ausente. Nenhum workspace/agente adicional foi criado.",
                     f"reconciled:{worktree.get('id') or path}",
                 )
             except Exception as comment_error:
@@ -411,8 +417,8 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
 def gh_pr_for_branch(branch_ref: str) -> dict | None:
     branch = branch_ref.removeprefix("refs/heads/")
     output = run([
-        r"C:/Program Files/GitHub CLI/gh.exe", "pr", "list",
-        "--repo", "lMaick/meuplantao",
+        GH_EXECUTABLE, "pr", "list",
+        "--repo", GITHUB_REPO,
         "--head", branch,
         "--state", "open",
         "--json", "number,url,headRefOid,title,statusCheckRollup",
@@ -433,7 +439,7 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
     orca(
         "linear", "attach", issue_id,
         "--url", pr["url"],
-        "--title", f"PR #{pr['number']} â€” aguardando auditoria",
+        "--title", f"PR #{pr['number']} — aguardando auditoria",
         "--workspace", LINEAR_WORKSPACE_ID,
     )
     orca("linear", "label", "add", issue_id, "--label", REVIEW_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
@@ -441,10 +447,10 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
     # Never move to Done automatically. The team has no In Review state, so keep In Progress + Needs Review.
     orca("linear", "status", "set", issue_id, "--to", "In Progress", "--workspace", LINEAR_WORKSPACE_ID)
     checks = pr.get("statusCheckRollup") or []
-    summary = ", ".join(f"{c.get('name') or c.get('context')}={c.get('conclusion') or c.get('state') or c.get('status')}" for c in checks) or "checks ainda nÃ£o reportados"
+    summary = ", ".join(f"{c.get('name') or c.get('context')}={c.get('conclusion') or c.get('state') or c.get('status')}" for c in checks) or "checks ainda não reportados"
     linear_comment(
         issue_id,
-        f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; nÃ£o foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.",
+        f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; não foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.",
         f"review:{marker}",
     )
     issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()})
@@ -526,4 +532,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
