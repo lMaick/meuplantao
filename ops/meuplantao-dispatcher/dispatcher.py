@@ -372,11 +372,18 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
         path = worktree.get("path")
         if not issue_id or not path:
             continue
-        issue_state = state["issues"].setdefault(issue_id, {})
+        issue_state = state.get("issues", {}).get(issue_id)
+        if issue_state is None:
+            issue_state = {}
         if issue_state.get("status") in {"dispatched", "needs-review"}:
             continue
         try:
             current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+            if current.get("team", {}).get("name") != TEAM or current.get("project", {}).get("name") != PROJECT:
+                continue
+            if issue_id not in state.get("issues", {}):
+                state.setdefault("issues", {})[issue_id] = issue_state
+            issue_state = state["issues"][issue_id]
             labels = {label.get("name") for label in current.get("labels", [])}
             if current.get("state", {}).get("name") != "In Progress":
                 continue
@@ -439,30 +446,33 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
     issue_state = state["issues"].setdefault(issue_id, {})
     marker = f"{pr['number']}:{pr['headRefOid']}"
     stages = issue_state.setdefault("reviewStages", {})
-    if issue_state.get("reviewMarker") == marker or stages.get("marker") == marker and stages.get("comment"):
+    if issue_state.get("reviewMarker") == marker or stages.get("commentDone") or stages.get("commentAttempted"):
         return
     stages["marker"] = marker; save_state(state)
-    if not stages.get("attachment"):
-        orca("linear", "attach", issue_id, "--url", pr["url"], "--title", f"PR #{pr['number']} — aguardando auditoria", "--workspace", LINEAR_WORKSPACE_ID)
-        stages["attachment"] = True; save_state(state)
+    if not stages.get("attachmentDone") and not stages.get("attachmentAttempted"):
+        stages["attachmentAttempted"] = True; save_state(state)
+        try:
+            orca("linear", "attach", issue_id, "--url", pr["url"], "--title", f"PR #{pr['number']} — aguardando auditoria", "--workspace", LINEAR_WORKSPACE_ID)
+        except Exception as exc:
+            stages["attachmentError"] = str(exc)[:500]; save_state(state); raise
+        stages["attachmentDone"] = True; save_state(state)
     if not stages.get("review_label"):
-        orca("linear", "label", "add", issue_id, "--label", REVIEW_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
-        stages["review_label"] = True; save_state(state)
+        orca("linear", "label", "add", issue_id, "--label", REVIEW_LABEL, "--workspace", LINEAR_WORKSPACE_ID); stages["review_label"] = True; save_state(state)
     if not stages.get("ready_label"):
-        orca("linear", "label", "remove", issue_id, "--label", READY_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
-        stages["ready_label"] = True; save_state(state)
+        orca("linear", "label", "remove", issue_id, "--label", READY_LABEL, "--workspace", LINEAR_WORKSPACE_ID); stages["ready_label"] = True; save_state(state)
     if not stages.get("status"):
-        orca("linear", "status", "set", issue_id, "--to", "In Progress", "--workspace", LINEAR_WORKSPACE_ID)
-        stages["status"] = True; save_state(state)
+        orca("linear", "status", "set", issue_id, "--to", "In Progress", "--workspace", LINEAR_WORKSPACE_ID); stages["status"] = True; save_state(state)
     checks = pr.get("statusCheckRollup") or []
     summary = ", ".join(f"{c.get('name') or c.get('context')}={c.get('conclusion') or c.get('state') or c.get('status')}" for c in checks) or "checks ainda não reportados"
-    if not stages.get("comment"):
-        linear_comment(issue_id, f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; não foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.", f"review:{marker}")
-        stages["comment"] = True; save_state(state)
-    issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()})
-    save_state(state)
+    if not stages.get("commentDone") and not stages.get("commentAttempted"):
+        stages["commentAttempted"] = True; save_state(state)
+        try:
+            linear_comment(issue_id, f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; não foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.", f"review:{marker}")
+        except Exception as exc:
+            stages["commentError"] = str(exc)[:500]; save_state(state); raise
+        stages["commentDone"] = True; save_state(state)
+    issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()}); save_state(state)
     LOG.info("Marked %s for review from PR #%s", issue_id, pr["number"])
-
 def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
     for worktree in worktrees:
         issue_id = str(worktree.get("linkedLinearIssue") or "").upper()
@@ -476,6 +486,11 @@ def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
             continue
         try:
             current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+            if current.get("team", {}).get("name") != TEAM or current.get("project", {}).get("name") != PROJECT:
+                continue
+            if issue_id not in state.setdefault("issues", {}):
+                state["issues"][issue_id] = issue_state
+            issue_state = state["issues"][issue_id]
             if current.get("team", {}).get("name") != TEAM or current.get("project", {}).get("name") != PROJECT:
                 continue
             pr = gh_pr_for_branch(branch)

@@ -76,7 +76,7 @@ class DispatcherBehaviourTests(unittest.TestCase):
 
     def test_reconcile_confirmed_dispatch_does_not_create_resources(self):
         state = {"issues": {}}
-        responses = [{"issue": {"state": {"name": "In Progress"}, "labels": []}}, {"terminals": [{"handle": "term-60", "agentIdentity": "codex"}]}, {"terminal": {"tail": ["model:       gpt-5.6-luna low"]}}]
+        responses = [{"issue": {"team": {"name": "Team"}, "project": {"name": "MeuPlantao — Operação"}, "state": {"name": "In Progress"}, "labels": []}}, {"terminals": [{"handle": "term-60", "agentIdentity": "codex"}]}, {"terminal": {"tail": ["model:       gpt-5.6-luna low"]}}]
         with patch.object(dispatcher, "orca", side_effect=responses), patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"), patch.object(dispatcher, "create_workspace") as create:
             dispatcher.reconcile_dispatches(state, [WORKTREE])
         self.assertEqual(state["issues"]["MAI-60"]["status"], "dispatched"); create.assert_not_called()
@@ -85,9 +85,9 @@ class DispatcherBehaviourTests(unittest.TestCase):
         state = {"issues": {}}
         wt = dict(WORKTREE)
         responses = [
-            {"issue": {"state": {"name": "In Progress"}, "labels": [{"name": "Orca Ready"}]}},
+            {"issue": {"team": {"name": "Team"}, "project": {"name": "MeuPlantao — Operação"}, "state": {"name": "In Progress"}, "labels": [{"name": "Orca Ready"}]}},
             {}, {},
-            {"issue": {"state": {"name": "In Progress"}, "labels": []}},
+            {"issue": {"team": {"name": "Team"}, "project": {"name": "MeuPlantao — Operação"}, "state": {"name": "In Progress"}, "labels": []}},
             {"terminals": [{"handle": "term-60", "agentIdentity": "codex"}]},
             {"terminal": {"tail": ["model:       gpt-5.6-luna low"]}},
         ]
@@ -106,6 +106,25 @@ class DispatcherBehaviourTests(unittest.TestCase):
         args = [a for c in fake.call_args_list for a in c.args]
         for value in ("attach", "Needs Review", "Orca Ready", "In Progress"): self.assertIn(value, args)
         self.assertNotIn("Done", args)
+
+    def test_attachment_attempt_is_at_most_once_after_crash(self):
+        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "crash-a", "url": "https://example.test/pr/32"}
+        with patch.object(dispatcher, "orca", side_effect=RuntimeError("attachment crash")) as fake, patch.object(dispatcher, "save_state"):
+            with self.assertRaises(RuntimeError): dispatcher.mark_for_review("MAI-60", pr, state)
+        with patch.object(dispatcher, "orca") as retry, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-60", pr, state)
+        self.assertEqual(sum(1 for c in fake.call_args_list if c.args[:3] == ("linear", "attach", "MAI-60")), 1)
+        self.assertFalse(any(c.args[:3] == ("linear", "attach", "MAI-60") for c in retry.call_args_list))
+        self.assertTrue(state["issues"]["MAI-60"]["reviewStages"]["attachmentAttempted"])
+
+    def test_comment_attempt_is_at_most_once_after_crash(self):
+        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "crash-c", "url": "https://example.test/pr/32"}
+        with patch.object(dispatcher, "orca"), patch.object(dispatcher, "linear_comment", side_effect=RuntimeError("comment crash")) as comment, patch.object(dispatcher, "save_state"):
+            with self.assertRaises(RuntimeError): dispatcher.mark_for_review("MAI-60", pr, state)
+        with patch.object(dispatcher, "orca") as retry_orca, patch.object(dispatcher, "linear_comment") as retry_comment, patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-60", pr, state)
+        self.assertEqual(comment.call_count, 1); retry_comment.assert_not_called(); retry_orca.assert_not_called()
+        self.assertTrue(state["issues"]["MAI-60"]["reviewStages"]["commentAttempted"])
 
     def test_same_pr_marker_performs_zero_writes(self):
         state = {"issues": {"MAI-60": {"reviewMarker": "32:abc123"}}}
