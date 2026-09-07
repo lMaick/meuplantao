@@ -20,7 +20,7 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(dispatcher.MAX_DISPATCH_PER_RUN, 1)
 
     def test_review_marker_requires_pr_identity(self):
-        with self.assertRaises(ValueError): dispatcher.mark_for_review("MAI-60", {"issues": {}}, {})
+        with self.assertRaises(ValueError): dispatcher.mark_for_review("MAI-60", {}, {"issues": {}})
 
 
 if __name__ == "__main__": unittest.main()
