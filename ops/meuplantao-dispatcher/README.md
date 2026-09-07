@@ -11,6 +11,9 @@ Copie `config.example.toml` para `config.toml` (ignorado pelo Git) e preencha:
 `repo_name`, `repo_path`, `worktree_root`, `linear_workspace_id`, `team`,
 `project`, `ready_label`, `review_label` e `max_dispatch_per_run`.
 Não coloque tokens, sessões ou credenciais no arquivo.
+`config.example.toml` nunca é usado automaticamente: sem `config.toml`, ou sem
+`MEUPLANTAO_DISPATCHER_CONFIG` apontando para uma configuração válida, a execução
+falha antes de acessar Orca, Linear, GitHub ou criar qualquer recurso.
 
 Em clone limpo, rode `python test_dispatcher.py`. Na máquina configurada, rode
 `run-dispatcher.cmd --dry-run` para validar conectividade e filtros sem criar

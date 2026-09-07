@@ -1,4 +1,4 @@
-orca_dir = "C:/Program Files/Orca"
+orca_dir = "%LOCALAPPDATA%/Programs/orca"
 gh_executable = ""
 github_repo = "<OWNER>/<REPOSITORY>"
 repo_name = "meuplantao"

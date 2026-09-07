@@ -17,18 +17,18 @@ import unicodedata
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = Path(os.environ.get("MEUPLANTAO_DISPATCHER_CONFIG", ROOT / "config.example.toml"))
+CONFIG_PATH = Path(os.environ.get("MEUPLANTAO_DISPATCHER_CONFIG", ROOT / "config.toml"))
 def load_config(path: Path | None = None) -> dict:
-    global CONFIG_PATH
-    if path is not None:
-        CONFIG_PATH = path
-    if not CONFIG_PATH.exists():
-        raise RuntimeError(f"missing dispatcher config: {CONFIG_PATH}")
-    config = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config_path = path or CONFIG_PATH
+    if not config_path.exists():
+        raise RuntimeError(f"missing dispatcher config: {config_path}; copy config.example.toml to config.toml")
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     required = ("orca_dir", "repo_name", "repo_path", "worktree_root", "linear_workspace_id", "team", "project", "gh_executable", "github_repo")
     missing = [key for key in required if key not in config or config[key] is None or (key != "gh_executable" and not config[key])]
     if missing:
         raise RuntimeError("missing dispatcher config keys: " + ", ".join(missing))
+    if any("<" in str(config[key]) or ">" in str(config[key]) for key in required):
+        raise RuntimeError("dispatcher config contains unresolved placeholders")
     if any("S-1-5-" in str(config[key]) for key in required):
         raise RuntimeError("machine-specific SID hardcode is forbidden; use config")
     return config

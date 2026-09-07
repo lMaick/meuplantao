@@ -4,6 +4,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+_fixture_dir = tempfile.TemporaryDirectory()
+_fixture = Path(_fixture_dir.name) / "config.toml"
+_fixture.write_text('''orca_dir = "C:/orca"\ngh_executable = ""\ngithub_repo = "example/repository"\nrepo_name = "meuplantao"\nrepo_path = "C:/repo"\nworktree_root = "C:/worktrees"\nlinear_workspace_id = "workspace-id"\nteam = "Team"\nproject = "MeuPlantao \\u2014 Opera\\u00e7\\u00e3o"\n''', encoding="utf-8")
+import os
+os.environ["MEUPLANTAO_DISPATCHER_CONFIG"] = str(_fixture)
+
 sys.path.insert(0, str(Path(__file__).parent))
 import dispatcher
 
@@ -16,6 +22,12 @@ class DispatcherBehaviourTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.toml"; p.write_text('team = "only-team"\n', encoding="utf-8")
             with self.assertRaises(RuntimeError): dispatcher.load_config(p)
+
+    def test_placeholders_are_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            p.write_text('orca_dir="x"\ngh_executable=""\ngithub_repo="<OWNER>/<REPOSITORY>"\nrepo_name="r"\nrepo_path="p"\nworktree_root="w"\nlinear_workspace_id="<LINEAR_WORKSPACE_ID>"\nteam="t"\nproject="p"\n', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "placeholders"): dispatcher.load_config(p)
 
     def test_new_dispatch_creates_then_syncs_and_records_success(self):
         state = {"issues": {}}; events = []
@@ -77,7 +89,7 @@ class DispatcherBehaviourTests(unittest.TestCase):
     def test_eligibility_query_is_exact_and_truncation_fails(self):
         with patch.object(dispatcher, "orca", return_value={"issues": [], "meta": {}}) as fake: dispatcher.list_eligible_issues()
         args = fake.call_args.args
-        for value in ("MaickAgent", "MeuPlantao — Operação", "Todo", "Orca Ready", dispatcher.LINEAR_WORKSPACE_ID): self.assertIn(value, args)
+        for value in ("Team", "MeuPlantao — Operação", "Todo", "Orca Ready", "workspace-id"): self.assertIn(value, args)
         with patch.object(dispatcher, "orca", return_value={"issues": [], "truncated": True, "meta": {}}):
             with self.assertRaises(RuntimeError): dispatcher.list_eligible_issues()
 
