@@ -1,0 +1,10 @@
+state.json
+state.json.tmp
+dispatcher.log
+dispatcher.lock
+__pycache__/
+*.py[cod]
+config.toml
+*.token
+*.session
+auth.json
