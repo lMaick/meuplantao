@@ -35,9 +35,9 @@ Nunca use chaves secret/service_role nessas variáveis públicas. Não versione
 `.env.local` nem compartilhe seus valores em commits, logs ou capturas de tela.
 A configuração dos clientes segue a [documentação SSR do Supabase](https://supabase.com/docs/guides/auth/server-side/creating-a-client).
 
-### Google OAuth
+### Google e GitHub OAuth
 
-O login e o cadastro também oferecem **Continuar com Google**. O callback local
+O login e o cadastro oferecem **Continuar com Google** e **Continuar com GitHub**. Ambos usam o mesmo callback seguro. O callback local
 é `http://localhost:3000/auth/callback`; em produção, use a mesma rota sob a
 origem pública do app (por exemplo, `https://seu-dominio.example/auth/callback`).
 
@@ -49,6 +49,11 @@ Cloud Console, configure a URI de redirecionamento autorizada do provedor como
 `https://<project-ref>.supabase.co/auth/v1/callback` (a URL exata aparece no
 painel do Supabase), e cadastre as origens autorizadas do app. Nunca coloque
 segredos no repositório, no `.env.local` versionado ou no navegador.
+
+Para GitHub, habilite o provider correspondente no Supabase e configure no GitHub
+OAuth App a mesma callback exibida pelo painel do Supabase. Os dois providers
+retornam pela rota `/auth/callback`, que preserva apenas destinos internos via
+`safeNext`.
 
 Reinicie `npm run dev` após editar o ambiente. Para `npm start`, configure antes de
 `npm run build` e gere um novo build quando os valores mudarem: as variáveis
