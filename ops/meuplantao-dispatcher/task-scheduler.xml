@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Author>MeuPlantao operator</Author><Description>Configurable Linear to Orca dispatcher. Replace placeholders.</Description></RegistrationInfo>
-  <Triggers><TimeTrigger><Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>__START_BOUNDARY__</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>
+  <Triggers><TimeTrigger><Repetition><Interval>PT15M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>__START_BOUNDARY__</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>__USER_OR_SID__</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><AllowStartOnDemand>true</AllowStartOnDemand><ExecutionTimeLimit>PT5M</ExecutionTimeLimit></Settings>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><AllowStartOnDemand>true</AllowStartOnDemand><ExecutionTimeLimit>PT15M</ExecutionTimeLimit></Settings>
   <Actions Context="Author"><Exec><Command>__DISPATCHER_DIR__\run-dispatcher.cmd</Command><WorkingDirectory>__DISPATCHER_DIR__</WorkingDirectory></Exec></Actions>
 </Task>

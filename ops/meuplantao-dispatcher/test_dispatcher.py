@@ -31,6 +31,18 @@ class DispatcherBehaviourTests(unittest.TestCase):
             p = Path(d) / "config.toml"; p.write_text('team = "only-team"\n', encoding="utf-8")
             with self.assertRaises(RuntimeError): dispatcher.load_config(p)
 
+    def test_review_requires_main_base(self):
+        with patch.object(dispatcher, "run", return_value='[{"number":32,"baseRefName":"develop"}]'):
+            with self.assertRaisesRegex(RuntimeError, "not main"): dispatcher.gh_pr_for_branch("feature")
+
+    def test_monitor_requires_local_dispatch_and_matching_linear_scope(self):
+        wt = {"linkedLinearIssue": "MAI-60", "branch": "feature"}
+        state = {"issues": {"MAI-60": {"status": "dispatched"}}}
+        issue = {"team": {"name": "Other"}, "project": {"name": dispatcher.PROJECT}}
+        with patch.object(dispatcher, "orca", return_value={"issue": issue}) as fake, patch.object(dispatcher, "gh_pr_for_branch") as gh:
+            dispatcher.monitor_deliveries(state, [wt])
+        gh.assert_not_called(); self.assertEqual(fake.call_args.args[:2], ("linear", "issue"))
+
     def test_placeholders_are_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.toml"

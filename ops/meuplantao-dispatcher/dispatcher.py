@@ -421,11 +421,13 @@ def gh_pr_for_branch(branch_ref: str) -> dict | None:
         "--repo", GITHUB_REPO,
         "--head", branch,
         "--state", "open",
-        "--json", "number,url,headRefOid,title,statusCheckRollup",
+        "--json", "number,url,headRefOid,title,statusCheckRollup,baseRefName",
     ], timeout=120)
     prs = json.loads(output)
     if len(prs) > 1:
         raise RuntimeError(f"multiple open PRs for branch {branch}")
+    if prs and prs[0].get("baseRefName") != "main":
+        raise RuntimeError(f"PR base branch is not main for {branch}")
     return prs[0] if prs else None
 
 
@@ -434,29 +436,30 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
         raise ValueError("PR identity incomplete; refusing review transition")
     issue_state = state["issues"].setdefault(issue_id, {})
     marker = f"{pr['number']}:{pr['headRefOid']}"
-    if issue_state.get("reviewMarker") == marker:
+    stages = issue_state.setdefault("reviewStages", {})
+    if issue_state.get("reviewMarker") == marker or stages.get("marker") == marker and stages.get("comment"):
         return
-    orca(
-        "linear", "attach", issue_id,
-        "--url", pr["url"],
-        "--title", f"PR #{pr['number']} — aguardando auditoria",
-        "--workspace", LINEAR_WORKSPACE_ID,
-    )
-    orca("linear", "label", "add", issue_id, "--label", REVIEW_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
-    orca("linear", "label", "remove", issue_id, "--label", READY_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
-    # Never move to Done automatically. The team has no In Review state, so keep In Progress + Needs Review.
-    orca("linear", "status", "set", issue_id, "--to", "In Progress", "--workspace", LINEAR_WORKSPACE_ID)
+    stages["marker"] = marker; save_state(state)
+    if not stages.get("attachment"):
+        orca("linear", "attach", issue_id, "--url", pr["url"], "--title", f"PR #{pr['number']} — aguardando auditoria", "--workspace", LINEAR_WORKSPACE_ID)
+        stages["attachment"] = True; save_state(state)
+    if not stages.get("review_label"):
+        orca("linear", "label", "add", issue_id, "--label", REVIEW_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
+        stages["review_label"] = True; save_state(state)
+    if not stages.get("ready_label"):
+        orca("linear", "label", "remove", issue_id, "--label", READY_LABEL, "--workspace", LINEAR_WORKSPACE_ID)
+        stages["ready_label"] = True; save_state(state)
+    if not stages.get("status"):
+        orca("linear", "status", "set", issue_id, "--to", "In Progress", "--workspace", LINEAR_WORKSPACE_ID)
+        stages["status"] = True; save_state(state)
     checks = pr.get("statusCheckRollup") or []
     summary = ", ".join(f"{c.get('name') or c.get('context')}={c.get('conclusion') or c.get('state') or c.get('status')}" for c in checks) or "checks ainda não reportados"
-    linear_comment(
-        issue_id,
-        f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; não foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.",
-        f"review:{marker}",
-    )
+    if not stages.get("comment"):
+        linear_comment(issue_id, f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; não foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.", f"review:{marker}")
+        stages["comment"] = True; save_state(state)
     issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()})
     save_state(state)
     LOG.info("Marked %s for review from PR #%s", issue_id, pr["number"])
-
 
 def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
     for worktree in worktrees:
@@ -464,7 +467,15 @@ def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
         branch = str(worktree.get("branch") or worktree.get("git", {}).get("branch") or "")
         if not issue_id or not branch:
             continue
+        local = state.get("issues", {}).get(issue_id, {})
+        if local.get("status") not in {"dispatched", "needs-review"}:
+            continue
+        if str(worktree.get("linkedLinearIssue") or "").upper() != issue_id:
+            continue
         try:
+            current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+            if current.get("team", {}).get("name") != TEAM or current.get("project", {}).get("name") != PROJECT:
+                continue
             pr = gh_pr_for_branch(branch)
             if pr:
                 mark_for_review(issue_id, pr, state)
