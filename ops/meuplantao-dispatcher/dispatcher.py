@@ -445,9 +445,11 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
         raise ValueError("PR identity incomplete; refusing review transition")
     issue_state = state["issues"].setdefault(issue_id, {})
     marker = f"{pr['number']}:{pr['headRefOid']}"
-    stages = issue_state.setdefault("reviewStages", {})
-    if issue_state.get("reviewMarker") == marker or stages.get("commentDone") or stages.get("commentAttempted"):
+    if issue_state.get("reviewMarker") == marker:
         return
+    if issue_state.get("reviewStages", {}).get("marker") != marker:
+        issue_state["reviewStages"] = {}
+    stages = issue_state["reviewStages"]
     stages["marker"] = marker; save_state(state)
     if not stages.get("attachmentDone") and not stages.get("attachmentAttempted"):
         stages["attachmentAttempted"] = True; save_state(state)

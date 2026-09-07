@@ -125,6 +125,17 @@ class DispatcherBehaviourTests(unittest.TestCase):
             dispatcher.mark_for_review("MAI-60", pr, state)
         self.assertEqual(comment.call_count, 1); retry_comment.assert_not_called(); retry_orca.assert_not_called()
         self.assertTrue(state["issues"]["MAI-60"]["reviewStages"]["commentAttempted"])
+        self.assertEqual(state["issues"]["MAI-60"]["status"], "needs-review")
+        self.assertEqual(state["issues"]["MAI-60"]["reviewMarker"], "32:crash-c")
+
+    def test_new_marker_resets_stages_and_applies_new_review_effects(self):
+        state = {"issues": {"MAI-60": {"reviewMarker": "32:old", "reviewStages": {"marker": "32:old", "attachmentDone": True, "commentDone": True}}}}
+        pr = {"number": 32, "headRefOid": "new-sha", "url": "https://example.test/pr/32", "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca") as fake, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-60", pr, state)
+        args = [a for c in fake.call_args_list for a in c.args]
+        self.assertEqual(args.count("attach"), 1); self.assertEqual(state["issues"]["MAI-60"]["reviewMarker"], "32:new-sha")
+        self.assertEqual(state["issues"]["MAI-60"]["headSha"], "new-sha")
 
     def test_same_pr_marker_performs_zero_writes(self):
         state = {"issues": {"MAI-60": {"reviewMarker": "32:abc123"}}}
