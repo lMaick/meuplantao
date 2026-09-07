@@ -1,6 +1,6 @@
 # MAI-59 - Validacao Hermes -> Linear -> Orca
 
-Data: 2026-09-07  
+Data: 2026-09-07
 Issue: [MAI-59](https://linear.app/maickagent/issue/MAI-59/validar-integracao-hermes-linear-orca)  
 Workspace Linear: `MaickAgent`  
 Projeto: `MeuPlantao - Operacao`
