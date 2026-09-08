@@ -5,6 +5,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { authCallbackUrl } from "@/lib/auth/redirect";
 
 type Mode = "login" | "signup";
 
@@ -15,6 +16,7 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<"google" | "github" | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,8 +48,21 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
     }
   }
 
+  async function handleOAuthSignIn(provider: "google" | "github") {
+    setError(null); setMessage(null); setOauthLoading(provider);
+    try {
+      const { error: oauthError } = await createClient().auth.signInWithOAuth({ provider, options: { redirectTo: authCallbackUrl(window.location.origin, next) } });
+      if (oauthError) setError(oauthError.message);
+    } catch { setError(`Não foi possível iniciar o acesso com ${provider === "google" ? "Google" : "GitHub"}. Tente novamente.`); }
+    finally { setOauthLoading(null); }
+  }
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-5" aria-busy={loading}>
+    <div className="space-y-5" aria-busy={loading || oauthLoading !== null}>
+      <Button type="button" variant="outline" className="h-11 w-full" disabled={loading || oauthLoading !== null} onClick={() => handleOAuthSignIn("google")}>{oauthLoading === "google" ? "Abrindo Google..." : "Continuar com Google"}</Button>
+      <Button type="button" variant="outline" className="h-11 w-full" disabled={loading || oauthLoading !== null} onClick={() => handleOAuthSignIn("github")}>{oauthLoading === "github" ? "Abrindo GitHub..." : "Continuar com GitHub"}</Button>
+      <div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="h-px flex-1 bg-border" />ou<span className="h-px flex-1 bg-border" /></div>
+    <form onSubmit={handleSubmit} className="space-y-5">
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">E-mail</label>
         <input id="email" name="email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
@@ -64,5 +79,6 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
         {loading ? "Aguarde..." : mode === "login" ? "Entrar" : "Criar conta"}
       </Button>
     </form>
+    </div>
   );
 }
