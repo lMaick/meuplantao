@@ -55,7 +55,8 @@ begin
   return coalesce(new, old);
 end; $$;
 
-create or replace view public.obligations_with_balance with (security_invoker = true) as
+drop view if exists public.obligations_with_balance;
+create view public.obligations_with_balance with (security_invoker = true) as
 select o.*, greatest(0, o.valor_devido - coalesce(sum(p.valor) filter (where p.status = 'registrado'), 0))::numeric(12,2) as saldo,
   (o.valor_devido is not null and o.valor_devido > coalesce(sum(p.valor) filter (where p.status = 'registrado'), 0) and o.data_prevista < current_date) as atrasada
 from public.obligations o left join public.payments p on p.obligation_id = o.id and p.user_id = o.user_id group by o.id;
