@@ -2,6 +2,23 @@
 -- the obligation when a realized shift is reverted without payments.
 -- All functions remain security invoker; RLS and ownership FKs stay active.
 
+-- Refuse to reinterpret incompatible legacy rows. The migration must be
+-- retried after an explicit, reviewed reconciliation; it never deletes rows.
+do $$
+begin
+  if exists (
+    select 1
+      from public.obligations o
+      join public.shifts s on s.id = o.shift_id and s.user_id = o.user_id
+     where s.status <> 'realizado'
+  ) then
+    raise exception using
+      errcode = '23514',
+      message = 'MAI-65 abortada: existem obrigacoes ligadas a plantao nao realizado; reconcilie os dados legados sem apagar historico e reaplique a migration';
+  end if;
+end;
+$$;
+
 create or replace function public.validate_obligation_financial_integrity()
 returns trigger
 language plpgsql
@@ -11,6 +28,7 @@ as $$
 declare
   v_shift public.shifts;
   v_registered numeric(12, 2);
+  v_reconciling_shift text := current_setting('app.reconciling_obligation_shift_id', true);
 begin
   if tg_op = 'UPDATE' and new.shift_id is distinct from old.shift_id then
     raise exception using errcode = '23514', message = 'O plantao da obrigacao nao pode ser alterado';
@@ -38,6 +56,10 @@ begin
   if tg_op = 'DELETE' and v_registered > 0 then
     raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao com pagamentos registrados';
   end if;
+  if tg_op = 'DELETE' and exists (select 1 from public.shifts where id = old.shift_id and user_id = old.user_id and status = 'realizado')
+     and v_reconciling_shift is distinct from old.shift_id::text then
+    raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao de plantao realizado';
+  end if;
   if tg_op = 'UPDATE' and new.valor_devido is not null and new.valor_devido < v_registered then
     raise exception using errcode = '23514', message = 'A alteracao deixaria a obrigacao inconsistente';
   end if;
@@ -54,6 +76,7 @@ as $$
 declare
   v_obligation public.obligations;
   v_registered numeric(12, 2);
+  v_rpc_shift text := current_setting('app.saving_shift_obligation_id', true);
 begin
   select coalesce(sum(p.valor), 0)::numeric(12, 2) into v_registered
     from public.payments p
@@ -68,6 +91,11 @@ begin
   if tg_op = 'UPDATE' and new.valor_previsto is not null and new.valor_previsto < v_registered then
     raise exception using errcode = '23514', message = 'A alteracao deixaria o plantao inconsistente';
   end if;
+  if tg_op = 'UPDATE' and old.status = 'realizado' and new.valor_previsto is distinct from old.valor_previsto
+     and exists (select 1 from public.obligations where shift_id = old.id and user_id = old.user_id)
+     and v_rpc_shift is distinct from old.id::text then
+    raise exception using errcode = '23514', message = 'Altere valor do plantao realizado pela RPC financeira';
+  end if;
   if tg_op = 'UPDATE' and v_registered > 0 and old.status = 'realizado'
      and new.status in ('agendado', 'cancelado') then
     raise exception using errcode = '23514', message = 'Nao e possivel reverter ou cancelar plantao com pagamentos registrados';
@@ -77,6 +105,7 @@ begin
      and new.status in ('agendado', 'cancelado') then
     select * into v_obligation from public.obligations where shift_id = old.id and user_id = old.user_id for update;
     if found then
+      perform set_config('app.reconciling_obligation_shift_id', old.id::text, true);
       delete from public.obligations where id = v_obligation.id and user_id = old.user_id;
     end if;
   end if;
@@ -112,6 +141,7 @@ begin
   else
     select * into v_shift from public.shifts where id = p_shift_id and user_id = v_user_id for update;
     if not found then raise exception using errcode = '23503', message = 'Plantao nao encontrado para este usuario'; end if;
+    perform set_config('app.saving_shift_obligation_id', p_shift_id::text, true);
     update public.shifts set place_id=p_place_id, data=p_data, hora_inicio=p_hora_inicio, hora_fim=p_hora_fim,
       valor_previsto=p_valor_previsto, status=p_status, updated_at=now()
       where id=p_shift_id and user_id=v_user_id returning * into v_shift;

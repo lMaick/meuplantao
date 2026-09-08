@@ -92,6 +92,11 @@ test("MAI-65 hardens obligation ownership and reversal reconciliation", () => {
   assert.match(hardening, /old\.status = 'realizado'/);
   assert.match(hardening, /new\.status in \('agendado', 'cancelado'\)/);
   assert.match(hardening, /v_registered > 0/);
+  assert.match(hardening, /app\.reconciling_obligation_shift_id/);
+  assert.match(hardening, /app\.saving_shift_obligation_id/);
+  assert.match(hardening, /Altere valor do plantao realizado pela RPC financeira/);
+  assert.match(hardening, /MAI-65 abortada/);
+  assert.match(hardening, /reconcilie os dados legados/);
   assert.match(hardening, /security invoker/);
   assert.match(hardening, /grant execute.*authenticated/);
 });
