@@ -6,6 +6,7 @@ const migration = fs.readFileSync("supabase/migrations/20260906120000_atomic_shi
 const ui = fs.readFileSync("src/components/shifts/shift-calendar.tsx", "utf8");
 const dal = fs.readFileSync("src/lib/shifts/index.ts", "utf8");
 const removal = fs.readFileSync("supabase/migrations/20260906130000_remove_legacy_obligation_sync.sql", "utf8");
+const hardening = fs.readFileSync("supabase/migrations/20260908193728_financial_obligation_consistency.sql", "utf8");
 
 function save(state, input) {
   if (input.userId !== state.userId) throw new Error("ownership");
@@ -82,4 +83,15 @@ test("RPC allows increase and blocks reduction/reversal with registered payment"
   assert.throws(() => save(state, { userId: "a", status: "realizado", value: 59, placeId: "p", placeOwner: "a", dueDate: "2026-09-11" }), /abaixo/);
   assert.throws(() => save(state, { userId: "a", status: "agendado", value: null, placeId: "p", placeOwner: "a", dueDate: null }), /transicao/);
   assert.throws(() => save(state, { userId: "a", status: "cancelado", value: null, placeId: "p", placeOwner: "a", dueDate: null }), /transicao/);
+});
+
+test("MAI-65 hardens obligation ownership and reversal reconciliation", () => {
+  assert.match(hardening, /new\.shift_id is distinct from old\.shift_id/);
+  assert.match(hardening, /Obrigacao somente pode pertencer a plantao realizado/);
+  assert.match(hardening, /delete from public\.obligations/);
+  assert.match(hardening, /old\.status = 'realizado'/);
+  assert.match(hardening, /new\.status in \('agendado', 'cancelado'\)/);
+  assert.match(hardening, /v_registered > 0/);
+  assert.match(hardening, /security invoker/);
+  assert.match(hardening, /grant execute.*authenticated/);
 });
