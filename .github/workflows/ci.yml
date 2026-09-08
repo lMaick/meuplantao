@@ -27,6 +27,15 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
 
+  dispatcher-python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python ops/meuplantao-dispatcher/test_dispatcher.py
+
   real-e2e:
     name: Supabase real E2E
     runs-on: ubuntu-latest
