@@ -98,6 +98,11 @@ test("MAI-65 hardens obligation ownership and reversal reconciliation", () => {
   assert.match(hardening, /MAI-65 abortada/);
   assert.match(hardening, /reconcilie os dados legados/);
   assert.match(hardening, /historico de pagamentos/);
+  assert.match(hardening, /Reconciliation runbook/);
+  assert.match(hardening, /not exists \(select 1 from public\.payments/);
+  assert.match(hardening, /create or replace function public\.validate_obligation_financial_integrity/);
+  assert.match(hardening, /create or replace function public\.validate_shift_financial_integrity/);
+  assert.match(hardening, /create or replace function public\.save_shift_with_obligation/);
   assert.match(hardening, /security invoker/);
   assert.match(hardening, /grant execute.*authenticated/);
 });

@@ -24,12 +24,19 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const saveShift = (token, values) => request(token, "rpc/save_shift_with_obligation", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
 
   const editableShift = await createShift(a, { data: "2020-01-01" }); await realize(a, editableShift.id); const editable = await obligationFor(a, editableShift.id);
+  await rejected(patch(a, "shifts", editableShift.id, { valor_previsto: 999 }), "PATCH direto de valor realizado sem pagamento");
+  assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
   await ok(await patch(a, "obligations", editable.id, { valor_devido: 120, data_prevista: "2030-09-10", responsavel_place_id: null, responsavel_contact_id: contact.id }), "edição válida de valor/data/responsável");
   const rpcInput = { p_shift_id: editableShift.id, p_place_id: place.id, p_data: "2020-01-01", p_hora_inicio: "08:00", p_hora_fim: "09:00", p_valor_previsto: 120, p_status: "realizado", p_data_prevista: "2030-09-10", p_responsavel_place_id: null, p_responsavel_contact_id: contact.id };
   await ok(await saveShift(a, rpcInput), "retry RPC financeiro inicial"); await ok(await saveShift(a, rpcInput), "retry RPC financeiro idempotente"); assert.equal((await request(a, `obligations?shift_id=eq.${editableShift.id}&select=id`)).body.length, 1);
   const otherShift = await createShift(a, { hora_inicio: "10:00", hora_fim: "11:00" }); await realize(a, otherShift.id);
   await rejected(patch(a, "obligations", editable.id, { shift_id: otherShift.id }), "troca direta de shift_id"); assert.equal((await obligationFor(a, editableShift.id)).shift_id, editableShift.id);
   await rejected(remove(a, "obligations", editable.id), "DELETE direto enquanto realizado"); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
+  await rejected(remove(a, "shifts", editableShift.id), "DELETE direto de shift realizado"); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
+  const bObligationEdit = await patch(b, "obligations", editable.id, { valor_devido: 999 }); assert.equal(bObligationEdit.r.ok, true); assert.deepEqual(bObligationEdit.body, [], "RLS B não atualiza obligation A");
+  const bObligationDelete = await remove(b, "obligations", editable.id); assert.equal(bObligationDelete.r.ok, true); assert.deepEqual(bObligationDelete.body, [], "RLS B não remove obligation A");
+  const bReversal = await patch(b, "shifts", editableShift.id, { status: "cancelado" }); assert.equal(bReversal.r.ok, true); assert.deepEqual(bReversal.body, [], "RLS B não reverte shift A");
+  const editableAfterB = (await (await request(a, `shifts?id=eq.${editableShift.id}&select=status,valor_previsto`)).body)[0]; assert.deepEqual(editableAfterB, { status: "realizado", valor_previsto: 120 }); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
 
   const incompatible = await createShift(a, { hora_inicio: "12:00", hora_fim: "13:00" });
   await rejected(request(a, "obligations", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, shift_id: incompatible.id, valor_devido: 10, data_prevista: date, responsavel_place_id: place.id }) }), "criação em plantão agendado");

@@ -4,6 +4,20 @@
 
 -- Refuse to reinterpret incompatible legacy rows. The migration must be
 -- retried after an explicit, reviewed reconciliation; it never deletes rows.
+-- Reconciliation runbook (operator-controlled, in an isolated transaction):
+--   begin;
+--   select o.id, o.shift_id, s.status
+--     from public.obligations o join public.shifts s
+--       on s.id = o.shift_id and s.user_id = o.user_id
+--    where s.status <> 'realizado' for update;
+--   -- review/audit the result; only rows with zero payment history may be
+--   -- explicitly removed, never rows referenced by payments;
+--   delete from public.obligations o
+--    where exists (select 1 from public.shifts s where s.id = o.shift_id
+--      and s.user_id = o.user_id and s.status <> 'realizado')
+--      and not exists (select 1 from public.payments p where p.obligation_id = o.id and p.user_id = o.user_id);
+--   commit;
+-- Re-run this migration only after that reviewed reconciliation succeeds.
 do $$
 begin
   if exists (
