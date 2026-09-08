@@ -26,3 +26,11 @@ test("offers GitHub OAuth with the same safe callback contract", async () => {
   assert.match(source, /Continuar com GitHub/);
   assert.match(source, /authCallbackUrl\(window\.location\.origin, next\)/);
 });
+
+test("callback handles provider cancellation without exposing provider details", async () => {
+  const source = await readFile(new URL("../src/app/auth/callback/route.ts", import.meta.url), "utf8");
+  assert.match(source, /searchParams\.has\("error"\)/);
+  assert.match(source, /url\.searchParams\.set\("error", "oauth"\)/);
+  assert.match(source, /url\.searchParams\.set\("next", next\)/);
+  assert.doesNotMatch(source, /error_description/);
+});

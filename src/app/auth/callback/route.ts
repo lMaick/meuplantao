@@ -4,13 +4,26 @@ import { getSupabaseConfig } from "@/lib/supabase/config";
 import { safeNext } from "@/lib/auth/redirect";
 
 export async function GET(request: NextRequest) {
+  const next = safeNext(request.nextUrl.searchParams.get("next") ?? undefined);
+  const loginWithError = () => {
+    const url = new URL("/login", request.url);
+    url.searchParams.set("error", "oauth");
+    url.searchParams.set("next", next);
+    return NextResponse.redirect(url);
+  };
   const config = getSupabaseConfig();
-  if (!config) return NextResponse.redirect(new URL("/login?error=configuration", request.url));
+  if (!config) {
+    const url = new URL("/login", request.url);
+    url.searchParams.set("error", "configuration");
+    url.searchParams.set("next", next);
+    return NextResponse.redirect(url);
+  }
+  if (request.nextUrl.searchParams.has("error")) return loginWithError();
   const code = request.nextUrl.searchParams.get("code");
-  if (!code) return NextResponse.redirect(new URL("/login?error=oauth", request.url));
-  const response = NextResponse.redirect(new URL(safeNext(request.nextUrl.searchParams.get("next") ?? undefined), request.url));
+  if (!code) return loginWithError();
+  const response = NextResponse.redirect(new URL(next, request.url));
   const supabase = createServerClient(config.url, config.key, { cookies: { getAll: () => request.cookies.getAll(), setAll: (cookies) => cookies.forEach(({ name, value, options }) => { request.cookies.set(name, value); response.cookies.set(name, value, options); }) } });
   const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) return NextResponse.redirect(new URL("/login?error=oauth", request.url));
+  if (error) return loginWithError();
   return response;
 }
