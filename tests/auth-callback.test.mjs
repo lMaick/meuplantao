@@ -20,6 +20,9 @@ process.env.NEXT_PUBLIC_SUPABASE_URL = "http://localhost:54321";
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-key";
 const { NextRequest } = await import("next/server.js");
 const { GET } = await import("../src/app/auth/callback/route.ts");
+const { updateSession } = await import("../src/lib/auth/session.ts");
+const { oauthProviderConfig } = await import("../src/lib/auth/redirect.ts");
+const { logoutAndRedirect } = await import("../src/lib/auth/logout.ts");
 
 function request(query = "code=ok&next=%2Fdashboard") {
   return new NextRequest(`http://localhost/auth/callback?${query}`, { headers: { cookie: "sb-old=1" } });
@@ -48,4 +51,28 @@ test("callback preserves safe next on provider cancellation", async () => {
   globalThis.callbackClient = { auth: { exchangeCodeForSession: async () => assert.fail("must not exchange cancelled flow") } };
   const response = await GET(request("error=access_denied&error_description=private&next=%2Fcalendario"));
   assert.equal(response.headers.get("location"), "http://localhost/login?error=oauth&next=%2Fcalendario");
+});
+
+test("Preview OAuth flow keeps the Preview origin through session refresh and logout", async () => {
+  const preview = "https://meuplantao-b534j60g3-lmaick.vercel.app";
+  for (const provider of ["google", "github"]) {
+    assert.equal(oauthProviderConfig(provider, preview, "/").options.redirectTo, `${preview}/auth/callback?next=%2F`);
+  }
+
+  const events = [];
+  globalThis.callbackClient = {
+    auth: {
+      exchangeCodeForSession: async () => ({ error: null }),
+      getUser: async () => ({ data: { user: { id: "preview-user" } }, error: null }),
+      signOut: async () => { events.push("signOut"); return { error: null }; },
+    },
+  };
+  const callback = await GET(new NextRequest(`${preview}/auth/callback?code=preview-code&next=%2F`));
+  assert.equal(callback.headers.get("location"), `${preview}/`);
+  const refreshed = await updateSession(new NextRequest(`${preview}/dashboard`));
+  assert.equal(refreshed.status, 200);
+  const redirects = [];
+  assert.equal(await logoutAndRedirect(() => globalThis.callbackClient.auth.signOut(), (path) => redirects.push(path)), true);
+  assert.deepEqual(events, ["signOut"]);
+  assert.deepEqual(redirects, ["/login"]);
 });
