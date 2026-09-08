@@ -22,11 +22,10 @@ insert into public.places (id, user_id, nome)
 values ('00000000-0000-0000-0000-000000000070', '00000000-0000-0000-0000-000000000069', 'Legacy history fixture');
 insert into public.shifts (id, user_id, place_id, data, hora_inicio, hora_fim, valor_previsto, status)
 values ('00000000-0000-0000-0000-000000000071', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000070', '2026-01-03', '08:00', '09:00', 100, 'realizado');
-insert into public.obligations (id, user_id, shift_id, valor_devido, data_prevista, responsavel_place_id)
-values ('00000000-0000-0000-0000-000000000072', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000071', 100, '2026-01-04', '00000000-0000-0000-0000-000000000070');
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000069', true);
 insert into public.payments (id, user_id, obligation_id, valor, data_pagamento, status)
-values ('00000000-0000-0000-0000-000000000073', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000072', 40, '2026-01-04', 'registrado');
+select '00000000-0000-0000-0000-000000000073', '00000000-0000-0000-0000-000000000069', o.id, 40, '2026-01-04'::date, 'registrado'
+  from public.obligations o where o.shift_id = '00000000-0000-0000-0000-000000000071';
 update public.payments set status = 'cancelado' where id = '00000000-0000-0000-0000-000000000073';
 update public.shifts set status = 'agendado' where id = '00000000-0000-0000-0000-000000000071';
 reset request.jwt.claim.sub;
@@ -44,7 +43,7 @@ after="$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations whe
 test "$after" = 1
 shift_status="$(psql "$DATABASE_URL" -Atqc "select status from public.shifts where id = '00000000-0000-0000-0000-000000000067'")"
 test "$shift_status" = agendado
-test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations where id = '00000000-0000-0000-0000-000000000072'")" = 1
+test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations where shift_id = '00000000-0000-0000-0000-000000000071'")" = 1
 test "$(psql "$DATABASE_URL" -Atqc "select status from public.payments where id = '00000000-0000-0000-0000-000000000073'")" = cancelado
 
 # Explicit, reviewed reconciliation: only the incompatible row with no
@@ -70,10 +69,10 @@ update public.shifts
 commit;
 SQL
 test "$(psql "$DATABASE_URL" -Atqc "select status from public.shifts where id = '00000000-0000-0000-0000-000000000071'")" = realizado
-test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations where id = '00000000-0000-0000-0000-000000000072'")" = 1
+test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations where shift_id = '00000000-0000-0000-0000-000000000071'")" = 1
 test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.payments where id = '00000000-0000-0000-0000-000000000073'")" = 1
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration_file" >/dev/null
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration_file" >/dev/null
-test "$(psql "$DATABASE_URL" -Atqc "select (select count(*) from public.obligations where id = '00000000-0000-0000-0000-000000000072') || ':' || (select status from public.shifts where id = '00000000-0000-0000-0000-000000000071') || ':' || (select count(*) from public.payments where id = '00000000-0000-0000-0000-000000000073')")" = 1:realizado:1
+test "$(psql "$DATABASE_URL" -Atqc "select (select count(*) from public.obligations where shift_id = '00000000-0000-0000-0000-000000000071') || ':' || (select status from public.shifts where id = '00000000-0000-0000-0000-000000000071') || ':' || (select count(*) from public.payments where id = '00000000-0000-0000-0000-000000000073')")" = 1:realizado:1
 echo 'MAI-65 legacy fail-closed, explicit reconciliation, and same-database idempotency passed'
