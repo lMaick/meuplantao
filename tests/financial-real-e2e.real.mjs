@@ -7,7 +7,7 @@ async function auth(email, password) { const r = await fetch(endpoint("auth/v1/t
 const userId = (token) => JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")).sub;
 async function request(token, path, init = {}) { const r = await fetch(endpoint(`rest/v1/${path}`), { ...init, headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, "content-type": "application/json", ...(init.headers ?? {}) } }); const text = await r.text(); let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; } return { r, body }; }
 const ok = async (result, label) => { assert.equal(result.r.ok, true, `${label}: HTTP ${result.r.status} ${JSON.stringify(result.body)}`); return result.body; };
-const rejected = async (result, label) => { assert.equal(result.r.ok, false, `${label} deveria ser rejeitado: HTTP ${result.r.status} ${JSON.stringify(result.body)}`); return result; };
+const rejected = async (result, label) => { const resolved = await result; assert.equal(resolved.r.ok, false, `${label} deveria ser rejeitado: HTTP ${resolved.r.status} ${JSON.stringify(resolved.body)}`); return resolved; };
 const patch = (token, table, id, values) => request(token, `${table}?id=eq.${id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
 const remove = (token, table, id) => request(token, `${table}?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=representation" } });
 
