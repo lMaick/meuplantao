@@ -1,6 +1,7 @@
 -- Financial calendar policy: all date-only comparisons use America/Bahia.
 -- An obligation dated today is not overdue; it is overdue from tomorrow onward.
-create or replace view public.obligations_with_balance with (security_invoker = true) as
+drop view if exists public.obligations_with_balance;
+create view public.obligations_with_balance with (security_invoker = true) as
 select o.*, greatest(0, o.valor_devido - coalesce(sum(p.valor) filter (where p.status = 'registrado'), 0))::numeric(12,2) as saldo,
   (o.valor_devido is not null and o.valor_devido > coalesce(sum(p.valor) filter (where p.status = 'registrado'), 0)
    and o.data_prevista < (now() at time zone 'America/Bahia')::date) as atrasada

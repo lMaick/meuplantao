@@ -24,6 +24,9 @@ create policy "obligations_select_own" on public.obligations for select to authe
 create policy "obligations_insert_own" on public.obligations for insert to authenticated with check ((select auth.uid()) = user_id);
 create policy "obligations_update_own" on public.obligations for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "obligations_delete_own" on public.obligations for delete to authenticated using ((select auth.uid()) = user_id);
+-- The previous migration declared register_payment with p_shift_id. PostgreSQL
+-- cannot rename an input parameter through CREATE OR REPLACE FUNCTION.
+drop function if exists public.register_payment(uuid, numeric, date);
 create or replace function public.validate_obligation_financial_integrity() returns trigger language plpgsql security invoker set search_path = public as $$
 declare v_shift public.shifts; v_registered numeric(12,2);
 begin
