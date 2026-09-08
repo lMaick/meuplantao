@@ -97,6 +97,7 @@ test("MAI-65 hardens obligation ownership and reversal reconciliation", () => {
   assert.match(hardening, /Altere valor do plantao realizado pela RPC financeira/);
   assert.match(hardening, /MAI-65 abortada/);
   assert.match(hardening, /reconcilie os dados legados/);
+  assert.match(hardening, /historico de pagamentos/);
   assert.match(hardening, /security invoker/);
   assert.match(hardening, /grant execute.*authenticated/);
 });

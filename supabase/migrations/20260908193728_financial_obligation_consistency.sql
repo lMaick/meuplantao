@@ -56,6 +56,9 @@ begin
   if tg_op = 'DELETE' and v_registered > 0 then
     raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao com pagamentos registrados';
   end if;
+  if tg_op = 'DELETE' and exists (select 1 from public.payments where obligation_id = old.id and user_id = old.user_id) then
+    raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao com historico de pagamentos';
+  end if;
   if tg_op = 'DELETE' and exists (select 1 from public.shifts where id = old.shift_id and user_id = old.user_id and status = 'realizado')
      and v_reconciling_shift is distinct from old.shift_id::text then
     raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao de plantao realizado';
@@ -99,6 +102,11 @@ begin
   if tg_op = 'UPDATE' and v_registered > 0 and old.status = 'realizado'
      and new.status in ('agendado', 'cancelado') then
     raise exception using errcode = '23514', message = 'Nao e possivel reverter ou cancelar plantao com pagamentos registrados';
+  end if;
+  if tg_op = 'UPDATE' and old.status = 'realizado'
+     and new.status in ('agendado', 'cancelado')
+     and exists (select 1 from public.payments p join public.obligations o on o.id = p.obligation_id where o.shift_id = old.id and p.user_id = old.user_id) then
+    raise exception using errcode = '23514', message = 'Nao e possivel reverter plantao com historico de pagamentos';
   end if;
 
   if tg_op = 'UPDATE' and old.status = 'realizado'
