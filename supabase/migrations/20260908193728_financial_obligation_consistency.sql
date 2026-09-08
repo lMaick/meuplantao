@@ -18,6 +18,11 @@
 --      and not exists (select 1 from public.payments p where p.obligation_id = o.id and p.user_id = o.user_id);
 --   commit;
 -- Re-run this migration only after that reviewed reconciliation succeeds.
+alter table public.shifts add column if not exists idempotency_key text;
+create unique index if not exists shifts_user_id_idempotency_key_idx
+  on public.shifts (user_id, idempotency_key)
+  where idempotency_key is not null;
+
 do $$
 begin
   if exists (
@@ -135,10 +140,13 @@ begin
 end;
 $$;
 
+drop function if exists public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid);
+
 create or replace function public.save_shift_with_obligation(
   p_shift_id uuid, p_place_id uuid, p_data date, p_hora_inicio time, p_hora_fim time,
   p_valor_previsto numeric, p_status text, p_data_prevista date default null,
-  p_responsavel_place_id uuid default null, p_responsavel_contact_id uuid default null
+  p_responsavel_place_id uuid default null, p_responsavel_contact_id uuid default null,
+  p_idempotency_key text default null
 ) returns public.shifts
 language plpgsql
 security invoker
@@ -149,6 +157,7 @@ declare
   v_shift public.shifts;
   v_obligation public.obligations;
   v_registered numeric(12, 2);
+  v_existing_id uuid;
 begin
   if v_user_id is null then raise exception using errcode = '28000', message = 'Autenticacao obrigatoria'; end if;
   if p_status not in ('agendado', 'realizado', 'cancelado') then raise exception using errcode = '23514', message = 'Status de plantao invalido'; end if;
@@ -157,9 +166,26 @@ begin
      or p_data_prevista is null or (p_responsavel_place_id is null) = (p_responsavel_contact_id is null)) then
     raise exception using errcode = '23514', message = 'Plantao realizado exige valor, data prevista e exatamente um responsavel';
   end if;
+  if p_shift_id is null and p_idempotency_key is not null then
+    if length(btrim(p_idempotency_key)) = 0 or length(p_idempotency_key) > 200 then
+      raise exception using errcode = '23514', message = 'Chave de idempotencia invalida';
+    end if;
+    perform pg_advisory_xact_lock(hashtextextended(v_user_id::text || ':' || p_idempotency_key, 0));
+    select id into v_existing_id from public.shifts
+      where user_id = v_user_id and idempotency_key = p_idempotency_key for update;
+    if found then
+      select * into v_shift from public.shifts where id = v_existing_id;
+      if v_shift.place_id is distinct from p_place_id or v_shift.data is distinct from p_data
+         or v_shift.hora_inicio is distinct from p_hora_inicio or v_shift.hora_fim is distinct from p_hora_fim
+         or v_shift.valor_previsto is distinct from p_valor_previsto or v_shift.status is distinct from p_status then
+        raise exception using errcode = '23514', message = 'Chave de idempotencia ja usada com payload diferente';
+      end if;
+      return v_shift;
+    end if;
+  end if;
   if p_shift_id is null then
-    insert into public.shifts (user_id, place_id, data, hora_inicio, hora_fim, valor_previsto, status)
-      values (v_user_id, p_place_id, p_data, p_hora_inicio, p_hora_fim, p_valor_previsto, p_status) returning * into v_shift;
+    insert into public.shifts (user_id, place_id, data, hora_inicio, hora_fim, valor_previsto, status, idempotency_key)
+      values (v_user_id, p_place_id, p_data, p_hora_inicio, p_hora_fim, p_valor_previsto, p_status, p_idempotency_key) returning * into v_shift;
   else
     select * into v_shift from public.shifts where id = p_shift_id and user_id = v_user_id for update;
     if not found then raise exception using errcode = '23503', message = 'Plantao nao encontrado para este usuario'; end if;
@@ -186,5 +212,5 @@ begin
 end;
 $$;
 
-revoke execute on function public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid) from public, anon;
-grant execute on function public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid) to authenticated;
+revoke execute on function public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid,text) from public, anon;
+grant execute on function public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid,text) to authenticated;

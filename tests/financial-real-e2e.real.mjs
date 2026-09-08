@@ -23,6 +23,14 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const pay = (token, obligation, value) => request(token, "rpc/register_payment", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ p_obligation_id: obligation, p_valor: value, p_data_pagamento: date }) });
   const saveShift = (token, values) => request(token, "rpc/save_shift_with_obligation", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
 
+  const creationKey = `mai65-create-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const creationInput = { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "06:00", p_hora_fim: "07:00", p_valor_previsto: 80, p_status: "realizado", p_data_prevista: "2030-09-11", p_responsavel_place_id: place.id, p_responsavel_contact_id: null, p_idempotency_key: creationKey };
+  const createdFirst = (await ok(await saveShift(a, creationInput), "criação RPC idempotente inicial"))[0];
+  const createdRetry = (await ok(await saveShift(a, creationInput), "retry de criação RPC idempotente"))[0];
+  assert.equal(createdRetry.id, createdFirst.id, "retry de criação deve retornar o mesmo shift");
+  assert.equal((await request(a, `shifts?user_id=eq.${aId}&idempotency_key=eq.${encodeURIComponent(creationKey)}&select=id`)).body.length, 1, "chave deve produzir um shift");
+  assert.equal((await request(a, `obligations?shift_id=eq.${createdFirst.id}&select=id`)).body.length, 1, "chave deve produzir uma obligation");
+
   const editableShift = await createShift(a, { data: "2020-01-01" }); await realize(a, editableShift.id); const editable = await obligationFor(a, editableShift.id);
   await rejected(patch(a, "shifts", editableShift.id, { valor_previsto: 999 }), "PATCH direto de valor realizado sem pagamento");
   assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
