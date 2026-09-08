@@ -13,3 +13,7 @@ export function authCallbackUrl(origin: string, next: string): string {
   url.searchParams.set("next", safeNext(next));
   return url.toString();
 }
+
+export function oauthProviderConfig(provider: "google" | "github", origin: string, next: string) {
+  return { provider, options: { redirectTo: authCallbackUrl(origin, next) } };
+}

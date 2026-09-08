@@ -23,7 +23,11 @@ export async function GET(request: NextRequest) {
   if (!code) return loginWithError();
   const response = NextResponse.redirect(new URL(next, request.url));
   const supabase = createServerClient(config.url, config.key, { cookies: { getAll: () => request.cookies.getAll(), setAll: (cookies) => cookies.forEach(({ name, value, options }) => { request.cookies.set(name, value); response.cookies.set(name, value, options); }) } });
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) return loginWithError();
+  try {
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) return loginWithError();
+  } catch {
+    return loginWithError();
+  }
   return response;
 }

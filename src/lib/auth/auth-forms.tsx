@@ -5,7 +5,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { authCallbackUrl } from "@/lib/auth/redirect";
+import { oauthProviderConfig } from "@/lib/auth/redirect";
 
 type Mode = "login" | "signup";
 
@@ -51,8 +51,8 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
   async function handleOAuthSignIn(provider: "google" | "github") {
     setError(null); setMessage(null); setOauthLoading(provider);
     try {
-      const { error: oauthError } = await createClient().auth.signInWithOAuth({ provider, options: { redirectTo: authCallbackUrl(window.location.origin, next) } });
-      if (oauthError) setError(oauthError.message);
+      const { error: oauthError } = await createClient().auth.signInWithOAuth(oauthProviderConfig(provider, window.location.origin, next));
+      if (oauthError) setError("Não foi possível iniciar o acesso. Tente novamente.");
     } catch { setError(`Não foi possível iniciar o acesso com ${provider === "google" ? "Google" : "GitHub"}. Tente novamente.`); }
     finally { setOauthLoading(null); }
   }
