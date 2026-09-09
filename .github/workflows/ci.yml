@@ -58,11 +58,14 @@ jobs:
           npx --yes supabase@2.117.0 init --force >/dev/null
           migration_first="supabase/migrations/20260908193728_financial_obligation_consistency.sql"
           migration_second="supabase/migrations/20260909180000_obligation_immutability.sql"
+          migration_third="supabase/migrations/20260909190000_financial_authority_definer.sql"
           migration_backup_first="${RUNNER_TEMP}/20260908193728_financial_obligation_consistency.sql"
           migration_backup_second="${RUNNER_TEMP}/20260909180000_obligation_immutability.sql"
+          migration_backup_third="${RUNNER_TEMP}/20260909190000_financial_authority_definer.sql"
           mv "${migration_first}" "${migration_backup_first}"
           mv "${migration_second}" "${migration_backup_second}"
-          restore_migration() { if [ -f "${migration_backup_first}" ]; then mv "${migration_backup_first}" "${migration_first}"; fi; if [ -f "${migration_backup_second}" ]; then mv "${migration_backup_second}" "${migration_second}"; fi; }
+          mv "${migration_third}" "${migration_backup_third}"
+          restore_migration() { if [ -f "${migration_backup_first}" ]; then mv "${migration_backup_first}" "${migration_first}"; fi; if [ -f "${migration_backup_second}" ]; then mv "${migration_backup_second}" "${migration_second}"; fi; if [ -f "${migration_backup_third}" ]; then mv "${migration_backup_third}" "${migration_third}"; fi; }
           trap 'restore_migration; npx --yes supabase@2.117.0 stop --no-backup >/dev/null 2>&1 || true' EXIT
           npx --yes supabase@2.117.0 start >/dev/null
 
@@ -81,7 +84,7 @@ jobs:
           printf '::add-mask::%s\n' "${DB_URL}"
           export DATABASE_URL="${DB_URL}"
           restore_migration
-          bash tests/financial-migration-upgrade-real.sh "${migration_first}" "${migration_second}"
+          bash tests/financial-migration-upgrade-real.sh "${migration_first}" "${migration_second}" "${migration_third}"
           npx --yes supabase@2.117.0 db reset --local --no-seed >/dev/null
           export NEXT_PUBLIC_SUPABASE_URL="${API_URL}"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}"

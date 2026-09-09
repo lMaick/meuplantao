@@ -5,6 +5,7 @@ set -Eeuo pipefail
 test "$#" -ge 1 || { echo "migration file(s) required" >&2; exit 1; }
 migration_file="${1:?migration file is required}"
 immutability_file="${2:-}"
+authority_file="${3:-}"
 failure_log="$(mktemp)"
 trap 'rm -f "$failure_log"' EXIT
 
@@ -125,5 +126,73 @@ SQL
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$immutability_file" >/dev/null
   test "$(psql "$DATABASE_URL" -Atqc "select valor_devido from public.obligations where shift_id = '00000000-0000-0000-0000-000000000082'")" = 100.00
   test "$(psql "$DATABASE_URL" -Atqc "select valor_devido from public.obligations where shift_id = '00000000-0000-0000-0000-000000000083'")" = 100.00
+fi
+if [ -n "$authority_file" ]; then
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
+values ('00000000-0000-0000-0000-000000000090', 'authenticated', 'authenticated', 'authority-mai65@example.test', 'fixture', now(), now(), now());
+insert into public.places (id, user_id, nome)
+values ('00000000-0000-0000-0000-000000000091', '00000000-0000-0000-0000-000000000090', 'Authority fixture');
+insert into public.shifts (id, user_id, place_id, data, hora_inicio, hora_fim, valor_previsto, status)
+values ('00000000-0000-0000-0000-000000000092', '00000000-0000-0000-0000-000000000090', '00000000-0000-0000-0000-000000000091', '2026-03-01', '08:00', '09:00', 100, 'agendado');
+update public.shifts set status = 'realizado' where id = '00000000-0000-0000-0000-000000000092';
+commit;
+SQL
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000090', false);
+begin;
+select set_config('app.saving_shift_obligation_id', '00000000-0000-0000-0000-000000000092', true);
+update public.shifts set valor_previsto = 999 where id = '00000000-0000-0000-0000-000000000092';
+update public.obligations set valor_devido = 999 where shift_id = '00000000-0000-0000-0000-000000000092';
+commit;
+reset role;
+SQL
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_previsto from public.shifts where id = '00000000-0000-0000-0000-000000000092'")" = 999.00
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_devido from public.obligations where shift_id = '00000000-0000-0000-0000-000000000092'")" = 999.00
+  echo 'RED: forged GUC bypass accepted pre-authority (hole demonstrated)'
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000090', false);
+select save_shift_with_obligation('00000000-0000-0000-0000-000000000092', '00000000-0000-0000-0000-000000000091', '2026-03-01', '08:00', '09:00', 100, 'realizado', '2026-03-02', '00000000-0000-0000-0000-000000000091', null, null);
+reset role;
+SQL
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_previsto from public.shifts where id = '00000000-0000-0000-0000-000000000092'")" = 100.00
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$authority_file" >/dev/null
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$authority_file" >/dev/null
+  test "$(psql "$DATABASE_URL" -Atqc "select prosecdef from pg_proc where proname = 'save_shift_with_obligation'")" = t
+  test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.shifts', 'valor_previsto', 'UPDATE')")" = f
+  test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.obligations', 'valor_devido', 'UPDATE')")" = f
+  test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.shifts', 'status', 'UPDATE')")" = t
+  test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.obligations', 'data_prevista', 'UPDATE')")" = t
+  if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose <<'SQL' >"$failure_log" 2>&1
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000090', false);
+begin;
+select set_config('app.saving_shift_obligation_id', '00000000-0000-0000-0000-000000000092', true);
+update public.shifts set valor_previsto = 999 where id = '00000000-0000-0000-0000-000000000092';
+update public.obligations set valor_devido = 999 where shift_id = '00000000-0000-0000-0000-000000000092';
+commit;
+reset role;
+SQL
+  then
+    echo 'forged GUC bypass unexpectedly succeeded post-authority' >&2
+    exit 1
+  fi
+  grep -q '42501' "$failure_log"
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_previsto from public.shifts where id = '00000000-0000-0000-0000-000000000092'")" = 100.00
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_devido from public.obligations where shift_id = '00000000-0000-0000-0000-000000000092'")" = 100.00
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+set role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000090', false);
+select save_shift_with_obligation('00000000-0000-0000-0000-000000000092', '00000000-0000-0000-0000-000000000091', '2026-03-01', '08:00', '09:00', 120, 'realizado', '2026-03-02', '00000000-0000-0000-0000-000000000091', null, null);
+update public.obligations set data_prevista = '2026-03-05' where shift_id = '00000000-0000-0000-0000-000000000092';
+reset role;
+SQL
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_previsto from public.shifts where id = '00000000-0000-0000-0000-000000000092'")" = 120.00
+  test "$(psql "$DATABASE_URL" -Atqc "select valor_devido from public.obligations where shift_id = '00000000-0000-0000-0000-000000000092'")" = 120.00
+  test "$(psql "$DATABASE_URL" -Atqc "select data_prevista from public.obligations where shift_id = '00000000-0000-0000-0000-000000000092'")" = 2026-03-05
+  echo 'GREEN: forged bypass denied post-authority, RPC atomic, direct date edit allowed'
 fi
 echo 'MAI-65 legacy fail-closed, explicit reconciliation, and same-database idempotency passed'

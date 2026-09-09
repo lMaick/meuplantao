@@ -117,3 +117,14 @@ test("MAI-65 blocker 1: obligation realizada e imutavel fora da RPC e igual ao s
   assert.match(immutability, /security invoker/);
   assert.match(immutability, /divergente|divergence|valor_devido.*valor_previsto/i);
 });
+
+test("MAI-65 autoridade nao falsificavel: RPC definer e coluna financeira sem UPDATE direto", () => {
+  const authority = fs.readFileSync("supabase/migrations/20260909190000_financial_authority_definer.sql", "utf8");
+  assert.match(authority, /security definer/);
+  assert.match(authority, /revoke update \(valor_previsto\) on public\.shifts/i);
+  assert.match(authority, /revoke update \(valor_devido\) on public\.obligations/i);
+  assert.match(authority, /reconcile_obligation_on_reversal/);
+  assert.match(authority, /after update.*on public\.shifts/is);
+  assert.doesNotMatch(authority, /app\.saving_shift_obligation_id/);
+  assert.doesNotMatch(authority, /app\.reconciling_obligation_shift_id/);
+});

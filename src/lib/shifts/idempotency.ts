@@ -17,7 +17,31 @@ export function startNewShiftIntent(): string {
   return newIdempotencyKey();
 }
 
-export function keyForShiftSave(isNew: boolean, storedKey: string | null): string | null {
+export function keyForShiftSave(isNew: boolean, intent: ShiftCreationIntent | null): string | null {
   if (!isNew) return null;
-  return storedKey ?? newIdempotencyKey();
+  if (intent === null) throw new Error("criacao de plantao exige intent de idempotencia");
+  return intent.keyForSubmit();
+}
+
+export class ShiftCreationIntent {
+  private activeKey: string | null;
+  private constructor(key: string) {
+    this.activeKey = key;
+  }
+  static begin(): ShiftCreationIntent {
+    return new ShiftCreationIntent(startNewShiftIntent());
+  }
+  keyForSubmit(): string {
+    if (this.activeKey === null) throw new Error("intent de criacao descartada");
+    return this.activeKey;
+  }
+  get isActive(): boolean {
+    return this.activeKey !== null;
+  }
+  markSucceeded(): void {
+    this.activeKey = null;
+  }
+  markCancelled(): void {
+    this.activeKey = null;
+  }
 }

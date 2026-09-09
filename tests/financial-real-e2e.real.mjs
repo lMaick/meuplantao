@@ -24,6 +24,7 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const saveShift = (token, values) => request(token, "rpc/save_shift_with_obligation", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
   const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
   const concreteRpcShift = (body, label) => { const row = rpcRow(body); assert.ok(row && typeof row.id === "string" && row.id.length > 0, `${label}: RPC retornou shift inválido ${JSON.stringify(body)}`); return row; };
+  const assertRejected42501 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "42501", `${label}: privilegio inesperado`); return response; };
   const assertRejected23514 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "23514", `${label}: código SQL inesperado`); return response; };
 
   const invalidScheduledKey = `mai65-invalid-scheduled-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -47,10 +48,10 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   await assertIdempotencyMismatch({ p_valor_previsto: 81 }, "retry com valor da obligation divergente");
 
   const editableShift = await createShift(a, { data: "2020-01-01" }); await realize(a, editableShift.id); const editable = await obligationFor(a, editableShift.id);
-  await rejected(patch(a, "shifts", editableShift.id, { valor_previsto: 999 }), "PATCH direto de valor realizado sem pagamento");
+  await assertRejected42501(patch(a, "shifts", editableShift.id, { valor_previsto: 999 }), "PATCH direto de valor realizado sem privilegio");
   assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
-  await assertRejected23514(patch(a, "obligations", editable.id, { valor_devido: 120 }), "PATCH direto de obligation 100-120 rejeita");
-  await assertRejected23514(patch(a, "obligations", editable.id, { valor_devido: null }), "PATCH direto de obligation para NULL rejeita");
+  await assertRejected42501(patch(a, "obligations", editable.id, { valor_devido: 120 }), "PATCH direto de obligation 100-120 sem privilegio");
+  await assertRejected42501(patch(a, "obligations", editable.id, { valor_devido: null }), "PATCH direto de obligation para NULL sem privilegio");
   assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
   assert.equal(Number((await obligationFor(a, editableShift.id)).valor_devido), 100);
   await ok(await patch(a, "obligations", editable.id, { data_prevista: "2030-09-10", responsavel_place_id: null, responsavel_contact_id: contact.id }), "edicao de data prevista e responsavel sem mudar valor");
@@ -64,7 +65,7 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   await rejected(patch(a, "obligations", editable.id, { shift_id: otherShift.id }), "troca direta de shift_id"); assert.equal((await obligationFor(a, editableShift.id)).shift_id, editableShift.id);
   await rejected(remove(a, "obligations", editable.id), "DELETE direto enquanto realizado"); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
   await rejected(remove(a, "shifts", editableShift.id), "DELETE direto de shift realizado"); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
-  const bObligationEdit = await patch(b, "obligations", editable.id, { valor_devido: 999 }); assert.equal(bObligationEdit.r.ok, true); assert.deepEqual(bObligationEdit.body, [], "RLS B não atualiza obligation A");
+  await assertRejected42501(patch(b, "obligations", editable.id, { valor_devido: 999 }), "B sem privilegio em coluna financeira de A");
   const bObligationDelete = await remove(b, "obligations", editable.id); assert.equal(bObligationDelete.r.ok, true); assert.deepEqual(bObligationDelete.body, [], "RLS B não remove obligation A");
   const bReversal = await patch(b, "shifts", editableShift.id, { status: "cancelado" }); assert.equal(bReversal.r.ok, true); assert.deepEqual(bReversal.body, [], "RLS B não reverte shift A");
   const editableAfterB = (await (await request(a, `shifts?id=eq.${editableShift.id}&select=status,valor_previsto`)).body)[0]; assert.deepEqual(editableAfterB, { status: "realizado", valor_previsto: 120 }); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
@@ -88,7 +89,7 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const history = await ok(await request(a, `payments?obligation_id=eq.${paidObligation.id}&select=id,valor,status&order=valor`), "histórico"); assert.deepEqual(history.map(({ valor, status }) => [Number(valor), status]), [[30, "registrado"], [40, "cancelado"], [60, "cancelado"]]);
 
   assert.deepEqual(await ok(await request(b, `places?id=eq.${place.id}&select=id`), "RLS B local"), []); assert.deepEqual(await ok(await request(b, `shifts?id=eq.${paid.id}&select=id`), "RLS B plantão"), []); assert.deepEqual(await ok(await request(b, `obligations?id=eq.${paidObligation.id}&select=id`), "RLS B obrigação"), []); assert.deepEqual(await ok(await request(b, `payments?obligation_id=eq.${paidObligation.id}&select=id`), "RLS B pagamento"), []);
-  const foreignEdit = await patch(b, "shifts", paid.id, { valor_previsto: 999 }); assert.equal(foreignEdit.r.ok, true, "RLS B edição retornou erro inesperado"); assert.deepEqual(foreignEdit.body, [], "RLS B não pode editar shift A"); await rejected(pay(b, paidObligation.id, 1), "RPC cruzada"); await rejected(request(b, "shifts", { method: "POST", body: JSON.stringify({ user_id: bId, place_id: place.id, data: date, hora_inicio: "18:00", hora_fim: "19:00", valor_previsto: 1 }) }), "criação com local A");
+  await assertRejected42501(patch(b, "shifts", paid.id, { valor_previsto: 999 }), "B sem privilegio em valor de A"); await rejected(pay(b, paidObligation.id, 1), "RPC cruzada"); await rejected(request(b, "shifts", { method: "POST", body: JSON.stringify({ user_id: bId, place_id: place.id, data: date, hora_inicio: "18:00", hora_fim: "19:00", valor_previsto: 1 }) }), "criação com local A");
 
   const concurrent = await createShift(a, { hora_inicio: "20:00", hora_fim: "21:00" }); await realize(a, concurrent.id); const concurrentObligation = await obligationFor(a, concurrent.id); const concurrentResults = await Promise.all([pay(a, concurrentObligation.id, 60), pay(a, concurrentObligation.id, 60)]); assert.equal(concurrentResults.filter(({ r }) => r.ok).length, 1, "corrida aceitou ambos"); assert.equal(concurrentResults.filter(({ r }) => !r.ok).length, 1, "corrida rejeitou ambos"); const concurrentPayment = concurrentResults.find(({ r }) => r.ok).body; const balance = await ok(await request(a, `obligations_with_balance?id=eq.${concurrentObligation.id}&select=saldo`), "saldo concorrente"); assert.equal(Number(balance[0].saldo), 40); await ok(await patch(a, "payments", concurrentPayment.id, { status: "cancelado" }), "cancelar concorrente");
 });
