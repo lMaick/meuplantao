@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -48,10 +49,37 @@ def resume(deps: dict | None = None) -> str:
     d["set_mode"]("AUTO")
     return "Dispatcher ativado para novos dispatches."
 
+def build_dispatcher_command() -> list:
+    import dispatcher_home
+    home = dispatcher_home.home()
+    script = dispatcher_home.dispatcher_script()
+    if not script.is_file():
+        raise RuntimeError(f"dispatcher engine missing outside bundle: {script}")
+    wrapper = home / "run-dispatcher.cmd"
+    if wrapper.is_file():
+        return ["cmd", "/c", str(wrapper), "--manual-once"]
+    python = os.environ.get("MEUPLANTAO_DISPATCHER_PYTHON", "").strip().strip(chr(34))
+    if python:
+        return [os.path.expandvars(python), str(script), "--manual-once"]
+    if getattr(sys, "frozen", False):
+        raise RuntimeError(
+            "frozen bundle has no run-dispatcher.cmd and no MEUPLANTAO_DISPATCHER_PYTHON; "
+            "refusing to reuse MaickDispatcherControl.exe as Python interpreter (fail-closed)"
+        )
+    return [sys.executable, str(script), "--manual-once"]
+
+
 def run_once(deps: dict | None = None) -> dict:
     d = _resolve(deps)
-    import dispatcher_home
-    result = d["run_dispatcher"]([sys.executable, str(dispatcher_home.dispatcher_script()), "--manual-once"])
+    try:
+        cmd = build_dispatcher_command()
+    except Exception as exc:
+        return {"ok": False, "skipped": False, "result": f"fail-closed: {exc}"[:500]}
+    if getattr(sys, "frozen", False):
+        for part in cmd:
+            if str(part).lower() == str(sys.executable).lower():
+                return {"ok": False, "skipped": False, "result": "fail-closed: frozen exe must never run dispatcher.py"}
+    result = d["run_dispatcher"](cmd)
     output = str(result.get("output", ""))
     if "owns the lock" in output or "lock" in output.lower() and result.get("returncode", 0) == 0 and "skipping" in output.lower():
         return {"ok": True, "skipped": True, "result": "safe skip: lock ativo, nenhum efeito nem duplicata"}

@@ -47,18 +47,32 @@ class ControlServiceTests(unittest.TestCase):
         self.assertEqual(seen["mode"], "AUTO")
 
     def test_run_once_dispatches_at_most_once(self):
-        got = {}
-        def runner(args):
-            got["args"] = args
-            return {"returncode": 0, "output": "ok"}
-        d = _deps(run_dispatcher=runner)
-        control_service.run_once(d)
-        self.assertIn("--manual-once", got["args"])
+        import os, tempfile, unittest.mock
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "dispatcher.py").write_text("# fake\n", encoding="utf-8")
+            Path(home, "run-dispatcher.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, {"MEUPLANTAO_DISPATCHER_HOME": home}, clear=False):
+                os.environ.pop("MEUPLANTAO_DISPATCHER_CONFIG", None)
+                os.environ.pop("MEUPLANTAO_DISPATCHER_PYTHON", None)
+                got = {}
+                def runner(args):
+                    got["args"] = list(args)
+                    return {"returncode": 0, "output": "ok"}
+                d = _deps(run_dispatcher=runner)
+                control_service.run_once(d)
+                self.assertIn("--manual-once", got["args"])
 
     def test_run_once_with_active_lock_is_safe_skip(self):
-        d = _deps(run_dispatcher=lambda args: {"returncode": 0, "output": "Another dispatcher run owns the lock; skipping"})
-        res = control_service.run_once(d)
-        self.assertIn("skip", res["result"].lower())
+        import os, tempfile, unittest.mock
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "dispatcher.py").write_text("# fake\n", encoding="utf-8")
+            Path(home, "run-dispatcher.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, {"MEUPLANTAO_DISPATCHER_HOME": home}, clear=False):
+                os.environ.pop("MEUPLANTAO_DISPATCHER_CONFIG", None)
+                os.environ.pop("MEUPLANTAO_DISPATCHER_PYTHON", None)
+                d = _deps(run_dispatcher=lambda args: {"returncode": 0, "output": "Another dispatcher run owns the lock; skipping"})
+                res = control_service.run_once(d)
+                self.assertIn("skip", res["result"].lower())
 
     def test_status_error_on_bad_config_or_scheduler(self):
         s1 = control_service.get_status(_deps(check_config=lambda: (False, "missing config")))

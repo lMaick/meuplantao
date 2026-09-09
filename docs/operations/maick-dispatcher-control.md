@@ -83,4 +83,23 @@ reabilitando o botao.
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
   control_pause_lock (concorrencia real), control_pause_evidence (agente antes/depois),
-  control_app (thread), control_packaging (bundle sem engine/segredos).
+  control_app (thread), control_packaging (bundle sem engine/segredos),
+  control_frozen_runner (exe nunca e interpretador Python).
+
+## EXECUTAR AGORA no bundle frozen (fail-closed)
+
+O exe PyInstaller nunca reusa `sys.executable` (o proprio `MaickDispatcherControl.exe`)
+como interpretador de `dispatcher.py`. `control_service.build_dispatcher_command()` resolve,
+a partir do home/config operacional (`MEUPLANTAO_DISPATCHER_HOME` ou
+`MEUPLANTAO_DISPATCHER_CONFIG`), nesta ordem:
+
+1. `run-dispatcher.cmd --manual-once` do home operacional (preferencial, via `cmd /c`);
+2. `MEUPLANTAO_DISPATCHER_PYTHON` explicito + `dispatcher.py --manual-once`;
+3. fora do frozen (dev): `sys.executable` + `dispatcher.py --manual-once`.
+
+Sem wrapper e sem Python explicito, o frozen falha fechado: `run_once()` retorna
+`ok=False` sem executar nada e sem fallback para o exe. Erro do wrapper/Python tambem
+falha fechado (`ok=False`). `dispatcher.py` ausente no home falha fechado. Lock,
+`--manual-once`, maximo 1 dispatch e safe skip estao preservados.
+Smoke headless isolado: `MaickDispatcherControl.exe --run-once` (sem GUI, sem Linear,
+Orca, AppData, scheduler ou dispatcher operacional).

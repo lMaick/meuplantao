@@ -207,7 +207,25 @@ class ControlApp:
                 except Exception:
                     pass
 
-def main() -> int:
+def run_once_cli(argv=None) -> int:
+    import json
+    try:
+        result = control_service.run_once()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "skipped": False, "result": f"fail-closed: {exc}"[:500]}))
+        return 1
+    print(json.dumps({
+        "ok": bool((result or {}).get("ok", False)),
+        "skipped": bool((result or {}).get("skipped", False)),
+        "result": str((result or {}).get("result", ""))[-500:],
+    }))
+    return 0 if (result or {}).get("ok") else 1
+
+
+def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--run-once" in args:
+        return run_once_cli(args)
     if tk is None:
         print("tkinter indisponivel neste ambiente", file=sys.stderr)
         return 1
