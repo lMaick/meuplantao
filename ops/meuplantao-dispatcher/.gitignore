@@ -1,6 +1,9 @@
-state.json
+﻿state.json
 state.json.tmp
+control-state.json
+control-state.json.tmp
 dispatcher.log
+dispatcher.log.*
 dispatcher.lock
 __pycache__/
 *.py[cod]
@@ -8,3 +11,7 @@ config.toml
 *.token
 *.session
 auth.json
+dist/
+build/
+*.spec
+*.exe
