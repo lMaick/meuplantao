@@ -1,4 +1,7 @@
-﻿import sys
+﻿import queue as _queue
+import sys
+import threading
+import time
 from pathlib import Path
 import unittest
 
@@ -23,6 +26,46 @@ class FakeService:
         return {"ok": True, "result": "done"}
     def last_logs(self, deps=None, n=50):
         return ["a", "b"]
+
+class FakeLabel:
+    def __init__(self):
+        self.text = ""
+    def config(self, text=""):
+        self.text = text
+
+class FakeButton:
+    def __init__(self):
+        self.state = "normal"
+    def config(self, state=None, **kwargs):
+        if state is not None:
+            self.state = state
+
+class FakeRoot:
+    def __init__(self):
+        self.callbacks = []
+    def after(self, ms, func):
+        self.callbacks.append(func)
+        return "timer"
+
+class ThreadGuardedRoot(FakeRoot):
+    def __init__(self):
+        super().__init__()
+        self.creator_ident = threading.get_ident()
+        self.violations = []
+    def after(self, ms, func):
+        if threading.get_ident() != self.creator_ident:
+            self.violations.append((ms, func))
+            raise RuntimeError("Tk after() called outside GUI thread")
+        return super().after(ms, func)
+
+def _bare_app(svc):
+    app = control_app.ControlApp.__new__(control_app.ControlApp)
+    app.service = svc
+    app.message_label = FakeLabel()
+    app._run_queue = _queue.Queue()
+    app._run_once_busy = False
+    app.run_button = FakeButton()
+    return app
 
 class ControlAppTests(unittest.TestCase):
     def test_refresh_rereads_status_from_disk(self):
@@ -59,7 +102,6 @@ class ControlAppTests(unittest.TestCase):
         self.assertEqual(app.state_label.text, "PAUSADO")
 
     def test_run_once_delegates_single_iteration(self):
-        import threading
         svc = FakeService()
         calls = []
         gate = threading.Event()
@@ -68,21 +110,14 @@ class ControlAppTests(unittest.TestCase):
             gate.wait(timeout=10)
             return {"ok": True, "result": "done"}
         svc.run_once = counting
-        app = control_app.ControlApp.__new__(control_app.ControlApp)
-        app.service = svc
-        app.message_label = type("L", (), {"text": ""})()
+        app = _bare_app(svc)
         app.root = FakeRoot()
-        app._run_once_busy = False
-        import queue as _q
-        app._run_queue = _q.Queue()
-        app.run_button = FakeButton()
         app.on_run_once()
         gate.set()
         app._poll_run_once()
         self.assertEqual(len(calls), 1)
 
     def test_run_once_is_non_blocking_and_reports_back(self):
-        import threading, time
         svc = FakeService()
         started = threading.Event()
         release = threading.Event()
@@ -91,14 +126,8 @@ class ControlAppTests(unittest.TestCase):
             release.wait(timeout=10)
             return {"ok": True, "result": "done-async"}
         svc.run_once = slow
-        app = control_app.ControlApp.__new__(control_app.ControlApp)
-        app.service = svc
-        app.message_label = FakeLabel()
+        app = _bare_app(svc)
         app.root = FakeRoot()
-        import queue as _q
-        app._run_queue = _q.Queue()
-        app._run_once_busy = False
-        app.run_button = FakeButton()
         begin = time.monotonic()
         app.on_run_once()
         waited = time.monotonic() - begin
@@ -115,7 +144,6 @@ class ControlAppTests(unittest.TestCase):
         self.assertIn("done-async", app.message_label.text)
 
     def test_double_click_does_not_start_second_run(self):
-        import threading
         svc = FakeService()
         calls = []
         gate = threading.Event()
@@ -124,43 +152,34 @@ class ControlAppTests(unittest.TestCase):
             gate.wait(timeout=10)
             return {"ok": True, "result": "done"}
         svc.run_once = slow
-        app = control_app.ControlApp.__new__(control_app.ControlApp)
-        app.service = svc
-        app.message_label = FakeLabel()
+        app = _bare_app(svc)
         app.root = FakeRoot()
-        import queue as _q
-        app._run_queue = _q.Queue()
-        app._run_once_busy = False
-        app.run_button = FakeButton()
         app.on_run_once()
         app.on_run_once()
         gate.set()
-        deadline = __import__("time").monotonic() + 10
-        while app._run_once_busy and __import__("time").monotonic() < deadline:
+        deadline = time.monotonic() + 10
+        while app._run_once_busy and time.monotonic() < deadline:
             app._poll_run_once()
-            __import__("time").sleep(0.05)
+            time.sleep(0.05)
         self.assertEqual(len(calls), 1)
 
-
-class FakeLabel:
-    def __init__(self):
-        self.text = ""
-    def config(self, text=""):
-        self.text = text
-
-class FakeButton:
-    def __init__(self):
-        self.state = "normal"
-    def config(self, state=None, **kwargs):
-        if state is not None:
-            self.state = state
-
-class FakeRoot:
-    def __init__(self):
-        self.callbacks = []
-    def after(self, ms, func):
-        self.callbacks.append(func)
-        return "timer"
+    def test_worker_thread_never_touches_tk(self):
+        svc = FakeService()
+        release = threading.Event()
+        def slow(deps=None):
+            release.wait(timeout=10)
+            return {"ok": True, "result": "done"}
+        svc.run_once = slow
+        app = _bare_app(svc)
+        app.root = ThreadGuardedRoot()
+        app.on_run_once()
+        release.set()
+        done = app._run_queue.get(timeout=10)
+        self.assertEqual(done["result"], "done")
+        deadline = time.monotonic() + 5
+        while any(th.daemon and th.is_alive() and th is not threading.current_thread() for th in threading.enumerate()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(app.root.violations, [])
 
 if __name__ == "__main__":
     unittest.main()

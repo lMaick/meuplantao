@@ -161,17 +161,15 @@ class ControlApp:
                 pass
 
     def _run_once_worker(self) -> None:
+        # Worker thread must never touch Tk: run the service and enqueue only.
+        # Main-thread polling (on_run_once/_poll_run_once via root.after) picks up the result.
         try:
             result = self.service.run_once()
             msg = str((result or {}).get("result", ""))
             ok = bool((result or {}).get("ok", True))
         except Exception as exc:
             msg, ok = f"ERRO: {exc}", False
-        try:
-            self._run_queue.put({"ok": ok, "result": msg})
-        except Exception:
-            pass
-        self._schedule_poll()
+        self._run_queue.put({"ok": ok, "result": msg})
 
     def _poll_run_once(self) -> None:
         if not getattr(self, "_run_once_busy", False):
