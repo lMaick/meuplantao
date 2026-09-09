@@ -14,10 +14,8 @@ def resolve_task_name(task_name: str | None = None) -> str:
     if task_name:
         return task_name
     try:
-        import dispatcher
-        name = str(getattr(dispatcher, "SCHEDULER_TASK_NAME", "") or "")
-        if name:
-            return name
+        import dispatcher_home
+        return dispatcher_home.task_name()
     except Exception:
         pass
     return TASK_NAME

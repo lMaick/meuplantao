@@ -12,8 +12,12 @@ except Exception:
 
 import control_service
 
-ROOT = Path(__file__).resolve().parent
-LOG_PATH = ROOT / "dispatcher.log"
+def _log_path() -> Path:
+    try:
+        import dispatcher_home
+        return dispatcher_home.log_path()
+    except Exception:
+        return Path(__file__).resolve().parent / "dispatcher.log"
 
 class ControlApp:
     def __init__(self, root=None, service=None):
@@ -139,9 +143,9 @@ class ControlApp:
     def open_logs(self) -> None:
         try:
             if sys.platform.startswith("win"):
-                subprocess.Popen(["notepad.exe", str(LOG_PATH)])
+                subprocess.Popen(["notepad.exe", str(_log_path())])
             else:
-                subprocess.Popen(["xdg-open", str(LOG_PATH)])
+                subprocess.Popen(["xdg-open", str(_log_path())])
         except Exception as exc:
             if tk is not None:
                 try:

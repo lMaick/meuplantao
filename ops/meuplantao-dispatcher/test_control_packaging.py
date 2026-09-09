@@ -37,6 +37,17 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("MaickDispatcherControl.exe", script)
         self.assertIn("PyInstaller", script)
 
+    def test_bundle_excludes_dispatcher_engine_and_runtime_config(self):
+        script = (ROOT / "build-control-app.ps1").read_text(encoding="utf-8")
+        self.assertIn("exclude-module dispatcher", script)
+        pyinstaller_lines = [l for l in script.splitlines() if "PyInstaller" in l]
+        self.assertTrue(pyinstaller_lines)
+        for line in pyinstaller_lines:
+            self.assertNotIn("dispatcher.py", line)
+        for line in script.splitlines():
+            if "add-data" in line.lower():
+                self.assertNotIn("config.toml;", line.replace("config.example.toml;", ""))
+
     def test_ci_discovers_all_control_tests(self):
         ci = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("test_", ci)
