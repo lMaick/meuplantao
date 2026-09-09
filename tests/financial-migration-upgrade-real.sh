@@ -82,6 +82,10 @@ test "$(psql "$DATABASE_URL" -Atqc "select (select count(*) from public.obligati
 
 if [ -n "$immutability_file" ]; then
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+alter table public.shifts disable trigger shifts_realized_obligation_valid;
+SQL
+  test "$(psql "$DATABASE_URL" -Atqc "select tgenabled from pg_trigger where tgname = 'shifts_realized_obligation_valid'")" = D
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
 values ('00000000-0000-0000-0000-000000000080', 'authenticated', 'authenticated', 'divergent-mai65@example.test', 'fixture', now(), now(), now());
@@ -96,6 +100,10 @@ update public.obligations set valor_devido = 90 where shift_id = '00000000-0000-
 update public.obligations set valor_devido = null where shift_id = '00000000-0000-0000-0000-000000000083';
 commit;
 SQL
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+alter table public.shifts enable trigger shifts_realized_obligation_valid;
+SQL
+  test "$(psql "$DATABASE_URL" -Atqc "select tgenabled from pg_trigger where tgname = 'shifts_realized_obligation_valid'")" = O
   test "$(psql "$DATABASE_URL" -Atqc "select valor_devido from public.obligations where shift_id = '00000000-0000-0000-0000-000000000082'")" = 90.00
   test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations where shift_id = '00000000-0000-0000-0000-000000000083' and valor_devido is null")" = 1
   if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f "$immutability_file" >"$failure_log" 2>&1; then
