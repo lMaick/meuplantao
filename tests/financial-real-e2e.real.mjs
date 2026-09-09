@@ -49,9 +49,17 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const editableShift = await createShift(a, { data: "2020-01-01" }); await realize(a, editableShift.id); const editable = await obligationFor(a, editableShift.id);
   await rejected(patch(a, "shifts", editableShift.id, { valor_previsto: 999 }), "PATCH direto de valor realizado sem pagamento");
   assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
-  await ok(await patch(a, "obligations", editable.id, { valor_devido: 120, data_prevista: "2030-09-10", responsavel_place_id: null, responsavel_contact_id: contact.id }), "edição válida de valor/data/responsável");
+  await assertRejected23514(patch(a, "obligations", editable.id, { valor_devido: 120 }), "PATCH direto de obligation 100-120 rejeita");
+  await assertRejected23514(patch(a, "obligations", editable.id, { valor_devido: null }), "PATCH direto de obligation para NULL rejeita");
+  assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
+  assert.equal(Number((await obligationFor(a, editableShift.id)).valor_devido), 100);
+  await ok(await patch(a, "obligations", editable.id, { data_prevista: "2030-09-10", responsavel_place_id: null, responsavel_contact_id: contact.id }), "edicao de data prevista e responsavel sem mudar valor");
+  assert.equal(Number((await obligationFor(a, editableShift.id)).valor_devido), 100);
+  assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 100);
   const rpcInput = { p_shift_id: editableShift.id, p_place_id: place.id, p_data: "2020-01-01", p_hora_inicio: "08:00", p_hora_fim: "09:00", p_valor_previsto: 120, p_status: "realizado", p_data_prevista: "2030-09-10", p_responsavel_place_id: null, p_responsavel_contact_id: contact.id };
   await ok(await saveShift(a, rpcInput), "retry RPC financeiro inicial"); await ok(await saveShift(a, rpcInput), "retry RPC financeiro idempotente"); assert.equal((await request(a, `obligations?shift_id=eq.${editableShift.id}&select=id`)).body.length, 1);
+  assert.equal(Number((await (await request(a, `shifts?id=eq.${editableShift.id}&select=valor_previsto`)).body)[0].valor_previsto), 120);
+  assert.equal(Number((await obligationFor(a, editableShift.id)).valor_devido), 120);
   const otherShift = await createShift(a, { hora_inicio: "10:00", hora_fim: "11:00" }); await realize(a, otherShift.id);
   await rejected(patch(a, "obligations", editable.id, { shift_id: otherShift.id }), "troca direta de shift_id"); assert.equal((await obligationFor(a, editableShift.id)).shift_id, editableShift.id);
   await rejected(remove(a, "obligations", editable.id), "DELETE direto enquanto realizado"); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
@@ -71,7 +79,13 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const paid = await createShift(a, { hora_inicio: "16:00", hora_fim: "17:00" }); await realize(a, paid.id); const paidObligation = await obligationFor(a, paid.id); const partial = await ok(await pay(a, paidObligation.id, 40), "pagamento parcial");
   await rejected(patch(a, "shifts", paid.id, { valor_previsto: 999 }), "PATCH direto de valor em realizado");
   await rejected(patch(a, "obligations", paidObligation.id, { valor_devido: 30 }), "valor abaixo do recebido"); await rejected(patch(a, "shifts", paid.id, { status: "cancelado" }), "reversão com pagamento"); const finalPayment = await ok(await pay(a, paidObligation.id, 60), "pagamento restante"); await rejected(await pay(a, paidObligation.id, 1), "overpayment"); await ok(await patch(a, "payments", partial.id, { status: "cancelado" }), "cancelamento lógico parcial"); await ok(await patch(a, "payments", finalPayment.id, { status: "cancelado" }), "cancelamento lógico total"); await rejected(patch(a, "shifts", paid.id, { status: "cancelado" }), "reversão após todos cancelados com histórico"); assert.equal((await (await request(a, `shifts?id=eq.${paid.id}&select=status`)).body)[0].status, "realizado"); assert.equal((await obligationFor(a, paid.id)).id, paidObligation.id);
-  const history = await ok(await request(a, `payments?obligation_id=eq.${paidObligation.id}&select=id,valor,status&order=valor`), "histórico"); assert.deepEqual(history.map(({ valor, status }) => [Number(valor), status]), [[40, "cancelado"], [60, "cancelado"]]);
+  const paidRpcBase = { p_shift_id: paid.id, p_place_id: place.id, p_data: date, p_hora_inicio: "16:00", p_hora_fim: "17:00", p_status: "realizado", p_data_prevista: date, p_responsavel_place_id: place.id, p_responsavel_contact_id: null };
+  await ok(await pay(a, paidObligation.id, 30), "pagamento para piso RPC");
+  await ok(await saveShift(a, { ...paidRpcBase, p_valor_previsto: 120 }), "RPC com valor novo acima do recebido");
+  assert.equal(Number((await obligationFor(a, paid.id)).valor_devido), 120);
+  await assertRejected23514(saveShift(a, { ...paidRpcBase, p_valor_previsto: 10 }), "RPC com valor novo abaixo do recebido rejeita");
+  assert.equal(Number((await obligationFor(a, paid.id)).valor_devido), 120);
+  const history = await ok(await request(a, `payments?obligation_id=eq.${paidObligation.id}&select=id,valor,status&order=valor`), "histórico"); assert.deepEqual(history.map(({ valor, status }) => [Number(valor), status]), [[30, "registrado"], [40, "cancelado"], [60, "cancelado"]]);
 
   assert.deepEqual(await ok(await request(b, `places?id=eq.${place.id}&select=id`), "RLS B local"), []); assert.deepEqual(await ok(await request(b, `shifts?id=eq.${paid.id}&select=id`), "RLS B plantão"), []); assert.deepEqual(await ok(await request(b, `obligations?id=eq.${paidObligation.id}&select=id`), "RLS B obrigação"), []); assert.deepEqual(await ok(await request(b, `payments?obligation_id=eq.${paidObligation.id}&select=id`), "RLS B pagamento"), []);
   const foreignEdit = await patch(b, "shifts", paid.id, { valor_previsto: 999 }); assert.equal(foreignEdit.r.ok, true, "RLS B edição retornou erro inesperado"); assert.deepEqual(foreignEdit.body, [], "RLS B não pode editar shift A"); await rejected(pay(b, paidObligation.id, 1), "RPC cruzada"); await rejected(request(b, "shifts", { method: "POST", body: JSON.stringify({ user_id: bId, place_id: place.id, data: date, hora_inicio: "18:00", hora_fim: "19:00", valor_previsto: 1 }) }), "criação com local A");

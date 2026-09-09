@@ -106,3 +106,14 @@ test("MAI-65 hardens obligation ownership and reversal reconciliation", () => {
   assert.match(hardening, /security invoker/);
   assert.match(hardening, /grant execute.*authenticated/);
 });
+
+test("MAI-65 blocker 1: obligation realizada e imutavel fora da RPC e igual ao shift", () => {
+  const immutability = fs.readFileSync("supabase/migrations/20260909180000_obligation_immutability.sql", "utf8");
+  assert.match(immutability, /valor_devido is not null/i);
+  assert.match(immutability, /is not distinct from/i);
+  assert.match(immutability, /app\.saving_shift_obligation_id/);
+  assert.match(immutability, /pela RPC financeira/);
+  assert.match(immutability, /validate_obligation_financial_integrity/);
+  assert.match(immutability, /security invoker/);
+  assert.match(immutability, /divergente|divergence|valor_devido.*valor_previsto/i);
+});
