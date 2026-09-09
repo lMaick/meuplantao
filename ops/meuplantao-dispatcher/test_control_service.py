@@ -68,6 +68,13 @@ class ControlServiceTests(unittest.TestCase):
         s3 = control_service.get_status(_deps(query_scheduler=lambda: {"exists": True, "enabled": False, "status": "Disabled"}))
         self.assertEqual(s3["visual"], "ERRO")
 
+    def test_orca_down_dominates_visual_as_error(self):
+        s = control_service.get_status(_deps(check_orca=lambda: False))
+        self.assertEqual(s["visual"], "ERRO")
+        self.assertFalse(s["orcaOk"])
+        s2 = control_service.get_status(_deps(check_orca=lambda: False, list_agents=lambda: [{"handle": "h"}]))
+        self.assertEqual(s2["visual"], "ERRO")
+
     def test_status_shows_states_from_disk(self):
         self.assertEqual(control_service.get_status(_deps(get_mode=lambda: "AUTO"))["visual"], "ATIVO")
         self.assertEqual(control_service.get_status(_deps(get_mode=lambda: "PAUSED"))["visual"], "PAUSADO")
