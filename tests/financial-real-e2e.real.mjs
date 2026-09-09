@@ -22,11 +22,20 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const obligationFor = async (token, shiftId) => { const rows = await ok(await request(token, `obligations?shift_id=eq.${shiftId}&select=id,shift_id,valor_devido,data_prevista,responsavel_place_id,responsavel_contact_id`), "ler obrigação"); assert.equal(rows.length, 1); return rows[0]; };
   const pay = (token, obligation, value) => request(token, "rpc/register_payment", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ p_obligation_id: obligation, p_valor: value, p_data_pagamento: date }) });
   const saveShift = (token, values) => request(token, "rpc/save_shift_with_obligation", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
+  const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
+  const concreteRpcShift = (body, label) => { const row = rpcRow(body); assert.ok(row && typeof row.id === "string" && row.id.length > 0, `${label}: RPC retornou shift inválido ${JSON.stringify(body)}`); return row; };
+  const assertRejected23514 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "23514", `${label}: código SQL inesperado`); return response; };
+
+  const invalidScheduledKey = `mai65-invalid-scheduled-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await assertRejected23514(saveShift(a, { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "05:00", p_hora_fim: "05:30", p_valor_previsto: 50, p_status: "agendado", p_data_prevista: "2030-09-10", p_responsavel_place_id: place.id, p_responsavel_contact_id: null, p_idempotency_key: invalidScheduledKey }), "criação agendada com obligation inválida");
+  const scheduledKey = `mai65-scheduled-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const scheduledInput = { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "05:30", p_hora_fim: "06:00", p_valor_previsto: 50, p_status: "agendado", p_data_prevista: null, p_responsavel_place_id: null, p_responsavel_contact_id: null, p_idempotency_key: scheduledKey };
+  const scheduledCreated = concreteRpcShift(await ok(await saveShift(a, scheduledInput), "criação agendada idempotente"), "criação agendada idempotente");
+  await assertRejected23514(saveShift(a, { ...scheduledInput, p_data_prevista: "2030-09-10" }), "retry agendado com obligation divergente");
+  assert.equal((await request(a, `shifts?id=eq.${scheduledCreated.id}&select=id`)).body.length, 1, "retry inválido não deve duplicar shift agendado");
 
   const creationKey = `mai65-create-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const creationInput = { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "06:00", p_hora_fim: "07:00", p_valor_previsto: 80, p_status: "realizado", p_data_prevista: "2030-09-11", p_responsavel_place_id: place.id, p_responsavel_contact_id: null, p_idempotency_key: creationKey };
-  const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
-  const concreteRpcShift = (body, label) => { const row = rpcRow(body); assert.ok(row && typeof row.id === "string" && row.id.length > 0, `${label}: RPC retornou shift inválido ${JSON.stringify(body)}`); return row; };
   const createdFirst = concreteRpcShift(await ok(await saveShift(a, creationInput), "criação RPC idempotente inicial"), "criação RPC idempotente inicial");
   const createdRetry = concreteRpcShift(await ok(await saveShift(a, creationInput), "retry de criação RPC idempotente"), "retry de criação RPC idempotente");
   assert.equal(createdRetry.id, createdFirst.id, "retry de criação deve retornar o mesmo shift");

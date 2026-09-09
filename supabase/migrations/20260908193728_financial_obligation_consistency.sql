@@ -166,6 +166,10 @@ begin
      or p_data_prevista is null or (p_responsavel_place_id is null) = (p_responsavel_contact_id is null)) then
     raise exception using errcode = '23514', message = 'Plantao realizado exige valor, data prevista e exatamente um responsavel';
   end if;
+  if p_status in ('agendado', 'cancelado')
+     and (p_data_prevista is not null or p_responsavel_place_id is not null or p_responsavel_contact_id is not null) then
+    raise exception using errcode = '23514', message = 'Plantao agendado ou cancelado nao aceita campos de obrigacao financeira';
+  end if;
   if p_shift_id is null and p_idempotency_key is not null then
     if length(btrim(p_idempotency_key)) = 0 or length(p_idempotency_key) > 200 then
       raise exception using errcode = '23514', message = 'Chave de idempotencia invalida';
