@@ -30,6 +30,10 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   assert.equal(createdRetry.id, createdFirst.id, "retry de criação deve retornar o mesmo shift");
   assert.equal((await request(a, `shifts?user_id=eq.${aId}&idempotency_key=eq.${encodeURIComponent(creationKey)}&select=id`)).body.length, 1, "chave deve produzir um shift");
   assert.equal((await request(a, `obligations?shift_id=eq.${createdFirst.id}&select=id`)).body.length, 1, "chave deve produzir uma obligation");
+  const assertIdempotencyMismatch = async (values, label) => { const result = await rejected(saveShift(a, { ...creationInput, ...values }), label); assert.equal(result.body.code, "23514", `${label}: código SQL inesperado`); };
+  await assertIdempotencyMismatch({ p_data_prevista: "2030-09-12" }, "retry com data prevista divergente");
+  await assertIdempotencyMismatch({ p_responsavel_place_id: null, p_responsavel_contact_id: contact.id }, "retry com responsável divergente");
+  await assertIdempotencyMismatch({ p_valor_previsto: 81 }, "retry com valor da obligation divergente");
 
   const editableShift = await createShift(a, { data: "2020-01-01" }); await realize(a, editableShift.id); const editable = await obligationFor(a, editableShift.id);
   await rejected(patch(a, "shifts", editableShift.id, { valor_previsto: 999 }), "PATCH direto de valor realizado sem pagamento");

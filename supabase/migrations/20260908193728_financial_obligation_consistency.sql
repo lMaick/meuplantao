@@ -180,6 +180,13 @@ begin
          or v_shift.valor_previsto is distinct from p_valor_previsto or v_shift.status is distinct from p_status then
         raise exception using errcode = '23514', message = 'Chave de idempotencia ja usada com payload diferente';
       end if;
+      select * into v_obligation from public.obligations where shift_id = v_shift.id and user_id = v_user_id;
+      if p_status = 'realizado' and (not found or v_obligation.valor_devido is distinct from p_valor_previsto
+         or v_obligation.data_prevista is distinct from p_data_prevista
+         or v_obligation.responsavel_place_id is distinct from p_responsavel_place_id
+         or v_obligation.responsavel_contact_id is distinct from p_responsavel_contact_id) then
+        raise exception using errcode = '23514', message = 'Chave de idempotencia ja usada com obligation diferente';
+      end if;
       return v_shift;
     end if;
   end if;

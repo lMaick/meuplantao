@@ -21,11 +21,13 @@ values ('00000000-0000-0000-0000-000000000069', 'authenticated', 'authenticated'
 insert into public.places (id, user_id, nome)
 values ('00000000-0000-0000-0000-000000000070', '00000000-0000-0000-0000-000000000069', 'Legacy history fixture');
 insert into public.shifts (id, user_id, place_id, data, hora_inicio, hora_fim, valor_previsto, status)
-values ('00000000-0000-0000-0000-000000000071', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000070', '2026-01-03', '08:00', '09:00', 100, 'realizado');
+values ('00000000-0000-0000-0000-000000000071', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000070', '2026-01-03', '08:00', '09:00', 100, 'agendado');
+insert into public.obligations (id, user_id, shift_id, valor_devido, data_prevista, responsavel_place_id)
+values ('00000000-0000-0000-0000-000000000072', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000071', 100, '2026-01-04', '00000000-0000-0000-0000-000000000070');
+update public.shifts set status = 'realizado' where id = '00000000-0000-0000-0000-000000000071';
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000069', true);
 insert into public.payments (id, user_id, obligation_id, valor, data_pagamento, status)
-select '00000000-0000-0000-0000-000000000073', '00000000-0000-0000-0000-000000000069', o.id, 40, '2026-01-04'::date, 'registrado'
-  from public.obligations o where o.shift_id = '00000000-0000-0000-0000-000000000071';
+values ('00000000-0000-0000-0000-000000000073', '00000000-0000-0000-0000-000000000069', '00000000-0000-0000-0000-000000000072', 40, '2026-01-04', 'registrado');
 update public.payments set status = 'cancelado' where id = '00000000-0000-0000-0000-000000000073';
 update public.shifts set status = 'agendado' where id = '00000000-0000-0000-0000-000000000071';
 reset request.jwt.claim.sub;
