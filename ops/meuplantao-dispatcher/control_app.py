@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 try:
@@ -23,6 +25,9 @@ class ControlApp:
     def __init__(self, root=None, service=None):
         self.service = service or control_service
         self.root = root
+        self._run_once_busy = False
+        self._run_queue: queue.Queue = queue.Queue()
+        self.run_button = None
         if root is not None and tk is not None:
             self._build(root)
 
@@ -38,7 +43,8 @@ class ControlApp:
         row.pack(padx=16, pady=8)
         tk.Button(row, text="ATIVAR", command=self.on_resume).pack(side="left", padx=4)
         tk.Button(row, text="PAUSAR", command=self.on_pause).pack(side="left", padx=4)
-        tk.Button(row, text="EXECUTAR AGORA", command=self.on_run_once).pack(side="left", padx=4)
+        self.run_button = tk.Button(row, text="EXECUTAR AGORA", command=self.on_run_once)
+        self.run_button.pack(side="left", padx=4)
         tk.Button(row, text="ABRIR LOGS", command=self.open_logs).pack(side="left", padx=4)
         tk.Button(row, text="ATUALIZAR", command=self.refresh).pack(side="left", padx=4)
         self.log_box = scrolledtext.ScrolledText(root, height=10, width=64, state="disabled")
@@ -125,12 +131,63 @@ class ControlApp:
             pass
         self.refresh()
 
-    def on_run_once(self) -> None:
+    def on_run_once(self) -> dict:
+        if getattr(self, "_run_once_busy", False):
+            return {"ignored": True, "result": "run-once already running"}
+        self._run_once_busy = True
+        self._set_run_enabled(False)
+        threading.Thread(target=self._run_once_worker, daemon=True).start()
+        self._schedule_poll()
+        return {"started": True}
+
+    def _set_run_enabled(self, enabled: bool) -> None:
+        button = getattr(self, "run_button", None)
+        if button is None:
+            return
+        try:
+            button.config(state="normal" if enabled else "disabled")
+        except Exception:
+            try:
+                button.state = "normal" if enabled else "disabled"
+            except Exception:
+                pass
+
+    def _schedule_poll(self) -> None:
+        after = getattr(getattr(self, "root", None), "after", None)
+        if callable(after):
+            try:
+                after(100, self._poll_run_once)
+            except Exception:
+                pass
+
+    def _run_once_worker(self) -> None:
         try:
             result = self.service.run_once()
-            msg = str(result.get("result", ""))
+            msg = str((result or {}).get("result", ""))
+            ok = bool((result or {}).get("ok", True))
         except Exception as exc:
-            msg = f"ERRO: {exc}"
+            msg, ok = f"ERRO: {exc}", False
+        try:
+            self._run_queue.put({"ok": ok, "result": msg})
+        except Exception:
+            pass
+        self._schedule_poll()
+
+    def _poll_run_once(self) -> None:
+        if not getattr(self, "_run_once_busy", False):
+            return
+        try:
+            done = self._run_queue.get_nowait()
+        except queue.Empty:
+            self._schedule_poll()
+            return
+        msg = str(done.get("result", ""))
+        self._run_once_busy = False
+        self._set_run_enabled(True)
+        try:
+            self.refresh()
+        except Exception:
+            pass
         try:
             if hasattr(self.message_label, "config"):
                 self.message_label.config(text=msg)
@@ -138,7 +195,6 @@ class ControlApp:
                 self.message_label.text = msg
         except Exception:
             pass
-        self.refresh()
 
     def open_logs(self) -> None:
         try:
