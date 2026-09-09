@@ -25,8 +25,9 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
 
   const creationKey = `mai65-create-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const creationInput = { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "06:00", p_hora_fim: "07:00", p_valor_previsto: 80, p_status: "realizado", p_data_prevista: "2030-09-11", p_responsavel_place_id: place.id, p_responsavel_contact_id: null, p_idempotency_key: creationKey };
-  const createdFirst = (await ok(await saveShift(a, creationInput), "criação RPC idempotente inicial"))[0];
-  const createdRetry = (await ok(await saveShift(a, creationInput), "retry de criação RPC idempotente"))[0];
+  const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
+  const createdFirst = rpcRow(await ok(await saveShift(a, creationInput), "criação RPC idempotente inicial"));
+  const createdRetry = rpcRow(await ok(await saveShift(a, creationInput), "retry de criação RPC idempotente"));
   assert.equal(createdRetry.id, createdFirst.id, "retry de criação deve retornar o mesmo shift");
   assert.equal((await request(a, `shifts?user_id=eq.${aId}&idempotency_key=eq.${encodeURIComponent(creationKey)}&select=id`)).body.length, 1, "chave deve produzir um shift");
   assert.equal((await request(a, `obligations?shift_id=eq.${createdFirst.id}&select=id`)).body.length, 1, "chave deve produzir uma obligation");
