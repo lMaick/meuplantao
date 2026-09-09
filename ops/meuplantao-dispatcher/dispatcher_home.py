@@ -74,3 +74,44 @@ def lock_path() -> Path:
 
 def control_state_path() -> Path:
     return home() / "control-state.json"
+
+
+def acquire_tick_lock(path: Path | str | None = None, timeout: float = 120.0, poll: float = 0.2):
+    import time
+    try:
+        import msvcrt
+    except ImportError as exc:
+        raise RuntimeError("dispatcher lock requires Windows msvcrt") from exc
+    lock_file = Path(path) if path is not None else lock_path()
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_file, "a+b")
+    handle.seek(0)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    deadline = time.monotonic() + float(timeout)
+    while True:
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return handle
+        except OSError:
+            if time.monotonic() >= deadline:
+                try:
+                    handle.close()
+                finally:
+                    pass
+                raise RuntimeError(f"timeout waiting for dispatcher lock: {lock_file}")
+            time.sleep(poll)
+
+
+def release_tick_lock(handle) -> None:
+    try:
+        import msvcrt
+    except ImportError as exc:
+        raise RuntimeError("dispatcher lock requires Windows msvcrt") from exc
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        handle.close()

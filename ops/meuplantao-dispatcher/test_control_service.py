@@ -16,6 +16,8 @@ def _deps(**over):
         "read_state": lambda: {"runtime": {"lastCheck": 1, "lastResult": "ok"}, "issues": {}},
         "run_dispatcher": lambda args: {"returncode": 0, "output": "ok"},
         "read_logs": lambda n=50: ["line1", "line2"],
+        "acquire_tick_lock": lambda timeout=120.0: ("fake-lock",),
+        "release_tick_lock": lambda handle: None,
     }
     base.update(over)
     return base

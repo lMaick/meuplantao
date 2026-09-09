@@ -18,6 +18,8 @@ def _real_deps() -> dict:
         "read_state": _read_state_real,
         "run_dispatcher": _run_dispatcher_real,
         "read_logs": _read_logs_real,
+        "acquire_tick_lock": _acquire_tick_lock_real,
+        "release_tick_lock": _release_tick_lock_real,
     }
 
 def _resolve(deps: dict | None) -> dict:
@@ -30,8 +32,13 @@ def _resolve(deps: dict | None) -> dict:
 
 def pause(deps: dict | None = None) -> str:
     d = _resolve(deps)
-    agents = d["list_agents"]() or []
-    d["set_mode"]("PAUSED")
+    timeout = d.get("lock_timeout", 120.0)
+    handle = d["acquire_tick_lock"](timeout)
+    try:
+        agents = d["list_agents"]() or []
+        d["set_mode"]("PAUSED")
+    finally:
+        d["release_tick_lock"](handle)
     if agents:
         return PAUSE_MESSAGE
     return "Dispatcher pausado para novas tarefas."
@@ -174,6 +181,16 @@ def _read_state_real() -> dict:
 def _run_dispatcher_real(args: list) -> dict:
     completed = subprocess.run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
     return {"returncode": completed.returncode, "output": (completed.stdout or "") + (completed.stderr or "")}
+
+def _acquire_tick_lock_real(timeout: float = 120.0):
+    import dispatcher_home
+    return dispatcher_home.acquire_tick_lock(dispatcher_home.lock_path(), timeout=timeout)
+
+
+def _release_tick_lock_real(handle) -> None:
+    import dispatcher_home
+    return dispatcher_home.release_tick_lock(handle)
+
 
 def _read_logs_real(n: int = 50) -> list:
     import dispatcher_home
