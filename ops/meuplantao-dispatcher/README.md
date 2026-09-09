@@ -37,3 +37,7 @@ issue elegível (`Todo` + `Orca Ready`); falhas de comentário não desfazem um
 dispatch confirmado. A reconciliação recupera um dispatch parcial sem criar
 workspace/agente duplicado. `state.json`, `dispatcher.log`, lock, cache e
 configuração local são ignorados pelo Git.
+
+## Maick Dispatcher Control (MAI-66)
+
+GUI Windows em Python 3.11 + Tkinter que controla o dispatcher sem criar um segundo motor. Detalhes em docs/operations/maick-dispatcher-control.md. Build local ignorado: powershell -ExecutionPolicy Bypass -File build-control-app.ps1 gera dist/MaickDispatcherControl.exe.
