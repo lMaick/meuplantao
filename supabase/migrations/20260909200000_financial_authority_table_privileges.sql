@@ -9,6 +9,8 @@
 -- ownership, locks, piso >= recebido, rollback, concorrencia e a edicao
 -- direta de data_prevista/responsavel seguem intactos.
 -- Migration ADITIVA: nao altera migrations anteriores; idempotente.
+-- Requer idempotency_key (criada pela 20260908193728, anterior a esta):
+-- falha alto com 42703 se aplicada fora de ordem, sem mascarar erro real.
 
 revoke update on public.shifts from anon, authenticated, public;
 revoke update on public.obligations from anon, authenticated, public;
