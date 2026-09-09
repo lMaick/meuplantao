@@ -52,6 +52,22 @@ REVIEW_LABEL = CONFIG.get("review_label", "Needs Review")
 MODEL = "gpt-5.6-luna"
 REASONING = "low"
 MAX_DISPATCH_PER_RUN = int(CONFIG.get("max_dispatch_per_run", 1))
+SCHEDULER_TASK_NAME = str(CONFIG.get("scheduler_task_name", "Hermes-MeuPlantao-Dispatcher") or "Hermes-MeuPlantao-Dispatcher")
+
+
+def get_control_mode() -> str:
+    import control_state
+    return control_state.get_mode()
+
+
+def record_runtime(state: dict, mode: str, dispatched: int, last_result: str, manual_once: bool = False) -> None:
+    state["runtime"] = {
+        "lastCheck": utc_epoch(),
+        "mode": mode,
+        "dispatched": int(dispatched),
+        "lastResult": str(last_result)[:500],
+        "manualOnce": bool(manual_once),
+    }
 
 
 def configure_logging() -> logging.Logger:
@@ -522,6 +538,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Idempotent Linear -> Orca dispatcher for MeuPlantao")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--issue", help="Restrict a run to one Linear identifier")
+    parser.add_argument("--manual-once", action="store_true", help="Single manual iteration ignoring PAUSED in this process only")
     args = parser.parse_args()
 
     lock = acquire_lock()
@@ -530,6 +547,10 @@ def main() -> int:
         return 0
     try:
         state = load_state()
+        mode = get_control_mode()
+        manual_once = bool(args.manual_once)
+        paused = (mode == "PAUSED" and not manual_once)
+        max_per_run = 1 if manual_once else MAX_DISPATCH_PER_RUN
         status = orca("status")
         if not status.get("runtime", {}).get("reachable"):
             raise RuntimeError("Orca runtime is not reachable")
@@ -537,19 +558,30 @@ def main() -> int:
         if not args.dry_run:
             reconcile_dispatches(state, worktrees)
             monitor_deliveries(state, worktrees)
+        if paused and not args.dry_run:
+            record_runtime(state, mode, 0, "paused for new tasks; reconcile and monitor continued", manual_once)
+            save_state(state)
+            monitor_deliveries(state, worktrees)
+            LOG.info("Control mode PAUSED: skipped discovery and dispatch; reconcile and monitor continued")
+            return 0
         issues = list_eligible_issues()
         if args.issue:
             issues = [issue for issue in issues if issue.get("identifier", "").upper() == args.issue.upper()]
         dispatched = 0
         for issue in issues:
-            if dispatched >= MAX_DISPATCH_PER_RUN:
+            if dispatched >= max_per_run:
+                break
+            if not manual_once and get_control_mode() == "PAUSED":
+                LOG.info("Control mode changed to PAUSED before dispatch; stopping new dispatches")
                 break
             if dispatch_issue(issue, state, worktrees, args.dry_run):
                 dispatched += 1
                 worktrees = list_worktrees()
         if not args.dry_run:
             monitor_deliveries(state, worktrees)
-        LOG.info("Run complete eligible=%d dispatched=%d dry_run=%s", len(issues), dispatched, args.dry_run)
+            record_runtime(state, mode, dispatched, f"eligible={len(issues)} dispatched={dispatched} manual_once={manual_once}", manual_once)
+            save_state(state)
+        LOG.info("Run complete eligible=%d dispatched=%d dry_run=%s mode=%s manual_once=%s", len(issues), dispatched, args.dry_run, mode, manual_once)
         return 0
     except Exception as exc:
         LOG.exception("Dispatcher run failed: %s", exc)

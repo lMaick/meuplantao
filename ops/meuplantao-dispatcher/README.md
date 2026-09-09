@@ -25,7 +25,7 @@ quando a variável está vazia; um override explícito é preservado.
 
 Substitua com segurança `__START_BOUNDARY__`, `__USER_OR_SID__` e
 `__DISPATCHER_DIR__` no `task-scheduler.xml` por valores da máquina. Valide o XML
-e instale com `schtasks /Create /TN MeuPlantao-Dispatcher /XML task-scheduler.xml
+e instale com `schtasks /Create /TN Hermes-MeuPlantao-Dispatcher /XML task-scheduler.xml
 /F`. O template usa `IgnoreNew`, permite bateria, `StartWhenAvailable`, polling
 a cada cinco minutos e timeout máximo de quinze minutos. `InteractiveToken`
 exige usuário logado; é um risco conhecido.
@@ -37,3 +37,7 @@ issue elegível (`Todo` + `Orca Ready`); falhas de comentário não desfazem um
 dispatch confirmado. A reconciliação recupera um dispatch parcial sem criar
 workspace/agente duplicado. `state.json`, `dispatcher.log`, lock, cache e
 configuração local são ignorados pelo Git.
+
+## Maick Dispatcher Control (MAI-66)
+
+GUI Windows em Python 3.11 + Tkinter que controla o dispatcher sem criar um segundo motor. Detalhes em docs/operations/maick-dispatcher-control.md. Build local ignorado: powershell -ExecutionPolicy Bypass -File build-control-app.ps1 gera dist/MaickDispatcherControl.exe.

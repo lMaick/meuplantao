@@ -10,3 +10,4 @@ project = "MeuPlantao — Operação"
 ready_label = "Orca Ready"
 review_label = "Needs Review"
 max_dispatch_per_run = 1
+scheduler_task_name = "Hermes-MeuPlantao-Dispatcher"
