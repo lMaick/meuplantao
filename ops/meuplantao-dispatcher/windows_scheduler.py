@@ -35,7 +35,8 @@ def _parse_task_xml(text: str) -> dict:
         node = root.find(path, ns)
         return (node.text or "").strip() if node is not None and node.text else ""
     enabled_text = find(".//t:Settings/t:Enabled") or find(".//{http://schemas.microsoft.com/windows/2004/02/mit/task}Settings/{http://schemas.microsoft.com/windows/2004/02/mit/task}Enabled")
-    enabled = enabled_text.lower() == "true"
+    # Settings/Enabled is optional in the Task Scheduler schema; when absent the task is enabled.
+    enabled = enabled_text.strip().lower() != "false" if enabled_text else True
     interval = find(".//t:Repetition/t:Interval")
     time_limit = find(".//t:Settings/t:ExecutionTimeLimit")
     return {"enabled": enabled, "interval": interval, "timeLimit": time_limit}

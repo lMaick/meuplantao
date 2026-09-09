@@ -25,7 +25,7 @@ quando a variável está vazia; um override explícito é preservado.
 
 Substitua com segurança `__START_BOUNDARY__`, `__USER_OR_SID__` e
 `__DISPATCHER_DIR__` no `task-scheduler.xml` por valores da máquina. Valide o XML
-e instale com `schtasks /Create /TN MeuPlantao-Dispatcher /XML task-scheduler.xml
+e instale com `schtasks /Create /TN Hermes-MeuPlantao-Dispatcher /XML task-scheduler.xml
 /F`. O template usa `IgnoreNew`, permite bateria, `StartWhenAvailable`, polling
 a cada cinco minutos e timeout máximo de quinze minutos. `InteractiveToken`
 exige usuário logado; é um risco conhecido.

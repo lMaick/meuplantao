@@ -71,6 +71,15 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(en["interval"], "PT5M")
         self.assertEqual(en["timeLimit"], "PT15M")
 
+    def test_versioned_task_xml_without_settings_enabled_is_enabled(self):
+        real_xml = (Path(__file__).parent / "task-scheduler.xml").read_text(encoding="utf-8")
+        self.assertNotIn("<Settings><Enabled>", real_xml.replace(" ", "").replace("\n", ""))
+        info = windows_scheduler.query_scheduler(runner=_runner_for(real_xml, LIST_EN))
+        self.assertTrue(info["exists"])
+        self.assertTrue(info["enabled"])
+        self.assertEqual(info["interval"], "PT5M")
+        self.assertEqual(info["timeLimit"], "PT15M")
+
     def test_disabled_xml_reports_not_enabled(self):
         info = windows_scheduler.query_scheduler(runner=_runner_for(XML_DISABLED, LIST_EN))
         self.assertTrue(info["exists"])
