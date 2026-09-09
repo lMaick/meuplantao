@@ -6,6 +6,13 @@ test "$#" -ge 1 || { echo "migration file(s) required" >&2; exit 1; }
 migration_file="${1:?migration file is required}"
 immutability_file="${2:-}"
 authority_file="${3:-}"
+authority_fix_file="${4:-}"
+if [ -z "$authority_fix_file" ] && [ -n "$authority_file" ]; then
+  candidate_fix="$(dirname "$authority_file")/20260909200000_financial_authority_table_privileges.sql"
+  if [ -f "$candidate_fix" ]; then
+    authority_fix_file="$candidate_fix"
+  fi
+fi
 failure_log="$(mktemp)"
 trap 'rm -f "$failure_log"' EXIT
 
@@ -139,6 +146,13 @@ values ('00000000-0000-0000-0000-000000000092', '00000000-0000-0000-0000-0000000
 update public.shifts set status = 'realizado' where id = '00000000-0000-0000-0000-000000000092';
 commit;
 SQL
+  # O CI aplica toda migration presente no boot; restaura o default Supabase
+  # (UPDATE em nivel de tabela) para demonstrar o buraco pre-autoridade de
+  # forma deterministica, como papel autenticado com as capacidades do produto.
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+grant update on public.shifts to authenticated;
+grant update on public.obligations to authenticated;
+SQL
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 set role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000090', false);
@@ -161,6 +175,10 @@ SQL
   test "$(psql "$DATABASE_URL" -Atqc "select valor_previsto from public.shifts where id = '00000000-0000-0000-0000-000000000092'")" = 100.00
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$authority_file" >/dev/null
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$authority_file" >/dev/null
+  if [ -n "$authority_fix_file" ]; then
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$authority_fix_file" >/dev/null
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$authority_fix_file" >/dev/null
+  fi
   test "$(psql "$DATABASE_URL" -Atqc "select prosecdef from pg_proc where proname = 'save_shift_with_obligation'")" = t
   test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.shifts', 'valor_previsto', 'UPDATE')")" = f
   test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.obligations', 'valor_devido', 'UPDATE')")" = f
