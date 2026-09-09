@@ -52,6 +52,7 @@ REVIEW_LABEL = CONFIG.get("review_label", "Needs Review")
 MODEL = "gpt-5.6-luna"
 REASONING = "low"
 MAX_DISPATCH_PER_RUN = int(CONFIG.get("max_dispatch_per_run", 1))
+SCHEDULER_TASK_NAME = str(CONFIG.get("scheduler_task_name", "Hermes-MeuPlantao-Dispatcher") or "Hermes-MeuPlantao-Dispatcher")
 
 
 def get_control_mode() -> str:
