@@ -36,7 +36,7 @@ SQL
 
 before="$(psql "$DATABASE_URL" -Atqc "select count(*) from public.obligations where id = '00000000-0000-0000-0000-000000000068'")"
 test "$before" = 1
-if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration_file" >"$failure_log" 2>&1; then
+if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f "$migration_file" >"$failure_log" 2>&1; then
   echo 'legacy preflight unexpectedly succeeded' >&2
   exit 1
 fi
