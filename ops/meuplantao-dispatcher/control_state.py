@@ -8,13 +8,17 @@ ROOT = Path(__file__).resolve().parent
 CONTROL_STATE_PATH = ROOT / "control-state.json"
 VALID_MODES = ("AUTO", "PAUSED")
 
+def is_initialized(path: Path | None = None) -> bool:
+    state_path = path or CONTROL_STATE_PATH
+    return state_path.exists()
+
 def get_mode(path: Path | None = None, config_valid=None) -> str:
     state_path = path or CONTROL_STATE_PATH
     if not state_path.exists():
-        valid = _config_ok(config_valid)
-        if valid:
-            return "AUTO"
-        raise RuntimeError(f"control state missing and config invalid: {state_path}")
+        raise RuntimeError(
+            f"control state missing (fail closed): {state_path}; "
+            "run explicit bootstrap after validating config"
+        )
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -33,6 +37,14 @@ def set_mode(mode: str, path: Path | None = None) -> str:
     tmp.write_text(json.dumps({"mode": mode}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, state_path)
     return mode
+
+def bootstrap_auto(path: Path | None = None, config_valid=None) -> str:
+    state_path = path or CONTROL_STATE_PATH
+    if state_path.exists():
+        raise RuntimeError(f"control state already exists, refusing bootstrap overwrite: {state_path}")
+    if not _config_ok(config_valid):
+        raise RuntimeError("refusing bootstrap: dispatcher config is missing or invalid")
+    return set_mode("AUTO", state_path)
 
 def _config_ok(config_valid) -> bool:
     if config_valid is None:
