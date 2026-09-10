@@ -9,7 +9,35 @@ _fixture = Path(_fixture_dir.name) / "config.toml"
 _fixture.write_text('''orca_dir = "C:/orca"\ngh_executable = ""\ngithub_repo = "example/repository"\nrepo_name = "meuplantao"\nrepo_path = "C:/repo"\nworktree_root = "C:/worktrees"\nlinear_workspace_id = "workspace-id"\nteam = "Team"\nproject = "MeuPlantao \\u2014 Opera\\u00e7\\u00e3o"\n''', encoding="utf-8")
 import os
 os.environ["MEUPLANTAO_DISPATCHER_CONFIG"] = str(_fixture)
-
+_policy = """worker_id = "codex-luna"
+[[allowed_workers]]
+id = "codex-luna"
+agent = "codex"
+model = "gpt-5.6-luna"
+reasoning = "low"
+command = "codex"
+identity = "codex"
+auth_mode = "chatgpt"
+[[allowed_workers]]
+id = "opencode-spark"
+model = "muse-spark-1.3-contributor"
+reasoning = "medium"
+provider = "opencode-go"
+command = "opencode"
+identity = "opencode"
+auth_mode = "opencode"
+"""
+with open(_fixture, "a", encoding="utf-8") as _fh:
+    _fh.write(_policy)
+_home = Path(_fixture_dir.name) / "worker-home"
+(_home / ".codex").mkdir(parents=True, exist_ok=True)
+(_home / ".codex" / "config.toml").write_text("model = \"gpt-5.6-luna\"\nmodel_reasoning_effort = \"low\"\n", encoding="utf-8")
+(_home / ".codex" / "auth.json").write_text("{\"auth_mode\": \"chatgpt\"}", encoding="utf-8")
+(_home / ".config" / "opencode").mkdir(parents=True, exist_ok=True)
+(_home / ".config" / "opencode" / "opencode.json").write_text("{\"model\": \"muse-spark-1.3-contributor\", \"reasoning\": \"medium\", \"provider\": \"opencode-go\"}", encoding="utf-8")
+(_home / ".config" / "opencode" / "auth.json").write_text("{\"auth_mode\": \"opencode\"}", encoding="utf-8")
+os.environ["HOME"] = str(_home)
+os.environ["USERPROFILE"] = str(_home)
 sys.path.insert(0, str(Path(__file__).parent))
 import dispatcher
 

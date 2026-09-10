@@ -11,3 +11,35 @@ ready_label = "Orca Ready"
 review_label = "Needs Review"
 max_dispatch_per_run = 1
 scheduler_task_name = "Hermes-MeuPlantao-Dispatcher"
+# Worker policy (MAI-67): preflight autoriza e executa SOMENTE o worker de
+# worker_id. Sem worker_id, sem [[allowed_workers]] ou com lista vazia, o
+# dispatch falha fechado antes de criar workspace/agente ou alterar a Linear.
+# Sem credenciais neste arquivo.
+worker_id = "codex-luna"
+
+# agent: id conhecido do Orca para `worktree create --agent` (confirmado via
+# `orca worktree create --help`; hoje apenas codex/claude sao documentados).
+# OMITA agent quando nao existir id conhecido: o worktree e criado sem
+# --agent/--prompt e o agente sobe via `terminal create --command`.
+# command: comando real de `terminal create --command` (ex.: codex, opencode).
+# identity: agentIdentity esperado em `orca terminal list`; confira na maquina
+# (nao invente: divergencia falha fechado). Comparacao exata, sem log secreto.
+# auth_mode: requisito de autenticacao declarado; ausente/divergente falha
+# fechado e nunca e exibido/logado.
+[[allowed_workers]]
+id = "codex-luna"
+agent = "codex"
+model = "gpt-5.6-luna"
+reasoning = "low"
+command = "codex"
+identity = "codex"
+auth_mode = "chatgpt"
+
+[[allowed_workers]]
+id = "opencode-spark"
+model = "muse-spark-1.3-contributor"
+reasoning = "medium"
+provider = "opencode-go"
+command = "opencode"
+identity = "opencode"
+auth_mode = "opencode"
