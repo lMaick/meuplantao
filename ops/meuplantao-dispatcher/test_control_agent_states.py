@@ -39,12 +39,21 @@ def _envelope(items_key, items):
     return {items_key: items, "hostScope": {"hostIds": ["host-1"], "omittedHostIds": []}, "totalCount": len(items), "truncated": False}
 
 
-def _orca_side_effect(worktrees, terminals_by_path):
+def _default_repos():
+    return {"repos": [{"displayName": "meuplantao", "id": "repo-meuplantao"}]}
+
+
+def _orca_side_effect(worktrees, terminals_by_path, repos=None):
     if isinstance(worktrees, dict):
         wl_payload = worktrees
     else:
         wl_payload = _envelope('worktrees', [dict(dict(w, repoId=w.get('repoId', 'repo-meuplantao')), repo=w.get('repo', 'meuplantao')) if isinstance(w, dict) else w for w in worktrees])
+    repos_payload = _default_repos() if repos is None else repos
     def fake(*args, **kwargs):
+        if tuple(args[:2]) == ("repo", "list"):
+            if isinstance(repos_payload, Exception):
+                raise repos_payload
+            return repos_payload
         if tuple(args[:2]) == ('worktree', 'list'):
             return wl_payload
         if tuple(args[:2]) == ("terminal", "list"):
@@ -71,13 +80,18 @@ def _ps_result(worktrees, **over):
     return payload
 
 
-def _real_status(ps_result, wl_worktrees, terminals_by_path):
+def _real_status(ps_result, wl_worktrees, terminals_by_path, repos=None):
     import dispatcher_home
     if isinstance(wl_worktrees, dict):
         wl_payload = wl_worktrees
     else:
         wl_payload = _envelope('worktrees', [dict(dict(w, repoId=w.get('repoId', 'repo-meuplantao')), repo=w.get('repo', 'meuplantao')) if isinstance(w, dict) else w for w in wl_worktrees])
+    repos_payload = _default_repos() if repos is None else repos
     def fake_orca(*args, **kwargs):
+        if tuple(args[:2]) == ("repo", "list"):
+            if isinstance(repos_payload, Exception):
+                raise repos_payload
+            return repos_payload
         if tuple(args[:2]) == ("worktree", "list"):
             return wl_payload
         if tuple(args[:2]) == ("terminal", "list"):
@@ -278,6 +292,8 @@ class StatusFailClosedTests(unittest.TestCase):
         for ps_payload in (None, {"unexpected": True}):
             with self.subTest(ps_payload=ps_payload):
                 def fake_orca(*args, _ps=ps_payload, **kwargs):
+                    if tuple(args[:2]) == ("repo", "list"):
+                        return _default_repos()
                     if tuple(args[:2]) == ("worktree", "list"):
                         return _envelope("worktrees", [{"path": WT1, "worktreeId": "w1", "repoId": "repo-meuplantao"}])
                     if tuple(args[:2]) == ("terminal", "list"):
@@ -575,7 +591,7 @@ class EnvelopeAndRepoScopeTests(unittest.TestCase):
             {"repo": "meuplantao", "repoId": "repo-X", "path": WT2, "agents": [_ps_agent("p2", "done")]},
         ])
         wl = [{"path": WT1, "repoId": "repo-X"}, {"path": WT2, "repoId": "repo-X"}]
-        status = _real_status(ps, wl, {WT1: [], WT2: []})
+        status = _real_status(ps, wl, {WT1: [], WT2: []}, repos={"repos": [{"displayName": "meuplantao", "id": "repo-X"}]})
         self.assertTrue(status["structuredOk"])
         self.assertEqual(status["visual"], "EXECUTANDO")
         self.assertEqual(status["agents"], 1)
@@ -634,6 +650,8 @@ class CanonicalRepoValidationTests(unittest.TestCase):
         wl = _envelope('worktrees', [{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x'}])
         ps = _ps_result([{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x', 'agents': [_ps_agent('p9', 'working')]}])
         def fake_orca(*args, **kwargs):
+            if tuple(args[:2]) == ('repo', 'list'):
+                return _default_repos()
             if tuple(args[:2]) == ('worktree', 'list'):
                 return wl
             if tuple(args[:2]) == ('terminal', 'list'):
@@ -651,6 +669,85 @@ class CanonicalRepoValidationTests(unittest.TestCase):
         self.assertNotIn('mode', seen)
 
 
+
+
+class RepoListCanonicalTests(unittest.TestCase):
+    def test_foreign_ids_without_repo_in_list_are_error_never_executing(self):
+        repos = {"repos": [{"displayName": "meuplantao", "id": "CANONICAL"}]}
+        wl = _envelope("worktrees", [{"repoId": "FOREIGN-ID", "path": "C:/x"}])
+        ps = _ps_result([{"repo": "outro-repo", "repoId": "FOREIGN-ID", "path": "C:/x", "agents": [_ps_agent("p9", "working")]}])
+        status = _real_status(ps, wl, {}, repos=repos)
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
+        self.assertEqual(status["agents"], 0)
+
+    def test_legit_path_without_repo_in_list_continues(self):
+        repos = {"repos": [{"displayName": "meuplantao", "id": "CANONICAL"}]}
+        wl = _envelope("worktrees", [{"repoId": "CANONICAL", "path": WT1}])
+        ps = _ps_result([{"repo": "meuplantao", "repoId": "CANONICAL", "path": WT1, "agents": [_ps_agent("p1", "working")]}])
+        status = _real_status(ps, wl, {WT1: []}, repos=repos)
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "EXECUTANDO")
+        self.assertEqual(status["agents"], 1)
+
+    def test_repo_list_without_unique_match_is_error(self):
+        bad_repos = [
+            {},
+            {"repos": "x"},
+            {"repos": {}},
+            {"repos": []},
+            {"repos": [42]},
+            {"repos": [{"displayName": "", "id": "CANONICAL"}]},
+            {"repos": [{"displayName": "meuplantao"}]},
+            {"repos": [{"displayName": "meuplantao", "id": ""}]},
+            {"repos": [{"displayName": "meuplantao", "id": 42}]},
+            {"repos": [{"displayName": 42, "id": "CANONICAL"}]},
+            {"repos": [{"displayName": "outro", "id": "X"}]},
+            {"repos": [{"displayName": "meuplantao", "id": "A"}, {"displayName": "meuplantao", "id": "B"}]},
+            {"repos": [{"displayName": "meuplantao", "id": "CANONICAL"}, {"displayName": 42, "id": "X"}]},
+        ]
+        wl = _envelope("worktrees", [{"repo": "meuplantao", "repoId": "CANONICAL", "path": WT1}])
+        ps = _ps_result([{"repo": "meuplantao", "repoId": "CANONICAL", "path": WT1, "agents": [_ps_agent("p1", "working")]}])
+        for bad in bad_repos:
+            with self.subTest(repos=bad):
+                status = _real_status(ps, wl, {WT1: []}, repos=bad)
+                self.assertFalse(status["structuredOk"])
+                self.assertEqual(status["visual"], "ERRO")
+                self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_repo_list_failure_is_error(self):
+        wl = _envelope("worktrees", [{"repo": "meuplantao", "repoId": "CANONICAL", "path": WT1}])
+        ps = _ps_result([{"repo": "meuplantao", "repoId": "CANONICAL", "path": WT1, "agents": [_ps_agent("p1", "working")]}])
+        status = _real_status(ps, wl, {WT1: []}, repos=RuntimeError("repo list down"))
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_pause_with_foreign_ids_and_no_repo_raises_without_persisting(self):
+        import dispatcher_home
+        seen = {}
+        repos = {"repos": [{"displayName": "meuplantao", "id": "CANONICAL"}]}
+        wl = _envelope("worktrees", [{"repoId": "FOREIGN-ID", "path": "C:/x"}])
+        ps = _ps_result([{"repo": "outro-repo", "repoId": "FOREIGN-ID", "path": "C:/x", "agents": [_ps_agent("p9", "working")]}])
+        def fake_orca(*args, **kwargs):
+            if tuple(args[:2]) == ("repo", "list"):
+                return repos
+            if tuple(args[:2]) == ("worktree", "list"):
+                return wl
+            if tuple(args[:2]) == ("terminal", "list"):
+                return _envelope("terminals", [])
+            if tuple(args[:2]) == ("worktree", "ps"):
+                return ps
+            raise AssertionError("unexpected orca call")
+        with mock.patch.object(control_service, "_orca_run", side_effect=fake_orca):
+            with mock.patch.object(dispatcher_home, "load_config_dict", return_value={"repo_name": "meuplantao"}):
+                d = _deps(set_mode=lambda m: seen.update(mode=m) or m)
+                del d["list_agents"]
+                del d["get_agent_states"]
+                with self.assertRaises(RuntimeError):
+                    control_service.pause(d)
+        self.assertNotIn("mode", seen)
 
 
 class EnvelopeStrictnessTests(unittest.TestCase):

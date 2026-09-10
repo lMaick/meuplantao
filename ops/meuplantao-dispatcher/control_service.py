@@ -129,7 +129,7 @@ def _complete_items(result, items_key, what):
     return items
 
 
-def _validate_list_worktree(wt, repo, what='worktree list'):
+def _validate_list_worktree(wt, repo, canonical_id=None, what='worktree list'):
     if not isinstance(wt, dict):
         raise RuntimeError(f'{what}: invalid worktree')
     declared = wt.get('repo', None)
@@ -141,23 +141,54 @@ def _validate_list_worktree(wt, repo, what='worktree list'):
     repo_id = wt.get('repoId')
     if not isinstance(repo_id, str) or not repo_id.strip():
         raise RuntimeError(f'{what}: invalid worktree identity')
+    if canonical_id is not None and repo_id != canonical_id:
+        raise RuntimeError(f'{what}: foreign repo')
     path = wt.get('path') or wt.get('worktreePath')
     if not isinstance(path, str) or not path.strip():
         raise RuntimeError(f'{what}: invalid worktree identity')
     return path
 
 
+def _resolve_canonical_repo_id(repo) -> str:
+    result = _orca_run("repo", "list")
+    if not isinstance(result, dict):
+        raise RuntimeError("repo list: invalid response")
+    repos = result.get("repos")
+    if not isinstance(repos, list):
+        raise RuntimeError("repo list: invalid repos")
+    matches = []
+    for entry in repos:
+        if not isinstance(entry, dict):
+            raise RuntimeError("repo list: invalid repo")
+        name = entry.get("displayName")
+        rid = entry.get("id")
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError("repo list: invalid repo")
+        if not isinstance(rid, str) or not rid.strip():
+            raise RuntimeError("repo list: invalid repo")
+        if name == repo:
+            matches.append(rid)
+    if len(matches) != 1:
+        raise RuntimeError("repo list: no unique repo")
+    return matches[0]
+
+
+def _fetch_scoped_worktrees(repo, canonical_id) -> list:
+    worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
+    if not worktrees:
+        raise RuntimeError("worktree list: no unique repo id")
+    for wt in worktrees:
+        _validate_list_worktree(wt, repo, canonical_id)
+    return worktrees
+
+
 def _canonical_repo_id() -> str:
     import dispatcher_home
     config = dispatcher_home.load_config_dict()
     repo = str(config.get("repo_name", "meuplantao"))
-    worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
-    for wt in worktrees:
-        _validate_list_worktree(wt, repo)
-    repo_ids = {wt.get('repoId') for wt in worktrees}
-    if len(repo_ids) != 1:
-        raise RuntimeError("worktree list: no unique repo id")
-    return next(iter(repo_ids))
+    canonical_id = _resolve_canonical_repo_id(repo)
+    _fetch_scoped_worktrees(repo, canonical_id)
+    return canonical_id
 
 
 def _duplicate_writable_panes(agents: list) -> list:
@@ -431,10 +462,11 @@ def _get_agent_states_real() -> list | None:
         if not isinstance(wt.get("agents"), list):
             return STRUCTURED_INCOMPLETE
     try:
+        repo = str(dispatcher_home.load_config_dict().get("repo_name", "meuplantao"))
         repo_id = _canonical_repo_id()
     except Exception:
         return STRUCTURED_INCOMPLETE
-    scoped = [wt for wt in worktrees if wt.get("repoId") == repo_id]
+    scoped = [wt for wt in worktrees if wt.get("repoId") == repo_id and wt.get("repo") == repo]
     return _coerce_structured_states({"worktrees": scoped})
 
 
@@ -443,9 +475,10 @@ def _list_agents_real() -> list:
     config = dispatcher_home.load_config_dict()
     repo = str(config.get("repo_name", "meuplantao"))
     agents = []
-    worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
+    canonical_id = _resolve_canonical_repo_id(repo)
+    worktrees = _fetch_scoped_worktrees(repo, canonical_id)
     for wt in worktrees:
-        path = _validate_list_worktree(wt, repo)
+        path = _validate_list_worktree(wt, repo, canonical_id)
         try:
             terminals = _complete_items(_orca_run("terminal", "list", "--worktree", f"path:{path}"), "terminals", "terminal list")
         except Exception as exc:

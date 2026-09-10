@@ -21,6 +21,8 @@ class PauseEvidenceTests(unittest.TestCase):
             commands = []
             def fake_orca_run(*args, **kwargs):
                 commands.append(list(args))
+                if tuple(args[:2]) == ("repo", "list"):
+                    return {"repos": [{"displayName": "meuplantao", "id": "repo-meuplantao"}]}
                 if tuple(args[:2]) == ("worktree", "list"):
                     return WORKTREES
                 if tuple(args[:2]) == ("terminal", "list"):

@@ -59,32 +59,35 @@ A chave de itens precisa estar presente com valor lista (`worktrees` no ps/list,
 precisa ser string nao vazia apos strip (bool, numero, vazio, espacos ou item
 nao-string invalidam o envelope inteiro).
 
-## Escopo por repo (repoId canonico)
+## Escopo por repo (repoId canonico via repo list)
 
-O `ps` e filtrado EXCLUSIVAMENTE por um repoId canonico: o controle resolve
-primeiro exatamente um repoId para o `repo_name` configurado a partir de um
-`worktree list` completo e verificado (envelope valido). Varios worktrees com
-o mesmo repoId e mesmo repo sao esperados e deduplicados por repoId (nao e
-ambiguidade). Sem correspondencia unica (nenhum repoId) ou com ambiguidade
-(dois ou mais repoIds distintos), o controle falha fechado (`ERRO`/
-indeterminado). Nunca se compara `repoId` com `repo_name`: um `ps` com
-`repo='outro-repo'` e `repoId='meuplantao'` e descartado pelo filtro, e dois
-repos chamados `meuplantao` com repoIds diferentes nao se misturam. `working`
-Toda a lista e validada item a item ANTES de coletar repoIds: cada worktree precisa
-ser objeto com `repoId` e `path` como strings nao vazias; `repo`, quando declarado,
-precisa ser string nao vazia EXATAMENTE igual ao `repo_name` (o contrato real do
-`worktree list` no Orca 1.4.198 nao expoe `repo`; o escopo vem do filtro servidor
-mais a exigencia de exatamente um `repoId`); entrada estrangeira declarada,
-identidade ausente/vazia/com tipo incorreto ou item nao-objeto invalida a resposta
-inteira (`ERRO`/indeterminado fail-closed). Cada terminal precisa ser objeto com
-`handle` string nao vazia e `agentIdentity` ausente ou string (shell sem agente e
-terminal de outro agente sao filtros legitimos, nao erro); terminal nao-objeto, sem
-`handle` ou com identidade de tipo invalido invalida a descoberta e nunca e pulado
-silenciosamente. Multiplos worktrees legitimos com mesmo ID continuam validos
-(deduplicacao por repoId).
-de outro repo nunca altera o MeuPlantao. O `worktree list` e consultado tanto
-pela descoberta legada quanto pela resolucao canonica; ambas as chamadas usam
-envelopes verificados, sem duplicar chamadas inseguras.
+O `ps` e filtrado EXCLUSIVAMENTE por um repoId canonico provado: o controle
+resolve primeiro exatamente um repo cujo `displayName` seja EXATAMENTE igual ao
+`repo_name` configurado a partir de `repo list --json` (`result.repos[]` com
+`displayName`/`id` autoritativos; o contrato real nao tem `hostScope`).
+Cada entrada precisa ser objeto com `displayName`/`id` como strings nao vazias;
+zero ou multiplos matches falham fechado (`ERRO`/indeterminado). Lista vazia
+de worktrees tambem falha fechado: ownership sem worktree provado nao decide
+nada.
+
+Todo `worktree list` e validado item a item ANTES de qualquer uso: cada worktree
+precisa ser objeto com `repoId` e `path` como strings nao vazias, `repoId`
+EXATAMENTE igual ao ID canonico do `repo list` e `repo`, quando declarado, string
+nao vazia EXATAMENTE igual ao `repo_name` (o contrato real do `worktree list` no
+Orca 1.4.198 omite `repo`; item sem `repo` mas com `repoId` canonico e caminho
+legitimo continua valendo). Qualquer FOREIGN-ID invalida a resposta inteira,
+mesmo com `repo` ausente; identidade ausente/vazia/com tipo incorreto ou item
+nao-objeto tambem invalida tudo (`ERRO`/indeterminado fail-closed). Nunca se
+compara `repoId` com `repo_name`. Multiplos worktrees legitimos com mesmo nome
+e mesmo ID canonico sao esperados (nao e ambiguidade).
+
+Cada worktree do `ps` e validado ANTES de qualquer filtro (item nao-objeto,
+`repo`/`repoId`/`path` ausente, vazio ou com tipo incorreto, ou `agents` que nao
+seja lista = `ERRO`/indeterminado); depois da validacao, pertencem ao escopo
+somente os itens com `repoId` igual ao canonico E `repo` igual ao `repo_name`.
+`working` de outro repo nunca altera o MeuPlantao. O `worktree list` e consultado
+tanto pela descoberta legada quanto pela resolucao canonica; ambas as chamadas
+usam envelopes verificados, sem duplicar chamadas inseguras.
 
 Cada worktree do `ps` e validado ANTES de qualquer filtro: item nao-objeto,
 `repo`/`repoId`/`path` ausente, vazio ou com tipo incorreto, ou `agents` que
@@ -204,7 +207,7 @@ reabilitando o botao.
 - `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v`
 - Regressao MAI-68: `test_control_agent_states.py` (done conectado nao e EXECUTANDO;
   working e; blocked/waiting nunca EXECUTANDO; idle/failed rejeitados; envelope
-  truncado/hostScope/totalCount; escopo por repo; payload ausente/malformado;
+  truncado/hostScope/totalCount; escopo por repo via repo list canonico; payload ausente/malformado;
   multiplos panes; hostIds por item; chave de itens ausente; fallback legado validado).
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
