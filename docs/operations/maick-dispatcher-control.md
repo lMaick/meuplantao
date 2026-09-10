@@ -15,7 +15,8 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 - `PAUSADO`: novas buscas/dispatches suspensos; reconciliacao e monitoramento continuam.
 - `EXECUTANDO`: existe pelo menos um agente `working` (ou equivalente) ativo.
 - `ERRO`: config ausente/invalida, scheduler ausente/desabilitado/com erro, Orca inacessivel,
-  falha de parse do scheduler, ou estado ausente/invalido (falha fechada).
+  falha de parse do scheduler, ou descoberta impossivel (estado estruturado
+  ausente/invalido E descoberta legada falhou: indeterminado fail-closed).
 
 ## Contrato de estados do agente (MAI-68)
 
@@ -27,31 +28,40 @@ contrato `mai-68/agent-state-v1`). So valem estados conhecidos:
 - `done`/`idle` -> `OCIOSO` (pane conectado no prompt nao e atividade).
 - `failed` -> `FALHA` (nao conta como atividade; detalhe em `agentStates`).
 
-Validade estrita: o payload so e aceito quando cada item e objeto com `state`
-conhecido e cada worktree traz `agents` como lista. Qualquer desvio (state
-ausente, vazio ou desconhecido; worktrees/agents/itens com forma invalida;
-payload parcialmente malformado) invalida o conjunto inteiro: o controle
-aplica o criterio legado conservador, nunca um "vazio valido".
+Validade estrita: o payload so e aceito quando cada item e objeto com
+`worktree`/`pane` como strings nao vazias, `agentType` valido (`codex`) e
+`state` conhecido, e cada worktree traz `agents` como lista. Qualquer desvio
+(worktree/pane ausente, vazio ou com tipo incorreto; `agentType` ausente,
+vazio, com tipo incorreto ou desconhecido; state ausente, vazio ou
+desconhecido; worktrees/agents/itens com forma invalida; payload parcialmente
+malformado) invalida a LISTA INTEIRA: o controle aplica o criterio legado
+conservador, nunca um "vazio valido".
 
 ## Fallback legado / fail-closed (sem estado estruturado)
 
 Sem estado estruturado utilizavel (Orca antigo, erro de leitura, payload
-ausente ou malformado), vale o criterio legado: pane Codex conectada conta
-como atividade (GUI `EXECUTANDO`; `pause()` informa que a execucao atual nao
-foi interrompida). O controle nunca presume ociosidade sem prova: pane
-conectada jamais vira `ATIVO` silenciosamente nem recebe mensagem de
-"nenhuma execucao" nesse caso.
+ausente ou malformado), vale uma unica regra: tenta-se o criterio legado; se
+a descoberta legada funciona, ela decide (pane Codex conectada conta como
+atividade: GUI `EXECUTANDO`; `pause()` informa que a execucao atual nao foi
+interrompida; zero panes descobertos com sucesso decidem `ATIVO`). Se a
+descoberta legada tambem falha, o estado e `ERRO`/indeterminado fail-closed
+(nunca `ATIVO` nem `EXECUTANDO` presumido). O controle nunca presume
+ociosidade sem prova: pane conectada jamais vira `ATIVO` silenciosamente nem
+recebe mensagem de "nenhuma execucao" nesse caso.
 
-`ERRO` e outra coisa: config ausente/invalida, scheduler ausente/desabilitado/
+`ERRO` fora disso: config ausente/invalida, scheduler ausente/desabilitado/
 com erro, Orca inacessivel ou estado de disco ausente/invalido. Fallback
-legado nao e `ERRO`: com config/scheduler/Orca ok, a GUI mostra
-EXECUTANDO/ATIVO/PAUSADO normalmente.
+legado bem-sucedido nao e `ERRO`: com config/scheduler/Orca ok e descoberta
+legada funcionando, a GUI mostra EXECUTANDO/ATIVO/PAUSADO normalmente.
 
 Descoberta (`_list_agents_real`): os terminais sao agregados por worktree e o
-path do worktree pai e injetado (`worktreePath`) quando o pane nao traz o
-proprio; valor proprio, quando existe, e preservado. A deteccao de multiplos
-panes agrupa por esse path: dois panes em worktrees diferentes nunca geram
-falso `duplicateAgents`; dois no mesmo worktree geram aviso sem fechar nada.
+path do worktree pai e autoritativo: substitui sempre qualquer `worktreePath`/
+`worktreeId` trazido pelo terminal (sem `setdefault`), de modo que dois
+terminais listados sob o mesmo pai agrupam juntos mesmo com paths vazios ou
+divergentes, e dois pais diferentes nunca agrupam juntos. A deteccao de
+multiplos panes agrupa por esse path: dois panes em worktrees diferentes nunca
+geram falso `duplicateAgents`; dois no mesmo worktree geram aviso sem fechar
+nada.
 
 Vinculo unico issue -> worktree -> agente: multiplos panes Codex gravaveis no mesmo
 worktree geram `duplicateAgents` + aviso na mensagem

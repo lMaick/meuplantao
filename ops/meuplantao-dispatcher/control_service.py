@@ -14,6 +14,7 @@ WAITING_AGENT_STATES = frozenset({"waiting"})
 IDLE_AGENT_STATES = frozenset({"done", "idle"})
 FAILED_AGENT_STATES = frozenset({"failed"})
 KNOWN_AGENT_STATES = frozenset(set(ACTIVE_AGENT_STATES) | set(WAITING_AGENT_STATES) | set(IDLE_AGENT_STATES) | set(FAILED_AGENT_STATES))
+ALLOWED_AGENT_TYPES = frozenset({"codex"})
 
 
 def normalize_agent_state(value) -> str | None:
@@ -91,6 +92,15 @@ def _coerce_structured_states(payload) -> list | None:
     else:
         return None
     for candidate in candidates:
+        worktree = candidate.get("worktree")
+        pane = candidate.get("pane")
+        agent_type = candidate.get("agentType")
+        if not isinstance(worktree, str) or not worktree.strip():
+            return None
+        if not isinstance(pane, str) or not pane.strip():
+            return None
+        if not isinstance(agent_type, str) or agent_type.strip().lower() not in ALLOWED_AGENT_TYPES:
+            return None
         if normalize_agent_state(candidate.get("state")) not in KNOWN_AGENT_STATES:
             return None
     return candidates
@@ -228,8 +238,12 @@ def get_status(deps: dict | None = None) -> dict:
         sched = {"exists": False, "enabled": False, "status": "Error", "error": str(exc)[:300]}
     try:
         agents = d["list_agents"]() or []
-    except Exception:
+        agents_ok = True
+        agents_error = ""
+    except Exception as exc:
         agents = []
+        agents_ok = False
+        agents_error = str(exc)[:300]
     structured = _coerce_structured_states(_safe_agent_states(d))
     structured_ok = structured is not None
     duplicates = _duplicate_writable_panes(agents)
@@ -252,6 +266,8 @@ def get_status(deps: dict | None = None) -> dict:
         summary = {"total": len(agents), "active": len(agents), "waiting": 0, "idle": 0, "failed": 0, "unknown": 0, "contract": AGENT_STATE_CONTRACT, "fallback": "legacy-connected-panes"}
     if not config_ok or not sched.get("exists") or not sched.get("enabled") or not orca_ok:
         return {"visual": "ERRO", "mode": mode, "scheduler": sched, "configOk": bool(config_ok), "configError": config_error, "linearOk": bool(config_ok), "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": active_count, "structuredOk": structured_ok, "agentStates": summary, "duplicateAgents": duplicates, "warning": warning, "runtime": _sanitized_runtime(runtime_state)}
+    if not structured_ok and not agents_ok:
+        return {"visual": "ERRO", "mode": mode, "error": f"indeterminado (fail-closed): descoberta legada falhou e sem estado estruturado: {agents_error}", "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": 0, "structuredOk": False, "agentStates": summary, "duplicateAgents": [], "warning": "", "runtime": _sanitized_runtime(runtime_state)}
     if executing:
         visual = "EXECUTANDO"
     elif mode == "PAUSED":
@@ -358,8 +374,8 @@ def _list_agents_real() -> list:
                 continue
             if term.get("agentIdentity") != "codex" or term.get("orphaned"):
                 continue
-            term.setdefault("worktreePath", path)
-            term.setdefault("worktreeId", wt.get("worktreeId", ""))
+            term["worktreePath"] = path
+            term["worktreeId"] = wt.get("worktreeId", "")
             agents.append(term)
     return agents
 

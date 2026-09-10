@@ -127,9 +127,42 @@ class StrictCoercionTests(unittest.TestCase):
                 self.assertIsNone(control_service._coerce_structured_states(payload))
 
     def test_case_and_whitespace_state_accepted(self):
-        result = control_service._coerce_structured_states([{"handle": "h1", "state": " Working "}])
+        result = control_service._coerce_structured_states([{"worktree": WT1, "pane": "p1", "state": " Working ", "agentType": " Codex "}])
         self.assertIsNotNone(result)
         self.assertEqual(control_service.summarize_agent_states(result)["active"], 1)
+
+    def test_invalid_worktree_pane_agenttype_shapes_rejected(self):
+        bad = [
+            [{"worktree": 42, "pane": [], "state": "working", "agentType": "codex"}],
+            [{"worktree": WT1, "pane": "p1", "state": "working", "agentType": "claude"}],
+            [{"worktree": WT1, "pane": "p1", "state": "working"}],
+            [{"worktree": WT1, "pane": "p1", "state": "working", "agentType": 42}],
+            [{"worktree": WT1, "pane": "p1", "state": "working", "agentType": ""}],
+            [{"worktree": "", "pane": "p1", "state": "working", "agentType": "codex"}],
+            [{"worktree": WT1, "pane": 42, "state": "working", "agentType": "codex"}],
+            [{"worktree": WT1, "pane": "   ", "state": "working", "agentType": "codex"}],
+            {"worktrees": [{"path": WT1, "agents": [{"paneKey": "p1", "state": "done"}]}]},
+            {"worktrees": [{"path": WT1, "agents": [{"paneKey": "p1", "state": "done", "agentType": "claude"}]}]},
+            {"agents": [{"worktree": WT1, "pane": "p1", "state": "done", "agentType": None}]},
+        ]
+        for payload in bad:
+            with self.subTest(payload=payload):
+                self.assertIsNone(control_service._coerce_structured_states(payload))
+
+    def test_malformed_done_never_masks_legacy_activity(self):
+        agents = _discovered([{"path": WT1}], {WT1: [_raw_terminal("h1")]})
+        payloads = (
+            {"worktrees": [{"path": WT1, "agents": [{"paneKey": "p1", "state": "done"}]}]},
+            [{"worktree": WT1, "pane": "p1", "state": "done", "agentType": "claude"}],
+            [{"worktree": 42, "pane": [], "state": "done", "agentType": "codex"}],
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                d = _deps(list_agents=lambda: agents, get_agent_states=lambda p=payload: p)
+                status = control_service.get_status(d)
+                self.assertFalse(status["structuredOk"])
+                self.assertEqual(status["visual"], "EXECUTANDO")
+                self.assertGreater(status["agents"], 0)
 
 
 class StatusFailClosedTests(unittest.TestCase):
@@ -177,6 +210,31 @@ class StatusFailClosedTests(unittest.TestCase):
         self.assertFalse(status["structuredOk"])
         self.assertEqual(status["visual"], "EXECUTANDO")
 
+    def test_legacy_failure_without_structured_is_error(self):
+        def boom():
+            raise RuntimeError("terminal list failed")
+        for payload in ([{"handle": "h1"}], [{"state": "bogus-state"}], "garbage", None):
+            with self.subTest(payload=payload):
+                d = _deps(list_agents=boom, get_agent_states=lambda p=payload: p)
+                status = control_service.get_status(d)
+                self.assertFalse(status["structuredOk"])
+                self.assertEqual(status["visual"], "ERRO")
+                self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_valid_structured_decides_even_when_legacy_fails(self):
+        def boom():
+            raise RuntimeError("terminal list failed")
+        d = _deps(list_agents=boom, get_agent_states=lambda: [{"worktree": WT1, "pane": "p1", "state": "working", "agentType": "codex"}])
+        status = control_service.get_status(d)
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "EXECUTANDO")
+
+    def test_legacy_success_with_zero_panes_is_ativo(self):
+        d = _deps(list_agents=lambda: [], get_agent_states=lambda: [{"handle": "h1"}])
+        status = control_service.get_status(d)
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ATIVO")
+
     def test_valid_empty_structured_without_panes_is_ativo(self):
         for payload in ([], {"agents": []}, {"worktrees": []}):
             with self.subTest(payload=payload):
@@ -203,9 +261,19 @@ class DuplicateAssociationTests(unittest.TestCase):
         self.assertEqual(agents[0]["worktreePath"], WT1)
         self.assertEqual(agents[0]["worktreeId"], "w1")
 
-    def test_list_agents_preserves_own_path(self):
-        agents = _discovered([{"path": WT1}], {WT1: [_raw_terminal("h1", worktreePath="C:/custom")]})
-        self.assertEqual(agents[0]["worktreePath"], "C:/custom")
+    def test_list_agents_parent_path_is_authoritative(self):
+        agents = _discovered([{"path": WT1, "worktreeId": "w1"}], {WT1: [_raw_terminal("h1", worktreePath="C:/custom", worktreeId="spoofed")]})
+        self.assertEqual(agents[0]["worktreePath"], WT1)
+        self.assertEqual(agents[0]["worktreeId"], "w1")
+
+    def test_spoofed_paths_same_parent_still_grouped(self):
+        agents = _discovered([{"path": WT1}], {WT1: [_raw_terminal("h1", worktreePath=""), _raw_terminal("h2", worktreePath="C:/spoofed")]})
+        self.assertTrue(all(a["worktreePath"] == WT1 for a in agents))
+        states = [_structured_done(WT1, "p1"), _structured_done(WT1, "p2")]
+        d = _deps(list_agents=lambda: agents, get_agent_states=lambda: states)
+        status = control_service.get_status(d)
+        self.assertEqual(len(status["duplicateAgents"]), 1)
+        self.assertEqual(status["duplicateAgents"][0]["worktree"], WT1)
 
     def test_list_agents_filters_and_skips(self):
         worktrees = [{"path": WT1}, {"no-path": True}, 42, {"path": WT2}]
@@ -269,6 +337,16 @@ class PauseFailClosedTests(unittest.TestCase):
                 d = _deps(list_agents=lambda: agents, get_agent_states=lambda p=payload: p)
                 msg = control_service.pause(d)
                 self.assertIn("execucao atual nao foi interrompida", msg.lower().replace("ç", "c").replace("ã", "a"))
+
+
+    def test_pause_with_list_agents_failure_raises_without_persisting(self):
+        seen = {}
+        def boom():
+            raise RuntimeError("terminal list failed")
+        d = _deps(list_agents=boom, set_mode=lambda m: seen.update(mode=m) or m)
+        with self.assertRaises(RuntimeError):
+            control_service.pause(d)
+        self.assertNotIn("mode", seen)
 
 
 class ClassifyTests(unittest.TestCase):
