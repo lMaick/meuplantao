@@ -61,9 +61,23 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
 5. `Needs Review`, `Blocked` e `Dispatch Timeout` sao detectados exclusivamente pelo
    Linear e disparam Hermes exatamente uma vez por fingerprint (issue + PR + SHA
    para review; issue + marcador para os demais; novo SHA reseta o fingerprint).
-6. Evento Hermes minimo via `hermes-events.jsonl` (ignorado pelo Git): somente o
-   identificador da issue e o tipo do evento; Hermes le o conteudo no Linear e faz
-   verificacao rapida no GitHub, sem auditoria semantica automatica e sem polling.
+6. Evento Hermes minimo como comentario Linear (`Leia a MAI-N no Linear e processe
+   conforme o fluxo padrao. (evento=<tipo>)`): somente identificador da issue e tipo
+   do evento; Hermes le issue/comentarios diretamente no Linear e faz verificacao
+   rapida no GitHub, sem auditoria semantica automatica e sem polling. Nao existe
+   comando Hermes no Orca; nenhum transporte lateral e usado. O fingerprint e
+   gravado em `state.json` somente apos o comentario ser confirmado; falha de
+   entrega gera retry no proximo tick em vez de perda definitiva.
+
+Protocolo do worker (unica fonte de conclusao no fluxo normal): ao concluir ou
+travar, o worker registra na issue um comentario `MeuPlantao-Report: delivery
+pr=<PR-URL> sha=<SHA> tests=<resumo>` ou `MeuPlantao-Report: error|blocked
+<texto>` sanitizado e sem segredos. O dispatcher le conclusao/erro/review
+exclusivamente pelos comentarios/estados do Linear; o `gh` apenas verifica
+uma PR ja reportada (aberta, base `main`, SHA igual ao reportado) e nunca
+descobre entrega sozinho. `Dispatch Timeout` e persistido no Linear (label
+`timeout_label` + comentario), nao so no `state.json`. Erros publicados no
+Linear passam por sanitizacao de segredos (tokens, chaves, credenciais).
 
 Diagrama de estados (Linear + estado local):
 
@@ -77,5 +91,8 @@ Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge confir
 Lock, filtros, maximo por tick, review gate e proibicao de auto-merge preservados.
 
 Testes: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
-(caminho feliz, erro reportado, timeout, crash ambiguo, deduplicacao Hermes,
-novo SHA resetando fingerprint, sem policy/worker, sem LLM no polling).
+(caminho feliz, erro reportado via Linear sem GitHub, timeout com marca no Linear,
+crash ambiguo sanitizado sem retry, entrega Hermes duravel (falha nao perde evento),
+deduplicacao Hermes, novo SHA resetando fingerprint, evento estrito issue+tipo,
+sanitizacao de segredos, sem policy/worker, sem LLM no polling, sem mutacao
+global de CONFIG).

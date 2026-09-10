@@ -15,4 +15,3 @@ dist/
 build/
 *.spec
 *.exe
-hermes-events.jsonl

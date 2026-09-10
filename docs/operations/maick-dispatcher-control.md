@@ -258,9 +258,15 @@ o Orca inicia; nao e modelo do dispatcher.
   policy/worker valido) mantem `error` com zero criacao e erro sanitizado.
 - `dispatching` sem confirmacao no Linear alem de `dispatch_timeout_seconds`
   (default 900, override em `config.toml`) vira `dispatch-timeout`, sem redispatch.
-- Deteccao de `Needs Review` (via PR aberta com base `main` + transicao com review
-  gate), `Blocked` (estado ou label no Linear) e `Dispatch Timeout` exclusivamente
-  pelo Linear (+ `gh` para PRs); nunca por terminal Orca.
+- Conclusao/erro/review detectados exclusivamente por comentarios/estados do Linear:
+  o worker publica `MeuPlantao-Report: delivery pr=<PR-URL> sha=<SHA> tests=<resumo>`
+  ou `MeuPlantao-Report: error|blocked <texto>` sanitizado; o dispatcher verifica a
+  PR reportada via `gh` (aberta, base `main`, SHA igual) e nunca descobre entrega
+  pelo GitHub sozinho (`monitor_deliveries` exige report Linear antes de qualquer
+  chamada `gh`). `Blocked` por estado/label no Linear; nunca por terminal Orca.
+- `Dispatch Timeout` persistido no Linear (label `timeout_label`, default
+  `Dispatch Timeout`, + comentario) e no estado local, com estagios retentaveis.
+- Erros publicados passam por `sanitize_for_linear` (tokens, chaves, credenciais).
 - Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge;
   auditorias e correcoes vivem em comentarios no Linear.
 
@@ -268,13 +274,17 @@ o Orca inicia; nao e modelo do dispatcher.
 
 - Acionado apenas nos estados configurados (`needs-review`, `blocked`,
   `dispatch-timeout`), nunca para polling periodico.
-- Transporte: `ops/meuplantao-dispatcher/hermes-events.jsonl` (append-only,
-  ignorado pelo Git) + dedup em `state.json/issues/<ID>/hermesNotified`.
-- Cada evento contem somente identificador da issue e tipo do evento
-  (`issue`, `event`, `fingerprint`, `at`, `prompt`); o prompt e
+- Transporte: comentario Linear com o prompt minimo
   `Leia a MAI-N no Linear e processe conforme o fluxo padrao. (evento=<tipo>)`.
-- Hermes le issue/comentarios diretamente no Linear e faz verificacao rapida no
-  GitHub, sem auditoria semantica interna automatica.
+  Contrato verificado: Hermes le issue/comentarios diretamente no Linear
+  (evidencia MAI-59); nao existe comando Hermes/notify no Orca CLI e nenhum
+  transporte lateral e usado.
+- Cada evento contem estritamente identificador da issue e tipo do evento; o
+  fingerprint vive so no `state.json/issues/<ID>/hermesNotified` para dedup.
+- Dedup somente apos entrega confirmada: o fingerprint e gravado depois que o
+  comentario e aceito; falha de entrega gera retry no proximo tick (sem perda
+  definitiva) e repeticao do mesmo fingerprint gera zero escritas.
+- Hermes faz verificacao rapida no GitHub, sem auditoria semantica automatica.
 - Fingerprints: review = `ISSUE:needs-review:<PR>:<SHA>` (novo SHA reseta);
   blocked = `ISSUE:blocked`; timeout = `ISSUE:dispatch-timeout:<dispatchId>`.
   Repeticao do mesmo fingerprint = zero escritas (outbox e Linear intactos).
@@ -297,10 +307,15 @@ o Orca inicia; nao e modelo do dispatcher.
 - Caminho feliz com `dispatchId` persistido; segundo tick sem duplicar.
 - Erro reportado avanca pelo Linear sem consultar terminal Orca.
 - Timeout marca `dispatch-timeout`, notifica 1x e nao redispara.
-- Crash ambiguo nao causa retry nem segundo agente.
+- Crash ambiguo sanitizado nao causa retry nem segundo agente.
+- Report Linear de entrega vira review sem descoberta pelo GitHub.
+- Report Linear de erro e registrado sanitizado, sem segredos publicados.
+- Timeout marca o Linear e notifica Hermes 1x.
 - Review notifica Hermes 1x por fingerprint; novo SHA reseta.
 - Blocked notifica Hermes 1x.
-- Evento Hermes contem somente issue + tipo (sem URL/SHA/segredos).
+- Falha de entrega Hermes nao perde o evento (retry proximo tick).
+- Evento Hermes contem estritamente issue + tipo.
+- Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.
 - Nenhuma chamada a modelo/LLM no polling e na coordenacao.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
 
