@@ -7,11 +7,38 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 
 ## Estados
 
-- `ATIVO`: modo AUTO, scheduler habilitado, Orca acessivel, sem agentes ativos.
+- `ATIVO`: modo AUTO, scheduler habilitado, Orca acessivel, sem agente `working` ativo.
+  Panes conectados com agente `done`/`idle` no prompt contam como ociosos, nao como
+  EXECUTANDO (contrato `mai-68/agent-state-v1`).
 - `PAUSADO`: novas buscas/dispatches suspensos; reconciliacao e monitoramento continuam.
-- `EXECUTANDO`: ha agente Codex ativo detectado.
+- `EXECUTANDO`: existe pelo menos um agente `working` (ou equivalente) ativo.
 - `ERRO`: config ausente/invalida, scheduler ausente/desabilitado/com erro, Orca inacessivel,
   falha de parse do scheduler, ou estado ausente/invalido (falha fechada).
+
+## Contrato de estados do agente (MAI-68)
+
+Mapeamento do estado estruturado do Orca (`worktree ps --json`, `agents[].state`):
+
+- `working` -> `EXECUTANDO` (unico estado que acende EXECUTANDO na GUI).
+- `waiting` -> `AGUARDANDO` (GUI mostra ATIVO/PAUSADO; detalhe em `agentStates`).
+- `done`/`idle` -> `OCIOSO` (pane conectado no prompt nao e atividade).
+- `failed` -> `FALHA` (nao conta como atividade; detalhe em `agentStates`).
+- ausente/desconhecido -> `DESCONHECIDO` (contado em `agentStates.unknown`).
+
+Fallback fail-closed: sem estado estruturado (Orca antigo, payload ausente ou
+malformado, erro de leitura), o controle volta ao criterio legado conservador
+(pane Codex conectado = EXECUTANDO); nunca presume ociosidade.
+
+Vinculo unico issue -> worktree -> agente: multiplos panes Codex gravaveis no mesmo
+worktree geram `duplicateAgents` + aviso na mensagem
+("nenhum pane foi fechado automaticamente"); a GUI nunca fecha panes sozinha.
+
+## Ownership do workflow
+
+- Hermes planeja e audita; dispatcher reivindica e sincroniza o despacho;
+  Orca executa o trabalho no worktree.
+- GitHub e canonico para PR/checks; Linear e canonico para trabalho;
+  merge permanece humano (a GUI nao faz merge nem deploy).
 
 PAUSAR nunca mata agentes: nao chama close/delete/kill/stop. Com agente ativo a GUI informa
 "Dispatcher pausado para novas tarefas - execucao atual nao foi interrompida."
@@ -80,6 +107,8 @@ reabilitando o botao.
 ## Testes
 
 - `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v`
+- Regressao MAI-68: `test_control_agent_states.py` (done conectado nao e EXECUTANDO;
+  working e; waiting/idle/failed; payload ausente/malformado; multiplos panes).
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
   control_pause_lock (concorrencia real), control_pause_evidence (agente antes/depois),

@@ -8,6 +8,110 @@ from pathlib import Path
 
 PAUSE_MESSAGE = "Dispatcher pausado para novas tarefas \u2014 execu\u00e7\u00e3o atual n\u00e3o foi interrompida."
 
+AGENT_STATE_CONTRACT = "mai-68/agent-state-v1"
+ACTIVE_AGENT_STATES = frozenset({"working"})
+WAITING_AGENT_STATES = frozenset({"waiting"})
+IDLE_AGENT_STATES = frozenset({"done", "idle"})
+FAILED_AGENT_STATES = frozenset({"failed"})
+KNOWN_AGENT_STATES = frozenset(set(ACTIVE_AGENT_STATES) | set(WAITING_AGENT_STATES) | set(IDLE_AGENT_STATES) | set(FAILED_AGENT_STATES))
+
+
+def normalize_agent_state(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text or None
+
+
+def classify_agent_state(value) -> str:
+    state = normalize_agent_state(value)
+    if state in ACTIVE_AGENT_STATES:
+        return "EXECUTANDO"
+    if state in WAITING_AGENT_STATES:
+        return "AGUARDANDO"
+    if state in IDLE_AGENT_STATES:
+        return "OCIOSO"
+    if state in FAILED_AGENT_STATES:
+        return "FALHA"
+    return "DESCONHECIDO"
+
+
+def summarize_agent_states(states: list | None) -> dict:
+    summary = {"total": 0, "active": 0, "waiting": 0, "idle": 0, "failed": 0, "unknown": 0, "contract": AGENT_STATE_CONTRACT}
+    for entry in states or []:
+        raw = entry.get("state") if isinstance(entry, dict) else None
+        state = normalize_agent_state(raw)
+        summary["total"] += 1
+        if state in ACTIVE_AGENT_STATES:
+            summary["active"] += 1
+        elif state in WAITING_AGENT_STATES:
+            summary["waiting"] += 1
+        elif state in IDLE_AGENT_STATES:
+            summary["idle"] += 1
+        elif state in FAILED_AGENT_STATES:
+            summary["failed"] += 1
+        else:
+            summary["unknown"] += 1
+    return summary
+
+
+def _coerce_structured_states(payload) -> list | None:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        if isinstance(payload.get("worktrees"), list):
+            items = []
+            for worktree in payload.get("worktrees"):
+                if not isinstance(worktree, dict):
+                    continue
+                path = worktree.get("path") or worktree.get("worktreePath") or ""
+                for agent in worktree.get("agents") or []:
+                    if not isinstance(agent, dict):
+                        continue
+                    items.append({"worktree": path, "pane": agent.get("paneKey", ""), "state": agent.get("state"), "agentType": agent.get("agentType", "")})
+            return items
+        if isinstance(payload.get("agents"), list):
+            items = payload.get("agents")
+        else:
+            return None
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        return None
+    normalized = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        normalized.append({"worktree": entry.get("worktree") or entry.get("worktreePath") or entry.get("path") or "", "pane": entry.get("pane") or entry.get("paneKey") or entry.get("handle") or "", "state": entry.get("state"), "agentType": entry.get("agentType") or entry.get("agentIdentity") or ""})
+    return normalized
+
+
+def _duplicate_writable_panes(agents: list) -> list:
+    groups: dict = {}
+    for term in agents or []:
+        if not isinstance(term, dict):
+            continue
+        if term.get("orphaned"):
+            continue
+        identity = str(term.get("agentIdentity") or term.get("agentType") or "")
+        if identity and identity != "codex":
+            continue
+        if term.get("writable") is False:
+            continue
+        if term.get("connected") is False:
+            continue
+        path = term.get("worktreePath") or term.get("worktree") or term.get("path") or ""
+        groups.setdefault(path, []).append(term.get("handle") or term.get("pane") or term.get("paneKey") or "")
+    return [{"worktree": path, "panes": handles} for path, handles in groups.items() if len(handles) > 1]
+
+
+def _duplicate_warning(duplicates: list) -> str:
+    parts = []
+    for dup in duplicates:
+        parts.append(f"{dup.get('worktree', '')}: {len(dup.get('panes', []))} panes Codex gravaveis")
+    detail = "; ".join(parts)
+    return f"ATENCAO: multiplos panes Codex gravaveis no mesmo worktree ({detail}); vinculo unico issue->worktree->agente violado; nenhum pane foi fechado automaticamente."
+
 def _real_deps() -> dict:
     return {
         "get_mode": _get_mode_real,
@@ -16,6 +120,7 @@ def _real_deps() -> dict:
         "check_config": _check_config_real,
         "check_orca": _check_orca_real,
         "list_agents": _list_agents_real,
+        "get_agent_states": _get_agent_states_real,
         "read_state": _read_state_real,
         "run_dispatcher": _run_dispatcher_real,
         "read_logs": _read_logs_real,
@@ -37,10 +142,15 @@ def pause(deps: dict | None = None) -> str:
     handle = d["acquire_tick_lock"](timeout)
     try:
         agents = d["list_agents"]() or []
+        structured = _coerce_structured_states(_safe_agent_states(d))
         d["set_mode"]("PAUSED")
     finally:
         d["release_tick_lock"](handle)
-    if agents:
+    if structured is not None:
+        executing = any(normalize_agent_state(entry.get("state")) in ACTIVE_AGENT_STATES for entry in structured)
+    else:
+        executing = bool(agents)
+    if executing:
         return PAUSE_MESSAGE
     return "Dispatcher pausado para novas tarefas."
 
@@ -110,6 +220,10 @@ def get_status(deps: dict | None = None) -> dict:
         agents = d["list_agents"]() or []
     except Exception:
         agents = []
+    structured = _coerce_structured_states(_safe_agent_states(d))
+    structured_ok = structured is not None
+    duplicates = _duplicate_writable_panes(agents)
+    warning = _duplicate_warning(duplicates) if duplicates else ""
     try:
         orca_ok = bool(d["check_orca"]())
     except Exception:
@@ -118,15 +232,26 @@ def get_status(deps: dict | None = None) -> dict:
         runtime_state = d["read_state"]() or {}
     except Exception as exc:
         return {"visual": "ERRO", "mode": mode, "error": str(exc)[:300], "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False}
+    if structured_ok:
+        summary = summarize_agent_states(structured)
+        executing = summary["active"] > 0
+        active_count = summary["active"]
+    else:
+        executing = bool(agents)
+        active_count = len(agents)
+        summary = {"total": len(agents), "active": len(agents), "waiting": 0, "idle": 0, "failed": 0, "unknown": 0, "contract": AGENT_STATE_CONTRACT, "fallback": "legacy-connected-panes"}
     if not config_ok or not sched.get("exists") or not sched.get("enabled") or not orca_ok:
-        return {"visual": "ERRO", "mode": mode, "scheduler": sched, "configOk": bool(config_ok), "configError": config_error, "linearOk": bool(config_ok), "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": len(agents), "runtime": _sanitized_runtime(runtime_state)}
-    if agents:
+        return {"visual": "ERRO", "mode": mode, "scheduler": sched, "configOk": bool(config_ok), "configError": config_error, "linearOk": bool(config_ok), "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": active_count, "structuredOk": structured_ok, "agentStates": summary, "duplicateAgents": duplicates, "warning": warning, "runtime": _sanitized_runtime(runtime_state)}
+    if executing:
         visual = "EXECUTANDO"
     elif mode == "PAUSED":
         visual = "PAUSADO"
     else:
         visual = "ATIVO"
-    return {"visual": visual, "mode": mode, "scheduler": sched, "configOk": True, "linearOk": True, "orcaOk": True, "schedulerOk": True, "agents": len(agents), "runtime": _sanitized_runtime(runtime_state), "nextRun": sched.get("nextRun", ""), "message": PAUSE_MESSAGE if (mode == "PAUSED" and agents) else ""}
+    message = PAUSE_MESSAGE if (mode == "PAUSED" and executing) else ""
+    if warning:
+        message = f"{message} {warning}".strip() if message else warning
+    return {"visual": visual, "mode": mode, "scheduler": sched, "configOk": True, "linearOk": True, "orcaOk": True, "schedulerOk": True, "agents": active_count, "structuredOk": structured_ok, "agentStates": summary, "duplicateAgents": duplicates, "warning": warning, "panes": len(agents), "runtime": _sanitized_runtime(runtime_state), "nextRun": sched.get("nextRun", ""), "message": message}
 
 def _sanitized_runtime(state: dict) -> dict:
     rt = dict((state or {}).get("runtime", {}) or {})
@@ -181,6 +306,24 @@ def _check_orca_real() -> bool:
         return bool(status.get("runtime", {}).get("reachable"))
     except Exception:
         return False
+
+def _safe_agent_states(d: dict):
+    fn = d.get("get_agent_states")
+    if not callable(fn):
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _get_agent_states_real() -> list | None:
+    try:
+        result = _orca_run("worktree", "ps")
+    except Exception:
+        return None
+    return _coerce_structured_states(result)
+
 
 def _list_agents_real() -> list:
     import dispatcher_home
