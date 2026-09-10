@@ -10,7 +10,7 @@ import control_service
 import dispatcher_home
 import control_state
 
-SCOPE = {"hostIds": ["host-1"], "omittedHostIds": []}
+SCOPE = {"hostIds": ["local"], "omittedHostIds": []}
 WORKTREES = {'worktrees': [{'id': 'wt-66', 'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': 'C:/work/MAI-66-ctrl', 'displayName': 'MAI-66-ctrl', 'linkedLinearIssue': 'MAI-66'}], 'hostScope': SCOPE, 'totalCount': 1, 'truncated': False}
 TERMINALS = {"terminals": [{"handle": "term-66", "agentIdentity": "codex"}], "hostScope": SCOPE, "totalCount": 1, "truncated": False}
 

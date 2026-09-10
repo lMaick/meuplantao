@@ -36,7 +36,7 @@ def _raw_terminal(handle, agent="codex", orphaned=False, **extra):
 
 
 def _envelope(items_key, items):
-    return {items_key: items, "hostScope": {"hostIds": ["host-1"], "omittedHostIds": []}, "totalCount": len(items), "truncated": False}
+    return {items_key: items, "hostScope": {"hostIds": ["local"], "omittedHostIds": []}, "totalCount": len(items), "truncated": False}
 
 
 def _default_repos():
@@ -75,7 +75,7 @@ def _ps_worktree(repo, agents, path=None):
 
 
 def _ps_result(worktrees, **over):
-    payload = {"worktrees": worktrees, "hostScope": {"hostIds": ["host-1"], "omittedHostIds": []}, "totalCount": len(worktrees), "truncated": False}
+    payload = {"worktrees": worktrees, "hostScope": {"hostIds": ["local"], "omittedHostIds": []}, "totalCount": len(worktrees), "truncated": False}
     payload.update(over)
     return payload
 
@@ -748,6 +748,50 @@ class RepoListCanonicalTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     control_service.pause(d)
         self.assertNotIn("mode", seen)
+
+
+class HostIdStrictnessTests(unittest.TestCase):
+    def test_valid_host_ids_accepted_on_real_route(self):
+        for hid in ("local", "ssh:abc", "runtime:abc", "ssh:a%7Cb", "  local  "):
+            with self.subTest(hid=hid):
+                self.assertIsNotNone(control_service._parse_execution_host_id(hid))
+        for hid in ("local", "ssh:abc", "runtime:abc"):
+            with self.subTest(hid=hid):
+                ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "working")])],
+                                hostScope={"hostIds": [hid], "omittedHostIds": []})
+                status = _real_status(ps, [{"path": WT1}], {WT1: []})
+                self.assertTrue(status["structuredOk"])
+                self.assertEqual(status["visual"], "EXECUTANDO")
+                self.assertEqual(status["agents"], 1)
+
+    def test_invalid_host_ids_are_error_never_ativo(self):
+        bad = ("host-1", "banana", "ssh:", "runtime:", "ssh:a|b", "runtime:a|b",
+               "ssh:%", "ssh:%ZZ", "ssh:abc%2", "ssh:%FF", "ssh:%u1234", "runtime:%",
+               "LOCAL", "localx", "", "   ", "ssh", "runtime")
+        for hid in bad:
+            with self.subTest(hid=hid):
+                self.assertIsNone(control_service._parse_execution_host_id(hid))
+                ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "working")])],
+                                hostScope={"hostIds": [hid], "omittedHostIds": []})
+                status = _real_status(ps, [{"path": WT1}], {WT1: []})
+                self.assertFalse(status["structuredOk"])
+                self.assertEqual(status["visual"], "ERRO")
+                self.assertIn("fail-closed", status.get("error", ""))
+                self.assertEqual(status["agents"], 0)
+
+    def test_invalid_host_scope_in_legacy_discovery_is_error(self):
+        wl = _envelope("worktrees", [{"repo": "meuplantao", "repoId": "repo-meuplantao", "path": WT1}])
+        wl["hostScope"] = {"hostIds": ["host-1"], "omittedHostIds": []}
+        status = _real_status(RuntimeError("ps down"), wl, {})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
+        tl = _envelope("terminals", [{"handle": "h1", "agentIdentity": "codex", "connected": True, "writable": True}])
+        tl["hostScope"] = {"hostIds": ["banana"], "omittedHostIds": []}
+        status = _real_status(RuntimeError("ps down"), [{"path": WT1}], {WT1: tl})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("descoberta legada", status.get("error", ""))
 
 
 class EnvelopeStrictnessTests(unittest.TestCase):

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 PAUSE_MESSAGE = "Dispatcher pausado para novas tarefas \u2014 execu\u00e7\u00e3o atual n\u00e3o foi interrompida."
 
@@ -102,6 +103,42 @@ def _coerce_structured_states(payload) -> list | None:
     return candidates
 
 
+_HEX_DIGITS = frozenset("0123456789ABCDEFabcdef")
+
+
+def _parse_execution_host_id(value):
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text == "local":
+        return {"kind": "local", "id": "local"}
+    if text.startswith("ssh:"):
+        kind, encoded = "ssh", text[4:]
+    elif text.startswith("runtime:"):
+        kind, encoded = "runtime", text[8:]
+    else:
+        return None
+    if not encoded or "|" in encoded:
+        return None
+    i = 0
+    while i < len(encoded):
+        if encoded[i] == "%":
+            if i + 2 >= len(encoded) or encoded[i + 1] not in _HEX_DIGITS or encoded[i + 2] not in _HEX_DIGITS:
+                return None
+            i += 3
+        else:
+            i += 1
+    try:
+        decoded = unquote(encoded, encoding="utf-8", errors="strict")
+    except Exception:
+        return None
+    if not decoded:
+        return None
+    return {"kind": kind, "id": text}
+
+
 def _complete_items(result, items_key, what):
     if not isinstance(result, dict):
         raise RuntimeError(f"{what}: invalid envelope")
@@ -112,7 +149,7 @@ def _complete_items(result, items_key, what):
     if not isinstance(host_ids, list) or not host_ids:
         raise RuntimeError(f"{what}: unverifiable host scope")
     for hid in host_ids:
-        if not isinstance(hid, str) or not hid.strip():
+        if _parse_execution_host_id(hid) is None:
             raise RuntimeError(f'{what}: unverifiable host scope')
     if scope.get("omittedHostIds") != []:
         raise RuntimeError(f"{what}: partial host scope")

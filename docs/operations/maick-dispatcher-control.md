@@ -46,7 +46,7 @@ conservador, nunca um "vazio valido".
 Toda resposta de descoberta precisa provar que esta completa: `truncated`
 precisa ser booleano `false`, `totalCount` precisa ser inteiro nao-negativo
 igual a quantidade de itens retornados, e `hostScope` precisa ser verificavel
-(`hostIds` como lista nao vazia esperada e `omittedHostIds` vazio). Resposta
+(`hostIds` como lista nao vazia de IDs de host de execucao validos e `omittedHostIds` vazio). Resposta
 nao-objeto, `hostScope` ausente/incompleto, `truncated=true` ou lista parcial
 (`totalCount` incoerente) significa descoberta incompleta: `worktree ps`
 incompleto retorna `ERRO`/indeterminado fail-closed (jamais `ATIVO`, mesmo que
@@ -56,8 +56,10 @@ incompleto propaga erro e, sem estado estruturado valido, tambem resulta em
 distinguivel de descoberta incompleta.
 A chave de itens precisa estar presente com valor lista (`worktrees` no ps/list,
 `terminals` no terminal list): chave ausente nunca vira zero valido. Cada `hostId`
-precisa ser string nao vazia apos strip (bool, numero, vazio, espacos ou item
-nao-string invalidam o envelope inteiro).
+precisa passar no parser de ExecutionHostId do Orca 1.4.198 (`local`, `ssh:<id>` ou
+`runtime:<id>` com payload nao vazio e percent-encoding valido; `|` nao codificado,
+prefixo vazio, percent-encoding invalido ou qualquer outra string invalidam o
+envelope inteiro, incluindo `host-1`).
 
 ## Escopo por repo (repoId canonico via repo list)
 
@@ -133,8 +135,8 @@ worktree geram `duplicateAgents` + aviso na mensagem
 
 ## Ownership do workflow
 
-- Hermes planeja e audita; dispatcher reivindica e sincroniza o despacho;
-  Orca executa o trabalho no worktree.
+- Hermes coordena e consolida evidências operacionais; a auditoria técnica externa é realizada separadamente.
+- Dispatcher reivindica e sincroniza o despacho; Orca executa o trabalho no worktree.
 - GitHub e canonico para PR/checks; Linear e canonico para trabalho;
   merge permanece humano (a GUI nao faz merge nem deploy).
 
@@ -208,7 +210,7 @@ reabilitando o botao.
 - Regressao MAI-68: `test_control_agent_states.py` (done conectado nao e EXECUTANDO;
   working e; blocked/waiting nunca EXECUTANDO; idle/failed rejeitados; envelope
   truncado/hostScope/totalCount; escopo por repo via repo list canonico; payload ausente/malformado;
-  multiplos panes; hostIds por item; chave de itens ausente; fallback legado validado).
+  multiplos panes; hostIds estritos (ExecutionHostId); chave de itens ausente; fallback legado validado).
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
   control_pause_lock (concorrencia real), control_pause_evidence (agente antes/depois),
