@@ -124,6 +124,17 @@ def _complete_items(result, items_key, what):
     return items
 
 
+def _canonical_repo_id() -> str:
+    import dispatcher_home
+    config = dispatcher_home.load_config_dict()
+    repo = str(config.get("repo_name", "meuplantao"))
+    worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
+    repo_ids = {wt.get("repoId") for wt in worktrees if isinstance(wt, dict) and isinstance(wt.get("repoId"), str) and wt.get("repoId").strip()}
+    if len(repo_ids) != 1:
+        raise RuntimeError("worktree list: no unique repo id")
+    return next(iter(repo_ids))
+
+
 def _duplicate_writable_panes(agents: list) -> list:
     groups: dict = {}
     for term in agents or []:
@@ -383,12 +394,22 @@ def _get_agent_states_real() -> list | None:
         worktrees = _complete_items(result, "worktrees", "worktree ps")
     except Exception:
         return STRUCTURED_INCOMPLETE
+    for wt in worktrees:
+        if not isinstance(wt, dict):
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("repo"), str) or not wt.get("repo").strip():
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("repoId"), str) or not wt.get("repoId").strip():
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("path") or wt.get("worktreePath"), str) or not (wt.get("path") or wt.get("worktreePath")).strip():
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("agents"), list):
+            return STRUCTURED_INCOMPLETE
     try:
-        config = dispatcher_home.load_config_dict()
+        repo_id = _canonical_repo_id()
     except Exception:
         return STRUCTURED_INCOMPLETE
-    repo = str(config.get("repo_name", "meuplantao"))
-    scoped = [wt for wt in worktrees if isinstance(wt, dict) and (wt.get("repo") == repo or wt.get("repoId") == repo)]
+    scoped = [wt for wt in worktrees if wt.get("repoId") == repo_id]
     return _coerce_structured_states({"worktrees": scoped})
 
 

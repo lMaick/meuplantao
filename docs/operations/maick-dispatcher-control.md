@@ -55,11 +55,25 @@ incompleto propaga erro e, sem estado estruturado valido, tambem resulta em
 `ERRO`/indeterminado. Zero valido (envelope completo + lista vazia) continua
 distinguivel de descoberta incompleta.
 
-## Escopo por repo
+## Escopo por repo (repoId canonico)
 
-O `ps` e limitado ao repo configurado do dispatcher (`repo_name`): somente
-worktrees cujo `repo`/`repoId` confere com a config entram no estado
-estruturado. `working` de outro repo nunca altera o MeuPlantao.
+O `ps` e filtrado EXCLUSIVAMENTE por um repoId canonico: o controle resolve
+primeiro exatamente um repoId para o `repo_name` configurado a partir de um
+`worktree list` completo e verificado (envelope valido). Varios worktrees com
+o mesmo repoId e mesmo repo sao esperados e deduplicados por repoId (nao e
+ambiguidade). Sem correspondencia unica (nenhum repoId) ou com ambiguidade
+(dois ou mais repoIds distintos), o controle falha fechado (`ERRO`/
+indeterminado). Nunca se compara `repoId` com `repo_name`: um `ps` com
+`repo='outro-repo'` e `repoId='meuplantao'` e descartado pelo filtro, e dois
+repos chamados `meuplantao` com repoIds diferentes nao se misturam. `working`
+de outro repo nunca altera o MeuPlantao. O `worktree list` e consultado tanto
+pela descoberta legada quanto pela resolucao canonica; ambas as chamadas usam
+envelopes verificados, sem duplicar chamadas inseguras.
+
+Cada worktree do `ps` e validado ANTES de qualquer filtro: item nao-objeto,
+`repo`/`repoId`/`path` ausente, vazio ou com tipo incorreto, ou `agents` que
+nao seja lista significa descoberta incompleta (`ERRO`/indeterminado
+fail-closed), nunca descarte silencioso virando `ATIVO`.
 
 ## Fallback legado / fail-closed (sem estado estruturado)
 

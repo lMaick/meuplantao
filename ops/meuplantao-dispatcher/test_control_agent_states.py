@@ -69,11 +69,13 @@ def _ps_result(worktrees, **over):
 
 def _real_status(ps_result, wl_worktrees, terminals_by_path):
     import dispatcher_home
+    if isinstance(wl_worktrees, dict):
+        wl_payload = wl_worktrees
+    else:
+        wl_payload = _envelope("worktrees", [dict(w, repoId=w.get("repoId", "repo-meuplantao")) if isinstance(w, dict) else w for w in wl_worktrees])
     def fake_orca(*args, **kwargs):
         if tuple(args[:2]) == ("worktree", "list"):
-            if isinstance(wl_worktrees, dict):
-                return wl_worktrees
-            return _envelope("worktrees", wl_worktrees)
+            return wl_payload
         if tuple(args[:2]) == ("terminal", "list"):
             selector = next((a for a in args if isinstance(a, str) and a.startswith("path:")), "")
             result = terminals_by_path.get(selector[len("path:"):], [])
@@ -273,7 +275,7 @@ class StatusFailClosedTests(unittest.TestCase):
             with self.subTest(ps_payload=ps_payload):
                 def fake_orca(*args, _ps=ps_payload, **kwargs):
                     if tuple(args[:2]) == ("worktree", "list"):
-                        return {"worktrees": [{"path": WT1, "worktreeId": "w1"}]}
+                        return _envelope("worktrees", [{"path": WT1, "worktreeId": "w1", "repoId": "repo-meuplantao"}])
                     if tuple(args[:2]) == ("terminal", "list"):
                         raise RuntimeError("terminal list failed")
                     if tuple(args[:2]) == ("worktree", "ps"):
@@ -493,12 +495,12 @@ class EnvelopeAndRepoScopeTests(unittest.TestCase):
 
     def test_truncated_worktree_list_is_error(self):
         ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "paused")])])
-        wl = _envelope("worktrees", [{"path": WT1}])
+        wl = _envelope("worktrees", [{"path": WT1, "repoId": "repo-meuplantao"}])
         wl["truncated"] = True
         status = _real_status(ps, wl, {WT1: []})
         self.assertFalse(status["structuredOk"])
         self.assertEqual(status["visual"], "ERRO")
-        self.assertIn("descoberta legada", status.get("error", ""))
+        self.assertIn("fail-closed", status.get("error", ""))
 
     def test_other_repo_working_does_not_execute(self):
         ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "done")]), _ps_worktree("outro-repo", [_ps_agent("p9", "working")], path=WT2)])
@@ -513,6 +515,47 @@ class EnvelopeAndRepoScopeTests(unittest.TestCase):
         self.assertTrue(status["structuredOk"])
         self.assertEqual(status["visual"], "EXECUTANDO")
         self.assertEqual(status["agents"], 1)
+
+    def test_spoofed_repoid_against_repo_name_is_filtered(self):
+        ps = _ps_result([{"repo": "outro-repo", "repoId": "meuplantao", "path": WT2, "agents": [_ps_agent("p9", "working")]}])
+        status = _real_status(ps, [{"path": WT1, "repoId": "repo-meuplantao"}], {WT1: []})
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "ATIVO")
+        self.assertEqual(status["agents"], 0)
+
+    def test_ambiguous_canonical_repo_id_is_error(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "working")])])
+        wl = [{"path": WT1, "repoId": "repo-A"}, {"path": WT2, "repoId": "repo-B"}]
+        status = _real_status(ps, wl, {WT1: [], WT2: []})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_missing_canonical_repo_id_is_error(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "working")])])
+        status = _real_status(ps, [], {})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_multiple_worktrees_same_repo_id_share_scope(self):
+        ps = _ps_result([
+            {"repo": "meuplantao", "repoId": "repo-X", "path": WT1, "agents": [_ps_agent("p1", "working")]},
+            {"repo": "meuplantao", "repoId": "repo-X", "path": WT2, "agents": [_ps_agent("p2", "done")]},
+        ])
+        wl = [{"path": WT1, "repoId": "repo-X"}, {"path": WT2, "repoId": "repo-X"}]
+        status = _real_status(ps, wl, {WT1: [], WT2: []})
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "EXECUTANDO")
+        self.assertEqual(status["agents"], 1)
+        self.assertEqual(status["duplicateAgents"], [])
+
+    def test_non_dict_ps_worktree_is_incomplete(self):
+        payload = _ps_result([42])
+        status = _real_status(payload, [{"path": WT1, "repoId": "repo-meuplantao"}], {WT1: []})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
 
 
 class ClassifyTests(unittest.TestCase):
