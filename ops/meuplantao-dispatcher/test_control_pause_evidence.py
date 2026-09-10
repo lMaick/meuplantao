@@ -10,8 +10,9 @@ import control_service
 import dispatcher_home
 import control_state
 
-WORKTREES = {"worktrees": [{"id": "wt-66", "path": "C:/work/MAI-66-ctrl", "displayName": "MAI-66-ctrl", "linkedLinearIssue": "MAI-66"}]}
-TERMINALS = {"terminals": [{"handle": "term-66", "agentIdentity": "codex"}]}
+SCOPE = {"hostIds": ["host-1"], "omittedHostIds": []}
+WORKTREES = {"worktrees": [{"id": "wt-66", "path": "C:/work/MAI-66-ctrl", "displayName": "MAI-66-ctrl", "linkedLinearIssue": "MAI-66"}], "hostScope": SCOPE, "totalCount": 1, "truncated": False}
+TERMINALS = {"terminals": [{"handle": "term-66", "agentIdentity": "codex"}], "hostScope": SCOPE, "totalCount": 1, "truncated": False}
 
 class PauseEvidenceTests(unittest.TestCase):
     def test_pause_with_live_agent_keeps_agent_and_touches_nothing_destructive(self):

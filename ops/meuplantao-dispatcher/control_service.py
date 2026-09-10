@@ -10,10 +10,10 @@ PAUSE_MESSAGE = "Dispatcher pausado para novas tarefas \u2014 execu\u00e7\u00e3o
 
 AGENT_STATE_CONTRACT = "mai-68/agent-state-v1"
 ACTIVE_AGENT_STATES = frozenset({"working"})
-WAITING_AGENT_STATES = frozenset({"waiting"})
-IDLE_AGENT_STATES = frozenset({"done", "idle"})
-FAILED_AGENT_STATES = frozenset({"failed"})
-KNOWN_AGENT_STATES = frozenset(set(ACTIVE_AGENT_STATES) | set(WAITING_AGENT_STATES) | set(IDLE_AGENT_STATES) | set(FAILED_AGENT_STATES))
+WAITING_AGENT_STATES = frozenset({"blocked", "waiting"})
+IDLE_AGENT_STATES = frozenset({"done"})
+KNOWN_AGENT_STATES = frozenset(set(ACTIVE_AGENT_STATES) | set(WAITING_AGENT_STATES) | set(IDLE_AGENT_STATES))
+STRUCTURED_INCOMPLETE = object()
 ALLOWED_AGENT_TYPES = frozenset({"codex"})
 
 
@@ -32,8 +32,6 @@ def classify_agent_state(value) -> str:
         return "AGUARDANDO"
     if state in IDLE_AGENT_STATES:
         return "OCIOSO"
-    if state in FAILED_AGENT_STATES:
-        return "FALHA"
     return "DESCONHECIDO"
 
 
@@ -49,8 +47,6 @@ def summarize_agent_states(states: list | None) -> dict:
             summary["waiting"] += 1
         elif state in IDLE_AGENT_STATES:
             summary["idle"] += 1
-        elif state in FAILED_AGENT_STATES:
-            summary["failed"] += 1
         else:
             summary["unknown"] += 1
     return summary
@@ -104,6 +100,28 @@ def _coerce_structured_states(payload) -> list | None:
         if normalize_agent_state(candidate.get("state")) not in KNOWN_AGENT_STATES:
             return None
     return candidates
+
+
+def _complete_items(result, items_key, what):
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{what}: invalid envelope")
+    scope = result.get("hostScope")
+    if not isinstance(scope, dict):
+        raise RuntimeError(f"{what}: missing host scope")
+    host_ids = scope.get("hostIds")
+    if not isinstance(host_ids, list) or not host_ids:
+        raise RuntimeError(f"{what}: unverifiable host scope")
+    if scope.get("omittedHostIds") != []:
+        raise RuntimeError(f"{what}: partial host scope")
+    if result.get("truncated") is not False:
+        raise RuntimeError(f"{what}: truncated discovery")
+    items = result.get(items_key, [])
+    if not isinstance(items, list):
+        raise RuntimeError(f"{what}: invalid items")
+    total = result.get("totalCount")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0 or total != len(items):
+        raise RuntimeError(f"{what}: incoherent total count")
+    return items
 
 
 def _duplicate_writable_panes(agents: list) -> list:
@@ -162,7 +180,10 @@ def pause(deps: dict | None = None) -> str:
     handle = d["acquire_tick_lock"](timeout)
     try:
         agents = d["list_agents"]() or []
-        structured = _coerce_structured_states(_safe_agent_states(d))
+        raw_states = _safe_agent_states(d)
+        if raw_states is STRUCTURED_INCOMPLETE:
+            raise RuntimeError("indeterminado (fail-closed): estado estruturado incompleto ou sem escopo verificavel")
+        structured = _coerce_structured_states(raw_states)
         d["set_mode"]("PAUSED")
     finally:
         d["release_tick_lock"](handle)
@@ -244,8 +265,15 @@ def get_status(deps: dict | None = None) -> dict:
         agents = []
         agents_ok = False
         agents_error = str(exc)[:300]
-    structured = _coerce_structured_states(_safe_agent_states(d))
-    structured_ok = structured is not None
+    raw_states = _safe_agent_states(d)
+    if raw_states is STRUCTURED_INCOMPLETE:
+        structured = None
+        structured_ok = False
+        structured_incomplete = True
+    else:
+        structured = _coerce_structured_states(raw_states)
+        structured_ok = structured is not None
+        structured_incomplete = False
     duplicates = _duplicate_writable_panes(agents)
     warning = _duplicate_warning(duplicates) if duplicates else ""
     try:
@@ -266,6 +294,8 @@ def get_status(deps: dict | None = None) -> dict:
         summary = {"total": len(agents), "active": len(agents), "waiting": 0, "idle": 0, "failed": 0, "unknown": 0, "contract": AGENT_STATE_CONTRACT, "fallback": "legacy-connected-panes"}
     if not config_ok or not sched.get("exists") or not sched.get("enabled") or not orca_ok:
         return {"visual": "ERRO", "mode": mode, "scheduler": sched, "configOk": bool(config_ok), "configError": config_error, "linearOk": bool(config_ok), "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": active_count, "structuredOk": structured_ok, "agentStates": summary, "duplicateAgents": duplicates, "warning": warning, "runtime": _sanitized_runtime(runtime_state)}
+    if structured_incomplete:
+        return {"visual": "ERRO", "mode": mode, "error": "indeterminado (fail-closed): estado estruturado incompleto ou sem escopo verificavel", "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": 0, "structuredOk": False, "agentStates": summary, "duplicateAgents": [], "warning": "", "runtime": _sanitized_runtime(runtime_state)}
     if not structured_ok and not agents_ok:
         return {"visual": "ERRO", "mode": mode, "error": f"indeterminado (fail-closed): descoberta legada falhou e sem estado estruturado: {agents_error}", "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": 0, "structuredOk": False, "agentStates": summary, "duplicateAgents": [], "warning": "", "runtime": _sanitized_runtime(runtime_state)}
     if executing:
@@ -344,11 +374,22 @@ def _safe_agent_states(d: dict):
 
 
 def _get_agent_states_real() -> list | None:
+    import dispatcher_home
     try:
         result = _orca_run("worktree", "ps")
     except Exception:
         return None
-    return _coerce_structured_states(result)
+    try:
+        worktrees = _complete_items(result, "worktrees", "worktree ps")
+    except Exception:
+        return STRUCTURED_INCOMPLETE
+    try:
+        config = dispatcher_home.load_config_dict()
+    except Exception:
+        return STRUCTURED_INCOMPLETE
+    repo = str(config.get("repo_name", "meuplantao"))
+    scoped = [wt for wt in worktrees if isinstance(wt, dict) and (wt.get("repo") == repo or wt.get("repoId") == repo)]
+    return _coerce_structured_states({"worktrees": scoped})
 
 
 def _list_agents_real() -> list:
@@ -356,7 +397,7 @@ def _list_agents_real() -> list:
     config = dispatcher_home.load_config_dict()
     repo = str(config.get("repo_name", "meuplantao"))
     agents = []
-    worktrees = _orca_run("worktree", "list", "--repo", f"name:{repo}").get("worktrees", [])
+    worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
     for wt in worktrees:
         if not isinstance(wt, dict):
             continue
@@ -364,11 +405,9 @@ def _list_agents_real() -> list:
         if not path:
             continue
         try:
-            terminals = _orca_run("terminal", "list", "--worktree", f"path:{path}").get("terminals", [])
+            terminals = _complete_items(_orca_run("terminal", "list", "--worktree", f"path:{path}"), "terminals", "terminal list")
         except Exception as exc:
             raise RuntimeError(f"terminal list failed for worktree {path}: {exc}") from exc
-        if not isinstance(terminals, list):
-            raise RuntimeError(f"terminal list returned invalid shape for worktree {path}")
         for term in terminals:
             if not isinstance(term, dict):
                 continue

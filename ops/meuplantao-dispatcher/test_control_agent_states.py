@@ -35,18 +35,64 @@ def _raw_terminal(handle, agent="codex", orphaned=False, **extra):
     return term
 
 
+def _envelope(items_key, items):
+    return {items_key: items, "hostScope": {"hostIds": ["host-1"], "omittedHostIds": []}, "totalCount": len(items), "truncated": False}
+
+
 def _orca_side_effect(worktrees, terminals_by_path):
     def fake(*args, **kwargs):
         if tuple(args[:2]) == ("worktree", "list"):
-            return {"worktrees": worktrees}
+            return _envelope("worktrees", worktrees)
         if tuple(args[:2]) == ("terminal", "list"):
             selector = next((a for a in args if isinstance(a, str) and a.startswith("path:")), "")
             result = terminals_by_path.get(selector[len("path:"):], [])
             if isinstance(result, Exception):
                 raise result
-            return {"terminals": result}
+            return _envelope("terminals", result)
         raise AssertionError(f"unexpected orca call: {args}")
     return fake
+
+
+def _ps_agent(pane, state):
+    return {"paneKey": pane, "state": state, "agentType": "codex"}
+
+
+def _ps_worktree(repo, agents, path=None):
+    return {"repo": repo, "repoId": "repo-" + repo, "path": path or WT1, "agents": agents}
+
+
+def _ps_result(worktrees, **over):
+    payload = {"worktrees": worktrees, "hostScope": {"hostIds": ["host-1"], "omittedHostIds": []}, "totalCount": len(worktrees), "truncated": False}
+    payload.update(over)
+    return payload
+
+
+def _real_status(ps_result, wl_worktrees, terminals_by_path):
+    import dispatcher_home
+    def fake_orca(*args, **kwargs):
+        if tuple(args[:2]) == ("worktree", "list"):
+            if isinstance(wl_worktrees, dict):
+                return wl_worktrees
+            return _envelope("worktrees", wl_worktrees)
+        if tuple(args[:2]) == ("terminal", "list"):
+            selector = next((a for a in args if isinstance(a, str) and a.startswith("path:")), "")
+            result = terminals_by_path.get(selector[len("path:"):], [])
+            if isinstance(result, Exception):
+                raise result
+            if isinstance(result, dict):
+                return result
+            return _envelope("terminals", result)
+        if tuple(args[:2]) == ("worktree", "ps"):
+            if isinstance(ps_result, Exception):
+                raise ps_result
+            return ps_result
+        raise AssertionError(f"unexpected orca call: {args}")
+    with mock.patch.object(control_service, "_orca_run", side_effect=fake_orca):
+        with mock.patch.object(dispatcher_home, "load_config_dict", return_value={"repo_name": "meuplantao"}):
+            d = _deps()
+            del d["list_agents"]
+            del d["get_agent_states"]
+            return control_service.get_status(d)
 
 
 def _discovered(worktrees, terminals_by_path):
@@ -71,9 +117,9 @@ class StrictCoercionTests(unittest.TestCase):
                 {"paneKey": "p2", "state": "waiting", "agentType": "codex"},
             ]},
             {"path": WT2, "agents": [
-                {"paneKey": "p3", "state": "done", "agentType": "codex"},
-                {"paneKey": "p4", "state": "idle", "agentType": "codex"},
-                {"paneKey": "p5", "state": "failed", "agentType": "codex"},
+                {"paneKey": "p3", "state": "blocked", "agentType": "codex"},
+                {"paneKey": "p4", "state": "done", "agentType": "codex"},
+                {"paneKey": "p5", "state": "done", "agentType": "codex"},
             ]},
         ]}
         result = control_service._coerce_structured_states(payload)
@@ -81,7 +127,7 @@ class StrictCoercionTests(unittest.TestCase):
         self.assertEqual(result[0]["worktree"], WT1)
         self.assertEqual(result[0]["pane"], "p1")
         summary = control_service.summarize_agent_states(result)
-        self.assertEqual((summary["active"], summary["waiting"], summary["idle"], summary["failed"]), (1, 1, 2, 1))
+        self.assertEqual((summary["active"], summary["waiting"], summary["idle"], summary["failed"]), (1, 2, 2, 0))
 
     def test_absent_or_scalar_rejected(self):
         for payload in (None, "garbage", 42, 3.5, True, {}, {"unexpected": True}):
@@ -373,6 +419,13 @@ class PauseFailClosedTests(unittest.TestCase):
                 self.assertIn("execucao atual nao foi interrompida", msg.lower().replace("ç", "c").replace("ã", "a"))
 
 
+    def test_pause_with_incomplete_structured_raises_without_persisting(self):
+        seen = {}
+        d = _deps(get_agent_states=lambda: control_service.STRUCTURED_INCOMPLETE, set_mode=lambda m: seen.update(mode=m) or m)
+        with self.assertRaises(RuntimeError):
+            control_service.pause(d)
+        self.assertNotIn("mode", seen)
+
     def test_pause_with_list_agents_failure_raises_without_persisting(self):
         seen = {}
         def boom():
@@ -383,15 +436,95 @@ class PauseFailClosedTests(unittest.TestCase):
         self.assertNotIn("mode", seen)
 
 
+class EnvelopeAndRepoScopeTests(unittest.TestCase):
+    def test_blocked_is_waiting_never_executing(self):
+        status = _real_status(_ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "blocked")])]), [{"path": WT1}], {WT1: []})
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "ATIVO")
+        self.assertEqual(status["agents"], 0)
+        self.assertEqual(status["agentStates"]["waiting"], 1)
+
+    def test_idle_failed_rejected_as_unknown(self):
+        for state in ("idle", "failed"):
+            with self.subTest(state=state):
+                self.assertIsNone(control_service._coerce_structured_states([{"worktree": WT1, "pane": "p1", "state": state, "agentType": "codex"}]))
+                self.assertEqual(control_service.classify_agent_state(state), "DESCONHECIDO")
+
+    def test_truncated_ps_is_error_never_ativo(self):
+        payload = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "done")])], truncated=True)
+        status = _real_status(payload, [{"path": WT1}], {WT1: []})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_ps_without_verifiable_host_scope_is_error(self):
+        base = [_ps_worktree("meuplantao", [_ps_agent("p1", "done")])]
+        bad = [
+            {"worktrees": base, "totalCount": 1, "truncated": False},
+            _ps_result(base, hostScope=None),
+            _ps_result(base, hostScope={"hostIds": [], "omittedHostIds": []}),
+            _ps_result(base, hostScope={"hostIds": ["host-1"], "omittedHostIds": ["host-9"]}),
+            _ps_result(base, totalCount=7),
+            _ps_result(base, totalCount="1"),
+        ]
+        for payload in bad:
+            with self.subTest(payload=payload):
+                status = _real_status(payload, [{"path": WT1}], {WT1: []})
+                self.assertFalse(status["structuredOk"])
+                self.assertEqual(status["visual"], "ERRO")
+                self.assertIn("fail-closed", status.get("error", ""))
+
+    def test_truncated_terminal_list_is_error(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "paused")])])
+        raw = {"terminals": [], "hostScope": {"hostIds": ["host-1"], "omittedHostIds": []}, "totalCount": 0, "truncated": True}
+        status = _real_status(ps, [{"path": WT1}], {WT1: raw})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("descoberta legada", status.get("error", ""))
+
+    def test_incoherent_terminal_total_count_is_error(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "paused")])])
+        tl = _envelope("terminals", [])
+        tl["totalCount"] = 4
+        status = _real_status(ps, [{"path": WT1}], {WT1: tl})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("descoberta legada", status.get("error", ""))
+
+    def test_truncated_worktree_list_is_error(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "paused")])])
+        wl = _envelope("worktrees", [{"path": WT1}])
+        wl["truncated"] = True
+        status = _real_status(ps, wl, {WT1: []})
+        self.assertFalse(status["structuredOk"])
+        self.assertEqual(status["visual"], "ERRO")
+        self.assertIn("descoberta legada", status.get("error", ""))
+
+    def test_other_repo_working_does_not_execute(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "done")]), _ps_worktree("outro-repo", [_ps_agent("p9", "working")], path=WT2)])
+        status = _real_status(ps, [{"path": WT1}], {WT1: []})
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "ATIVO")
+        self.assertEqual(status["agents"], 0)
+
+    def test_own_repo_working_executes(self):
+        ps = _ps_result([_ps_worktree("meuplantao", [_ps_agent("p1", "working")]), _ps_worktree("outro-repo", [_ps_agent("p9", "done")], path=WT2)])
+        status = _real_status(ps, [{"path": WT1}], {WT1: []})
+        self.assertTrue(status["structuredOk"])
+        self.assertEqual(status["visual"], "EXECUTANDO")
+        self.assertEqual(status["agents"], 1)
+
+
 class ClassifyTests(unittest.TestCase):
     def test_classify_mapping(self):
         cases = {
             "working": "EXECUTANDO",
             " Working ": "EXECUTANDO",
             "waiting": "AGUARDANDO",
+            "blocked": "AGUARDANDO",
             "done": "OCIOSO",
-            "idle": "OCIOSO",
-            "failed": "FALHA",
+            "idle": "DESCONHECIDO",
+            "failed": "DESCONHECIDO",
             None: "DESCONHECIDO",
             "": "DESCONHECIDO",
             "bogus-state": "DESCONHECIDO",

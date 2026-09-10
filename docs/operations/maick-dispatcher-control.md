@@ -8,12 +8,12 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 ## Estados
 
 - `ATIVO`: modo AUTO, scheduler habilitado, Orca acessivel, sem agente `working` ativo.
-  Panes conectados com agente `done`/`idle` no prompt contam como ociosos, nao como
+  Panes conectados com agente `done` no prompt contam como ociosos, nao como
   EXECUTANDO, mas somente quando o estado estruturado e valido (ver contrato abaixo).
   Sem estado estruturado valido, pane Codex conectada conta como atividade
   (fallback legado; nunca vira ATIVO silenciosamente).
 - `PAUSADO`: novas buscas/dispatches suspensos; reconciliacao e monitoramento continuam.
-- `EXECUTANDO`: existe pelo menos um agente `working` (ou equivalente) ativo.
+- `EXECUTANDO`: existe pelo menos um agente `working` do repo configurado ativo.
 - `ERRO`: config ausente/invalida, scheduler ausente/desabilitado/com erro, Orca inacessivel,
   falha de parse do scheduler, ou descoberta impossivel (estado estruturado
   ausente/invalido E descoberta legada falhou: indeterminado fail-closed).
@@ -21,12 +21,16 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 ## Contrato de estados do agente (MAI-68)
 
 Fonte primaria: estado estruturado do Orca (`worktree ps --json`, `agents[].state`,
-contrato `mai-68/agent-state-v1`). So valem estados conhecidos:
+contrato `mai-68/agent-state-v1`). Os unicos estados validos sao os declarados
+pelo Orca (`AGENT_STATUS_STATES`: `working`, `blocked`, `waiting`, `done`):
 
 - `working` -> `EXECUTANDO` (unico estado que acende EXECUTANDO na GUI).
+- `blocked` -> `AGUARDANDO` (aguarda intervencao; nunca acende EXECUTANDO).
 - `waiting` -> `AGUARDANDO` (GUI mostra ATIVO/PAUSADO; detalhe em `agentStates`).
-- `done`/`idle` -> `OCIOSO` (pane conectado no prompt nao e atividade).
-- `failed` -> `FALHA` (nao conta como atividade; detalhe em `agentStates`).
+- `done` -> `OCIOSO` (pane conectado no prompt nao e atividade).
+
+`idle`/`failed` nao existem como `agents[].state` e sao tratados como estado
+desconhecido: rejeitados na validacao estrita (fail-closed, ver abaixo).
 
 Validade estrita: o payload so e aceito quando cada item e objeto com
 `worktree`/`pane` como strings nao vazias, `agentType` valido (`codex`) e
@@ -37,17 +41,41 @@ desconhecido; worktrees/agents/itens com forma invalida; payload parcialmente
 malformado) invalida a LISTA INTEIRA: o controle aplica o criterio legado
 conservador, nunca um "vazio valido".
 
+## Envelope de completude e escopo (ps, worktree list, terminal list)
+
+Toda resposta de descoberta precisa provar que esta completa: `truncated`
+precisa ser booleano `false`, `totalCount` precisa ser inteiro nao-negativo
+igual a quantidade de itens retornados, e `hostScope` precisa ser verificavel
+(`hostIds` como lista nao vazia esperada e `omittedHostIds` vazio). Resposta
+nao-objeto, `hostScope` ausente/incompleto, `truncated=true` ou lista parcial
+(`totalCount` incoerente) significa descoberta incompleta: `worktree ps`
+incompleto retorna `ERRO`/indeterminado fail-closed (jamais `ATIVO`, mesmo que
+a descoberta legada esteja completa); `worktree list`/`terminal list`
+incompleto propaga erro e, sem estado estruturado valido, tambem resulta em
+`ERRO`/indeterminado. Zero valido (envelope completo + lista vazia) continua
+distinguivel de descoberta incompleta.
+
+## Escopo por repo
+
+O `ps` e limitado ao repo configurado do dispatcher (`repo_name`): somente
+worktrees cujo `repo`/`repoId` confere com a config entram no estado
+estruturado. `working` de outro repo nunca altera o MeuPlantao.
+
 ## Fallback legado / fail-closed (sem estado estruturado)
 
-Sem estado estruturado utilizavel (Orca antigo, erro de leitura, payload
-ausente ou malformado), vale uma unica regra: tenta-se o criterio legado; se
-a descoberta legada funciona, ela decide (pane Codex conectada conta como
+Sem estado estruturado utilizavel, vale uma unica regra com dois casos.
+Quando o `ps` esta indisponivel (Orca antigo, erro de leitura, payload ausente
+ou com estado desconhecido/rejeitado pelo parser), tenta-se o criterio legado:
+se a descoberta legada funciona, ela decide (pane Codex conectada conta como
 atividade: GUI `EXECUTANDO`; `pause()` informa que a execucao atual nao foi
 interrompida; zero panes descobertos com sucesso decidem `ATIVO`). Se a
 descoberta legada tambem falha, o estado e `ERRO`/indeterminado fail-closed
-(nunca `ATIVO` nem `EXECUTANDO` presumido). O controle nunca presume
-ociosidade sem prova: pane conectada jamais vira `ATIVO` silenciosamente nem
-recebe mensagem de "nenhuma execucao" nesse caso.
+(nunca `ATIVO` nem `EXECUTANDO` presumido). Quando o `ps` responde mas o
+envelope esta incompleto ou sem escopo verificavel (ver secao acima), o estado
+e `ERRO`/indeterminado fail-closed e `pause()` propaga sem persistir, mesmo
+que a descoberta legada esteja completa. O controle nunca presume ociosidade
+sem prova: pane conectada jamais vira `ATIVO` silenciosamente nem recebe
+mensagem de "nenhuma execucao" nesse caso.
 
 `ERRO` fora disso: config ausente/invalida, scheduler ausente/desabilitado/
 com erro, Orca inacessivel ou estado de disco ausente/invalido. Fallback
@@ -145,7 +173,9 @@ reabilitando o botao.
 
 - `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v`
 - Regressao MAI-68: `test_control_agent_states.py` (done conectado nao e EXECUTANDO;
-  working e; waiting/idle/failed; payload ausente/malformado; multiplos panes).
+  working e; blocked/waiting nunca EXECUTANDO; idle/failed rejeitados; envelope
+  truncado/hostScope/totalCount; escopo por repo; payload ausente/malformado;
+  multiplos panes).
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
   control_pause_lock (concorrencia real), control_pause_evidence (agente antes/depois),
