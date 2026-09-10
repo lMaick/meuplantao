@@ -51,6 +51,199 @@ READY_LABEL = CONFIG.get("ready_label", "Orca Ready")
 REVIEW_LABEL = CONFIG.get("review_label", "Needs Review")
 MODEL = "gpt-5.6-luna"
 REASONING = "low"
+WORKER_POLICY_KEY = "allowed_workers"
+CODEX_REL_CONFIG = Path(".codex/config.toml")
+CODEX_REL_AUTH = Path(".codex/auth.json")
+OPENCODE_REL_CONFIGS = (Path(".config/opencode/opencode.json"), Path(".opencode.json"), Path(".config/opencode.json"))
+OPENCODE_REL_AUTHS = (Path(".config/opencode/auth.json"), Path(".local/share/opencode/auth.json"))
+DEFAULT_FORBIDDEN_ROUTING = ("model_provider", "openrouter")
+
+
+def _pick(mapping: dict, *names: str) -> str:
+    lowered = {str(k).lower(): v for k, v in mapping.items()} if isinstance(mapping, dict) else {}
+    for name in names:
+        key = name.lower()
+        if key in lowered and lowered[key] not in (None, ""):
+            value = lowered[key]
+            return value if isinstance(value, str) else str(value)
+    return ""
+
+
+def allowed_workers(config: dict | None = None) -> list[dict]:
+    source = config if config is not None else CONFIG
+    if WORKER_POLICY_KEY not in source:
+        raise RuntimeError("preflight: worker policy missing (add [[allowed_workers]] to dispatcher config)")
+    entries = source.get(WORKER_POLICY_KEY)
+    if not isinstance(entries, list) or len(entries) == 0:
+        raise RuntimeError("preflight: worker policy empty (configure at least one [[allowed_workers]] entry)")
+    normalized: list[dict] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"preflight: worker policy entry {index} malformed")
+        model = str(entry.get("model", "") or "").strip()
+        reasoning = str(entry.get("reasoning", "") or "").strip()
+        agent = str(entry.get("agent", "") or "").strip().lower()
+        if not model or not reasoning or not agent:
+            raise RuntimeError(f"preflight: worker policy entry {index} missing model/reasoning/agent")
+        provider = str(entry.get("provider", "") or "").strip()
+        auth_mode = str(entry.get("auth_mode", "") or "").strip()
+        forbid = entry.get("forbid_substrings", None)
+        if forbid is None:
+            forbid = list(DEFAULT_FORBIDDEN_ROUTING) if agent == "codex" else []
+        forbid_tuple = tuple(str(item).lower() for item in forbid) if isinstance(forbid, (list, tuple)) else ()
+        normalized.append({
+            "id": str(entry.get("id", f"worker-{index}") or f"worker-{index}"),
+            "agent": agent,
+            "model": model,
+            "reasoning": reasoning,
+            "provider": provider,
+            "auth_mode": auth_mode,
+            "forbid_substrings": forbid_tuple,
+        })
+    return normalized
+
+
+def effective_workers() -> list[dict]:
+    try:
+        return allowed_workers()
+    except RuntimeError:
+        return [{
+            "id": "legacy-codex",
+            "agent": "codex",
+            "model": MODEL,
+            "reasoning": REASONING,
+            "provider": "",
+            "auth_mode": "chatgpt",
+            "forbid_substrings": tuple(DEFAULT_FORBIDDEN_ROUTING),
+        }]
+
+
+def effective_worker_labels() -> list[str]:
+    return [f"{w['agent']} {w['model']} {w['reasoning']}".strip() for w in effective_workers()]
+
+
+def _read_toml_or_json(path: Path) -> dict | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        if path.suffix.lower() == ".json":
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        parsed = tomllib.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return {"__unparseable__": True, "__text__": text.lower()}
+
+
+def read_codex_state(home: Path | None = None) -> dict | None:
+    base = home or Path.home()
+    config_path = base / CODEX_REL_CONFIG
+    auth_path = base / CODEX_REL_AUTH
+    config = _read_toml_or_json(config_path)
+    if config is None:
+        return None
+    if config.get("__unparseable__"):
+        return {"present": True, "unparseable": True, "config_text": str(config.get("__text__", "")), "model": "", "reasoning": "", "auth_mode": "", "auth_present": False}
+    try:
+        config_text = config_path.read_text(encoding="utf-8").lower()
+    except OSError:
+        config_text = ""
+    auth = _read_toml_or_json(auth_path)
+    auth_mode = _pick(auth, "auth_mode", "mode") if isinstance(auth, dict) else ""
+    return {
+        "present": True,
+        "model": _pick(config, "model"),
+        "reasoning": _pick(config, "model_reasoning_effort", "reasoning", "reasoning_effort"),
+        "auth_mode": auth_mode,
+        "auth_present": auth is not None,
+        "config_text": config_text,
+    }
+
+
+def read_opencode_state(home: Path | None = None) -> dict | None:
+    base = home or Path.home()
+    config_data: dict | None = None
+    for rel in OPENCODE_REL_CONFIGS:
+        candidate = _read_toml_or_json(base / rel)
+        if candidate is not None:
+            config_data = candidate
+            break
+    if config_data is None:
+        return None
+    if config_data.get("__unparseable__"):
+        return {"present": True, "unparseable": True, "model": "", "reasoning": "", "provider": "", "auth_mode": ""}
+    auth_data: dict | None = None
+    for rel in OPENCODE_REL_AUTHS:
+        candidate = _read_toml_or_json(base / rel)
+        if candidate is not None:
+            auth_data = candidate
+            break
+    nested = config_data.get("agent") if isinstance(config_data.get("agent"), dict) else {}
+    model = _pick(config_data, "model", "model_name") or _pick(nested, "model", "model_name")
+    reasoning = _pick(config_data, "reasoning", "reasoning_effort", "model_reasoning_effort") or _pick(nested, "reasoning", "reasoning_effort")
+    provider = _pick(config_data, "provider", "agent_provider") or _pick(nested, "provider", "agent_provider")
+    if not provider:
+        raw_agent = config_data.get("agent")
+        if isinstance(raw_agent, str):
+            provider = raw_agent
+    auth_mode = _pick(config_data, "auth_mode", "mode") or _pick(nested, "auth_mode", "mode")
+    if auth_data:
+        auth_mode = auth_mode or _pick(auth_data, "auth_mode", "mode", "provider")
+    return {"present": True, "model": model, "reasoning": reasoning, "provider": provider, "auth_mode": auth_mode}
+
+
+def match_allowed_worker(policy: list[dict], codex_state: dict | None, opencode_state: dict | None) -> tuple[dict | None, str]:
+    divergences: list[str] = []
+    for entry in policy:
+        agent = entry["agent"]
+        if agent == "codex":
+            if not codex_state or codex_state.get("unparseable"):
+                divergences.append("config")
+                continue
+            if codex_state.get("model") != entry["model"]:
+                divergences.append("model")
+                continue
+            if codex_state.get("reasoning") != entry["reasoning"]:
+                divergences.append("reasoning")
+                continue
+            if entry.get("auth_mode") and codex_state.get("auth_mode") != entry["auth_mode"]:
+                divergences.append("auth")
+                continue
+            if not codex_state.get("auth_present"):
+                divergences.append("auth")
+                continue
+            forbidden = [s for s in entry.get("forbid_substrings", ()) if s and s in (codex_state.get("config_text") or "")]
+            if forbidden:
+                divergences.append("routing")
+                continue
+            return entry, ""
+        if not opencode_state or opencode_state.get("unparseable"):
+            divergences.append("config")
+            continue
+        if opencode_state.get("model") != entry["model"]:
+            divergences.append("model")
+            continue
+        if opencode_state.get("reasoning") != entry["reasoning"]:
+            divergences.append("reasoning")
+            continue
+        if entry.get("provider") and (opencode_state.get("provider", "") or "").lower() != entry["provider"].lower():
+            divergences.append("provider")
+            continue
+        if entry.get("auth_mode") and opencode_state.get("auth_mode") and opencode_state.get("auth_mode") != entry["auth_mode"]:
+            divergences.append("auth")
+            continue
+        return entry, ""
+    preferred = next((d for d in ("routing", "auth", "provider", "model", "reasoning", "config") if d in divergences), "config")
+    return None, preferred
+
+
+def tail_matches_allowed_worker(tail: str) -> bool:
+    text = tail or ""
+    return any(f"{w['model']} {w['reasoning']}" in text for w in effective_workers())
+
+
 MAX_DISPATCH_PER_RUN = int(CONFIG.get("max_dispatch_per_run", 1))
 SCHEDULER_TASK_NAME = str(CONFIG.get("scheduler_task_name", "Hermes-MeuPlantao-Dispatcher") or "Hermes-MeuPlantao-Dispatcher")
 
@@ -163,18 +356,27 @@ def slugify(identifier: str, title: str) -> str:
     return f"{identifier.upper()}-{slug}"
 
 
-def preflight_model() -> None:
-    config_path = Path.home() / ".codex" / "config.toml"
-    auth_path = Path.home() / ".codex" / "auth.json"
-    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    auth = json.loads(auth_path.read_text(encoding="utf-8"))
-    if config.get("model") != MODEL or config.get("model_reasoning_effort") != REASONING:
-        raise RuntimeError(f"Codex config must be {MODEL} {REASONING}")
-    config_text = config_path.read_text(encoding="utf-8").lower()
-    if "model_provider" in config_text or "openrouter" in config_text:
-        raise RuntimeError("Codex config contains forbidden model_provider/OpenRouter routing")
-    if auth.get("auth_mode") != "chatgpt":
-        raise RuntimeError("Codex auth_mode is not chatgpt")
+def preflight_model(home: Path | None = None) -> dict:
+    policy = allowed_workers()
+    codex_state = read_codex_state(home)
+    opencode_state = read_opencode_state(home)
+    if codex_state is None and opencode_state is None:
+        raise RuntimeError("preflight: worker config missing (no codex or opencode worker config found)")
+    matched, divergence = match_allowed_worker(policy, codex_state, opencode_state)
+    if matched is not None:
+        return matched
+    allowed = "; ".join(effective_worker_labels())
+    if divergence == "model":
+        raise RuntimeError(f"preflight: worker model mismatch (no allowed worker matched; allowed={allowed})")
+    if divergence == "reasoning":
+        raise RuntimeError(f"preflight: worker reasoning mismatch (no allowed worker matched; allowed={allowed})")
+    if divergence == "provider":
+        raise RuntimeError(f"preflight: worker provider mismatch (no allowed worker matched; allowed={allowed})")
+    if divergence == "auth":
+        raise RuntimeError(f"preflight: worker auth mismatch (no allowed worker matched; allowed={allowed})")
+    if divergence == "routing":
+        raise RuntimeError("preflight: worker routing forbidden (custom model_provider/OpenRouter routing is not allowed)")
+    raise RuntimeError(f"preflight: worker config missing (no allowed worker matched; allowed={allowed})")
 
 
 def list_eligible_issues() -> list[dict]:
@@ -227,6 +429,10 @@ def agent_prompt(issue_id: str) -> str:
 
 
 def wait_for_luna(worktree_path: str, timeout_seconds: int = 45) -> tuple[str, str]:
+    return wait_for_worker(worktree_path, timeout_seconds)
+
+
+def wait_for_worker(worktree_path: str, timeout_seconds: int = 45) -> tuple[str, str]:
     deadline = time.time() + timeout_seconds
     last_tail = ""
     while time.time() < deadline:
@@ -238,10 +444,10 @@ def wait_for_luna(worktree_path: str, timeout_seconds: int = 45) -> tuple[str, s
             terminal = orca("terminal", "read", "--terminal", handle).get("terminal", {})
             lines = terminal.get("tail", [])
             last_tail = "\n".join(lines) if isinstance(lines, list) else str(lines)
-            if f"model:       {MODEL} {REASONING}" in last_tail or f"{MODEL} {REASONING}" in last_tail:
+            if tail_matches_allowed_worker(last_tail):
                 return handle, last_tail
         time.sleep(2)
-    raise RuntimeError(f"agent did not confirm {MODEL} {REASONING}; tail={last_tail[-500:]}")
+    raise RuntimeError(f"agent did not confirm allowed worker ({'; '.join(effective_worker_labels())}); tail={last_tail[-500:]}")
 
 
 def linear_comment(issue_id: str, body: str, write_key: str = "") -> None:
@@ -294,7 +500,7 @@ def create_workspace(issue: dict) -> tuple[dict, str]:
         "--name", name,
         "--base-branch", "origin/main",
         "--linear-issue", issue_id,
-        "--comment", f"Auto-dispatched from {issue_id}; one Codex {MODEL} {REASONING}; no automatic merge.",
+        "--comment", f"Auto-dispatched from {issue_id}; authorized worker ({'; '.join(effective_worker_labels())}); no automatic merge.",
         "--agent", "codex",
         "--prompt", agent_prompt(issue_id),
         "--setup", "inherit",
@@ -343,7 +549,8 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
     issue_state.update({"status": "claiming", "claimedAt": utc_epoch(), "attempts": issue_state.get("attempts", 0) + 1})
     save_state(state)
     try:
-        preflight_model()
+        matched_worker = preflight_model()
+        issue_state.update({"worker": matched_worker.get("id", matched_worker.get("model", ""))})
         if existing:
             worktree = existing
             handle = recover_existing(issue, existing)
@@ -364,7 +571,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         try:
             linear_comment(
                 issue_id,
-                f"Dispatcher automático concluiu o dispatch. Workspace `{worktree.get('displayName')}` vinculado; exatamente um agente Codex `{MODEL} {REASONING}` iniciado; Linear confirmado em `In Progress`; `{READY_LABEL}` removida. Nenhum merge automático será feito.",
+                f"Dispatcher automático concluiu o dispatch. Workspace `{worktree.get('displayName')}` vinculado; exatamente um agente autorizado (`'; '.join(effective_worker_labels())`) iniciado; Linear confirmado em `In Progress`; `{READY_LABEL}` removida. Nenhum merge automático será feito.",
                 f"dispatched:{worktree.get('id') or worktree['path']}",
             )
         except Exception as comment_error:
@@ -411,7 +618,7 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
             terminal = orca("terminal", "read", "--terminal", terminals[0]["handle"]).get("terminal", {})
             lines = terminal.get("tail", [])
             tail = "\n".join(lines) if isinstance(lines, list) else str(lines)
-            if f"{MODEL} {REASONING}" not in tail:
+            if not tail_matches_allowed_worker(tail):
                 continue
             issue_state.update({
                 "status": "dispatched",
@@ -429,7 +636,7 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
             try:
                 linear_comment(
                     issue_id,
-                    f"Dispatcher reconciliou automaticamente um dispatch já confirmado após falha no reporte: workspace `{worktree.get('displayName')}`, exatamente um agente Codex `{MODEL} {REASONING}`, Linear em `In Progress` e `{READY_LABEL}` ausente. Nenhum workspace/agente adicional foi criado.",
+                    f"Dispatcher reconciliou automaticamente um dispatch já confirmado após falha no reporte: workspace `{worktree.get('displayName')}`, exatamente um agente autorizado (`'; '.join(effective_worker_labels())`), Linear em `In Progress` e `{READY_LABEL}` ausente. Nenhum workspace/agente adicional foi criado.",
                     f"reconciled:{worktree.get('id') or path}",
                 )
             except Exception as comment_error:
