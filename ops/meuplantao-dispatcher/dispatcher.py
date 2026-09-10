@@ -234,6 +234,10 @@ def worker_label(entry: dict) -> str:
 
 MAX_DISPATCH_PER_RUN = int(CONFIG.get("max_dispatch_per_run", 1))
 SCHEDULER_TASK_NAME = str(CONFIG.get("scheduler_task_name", "Hermes-MeuPlantao-Dispatcher") or "Hermes-MeuPlantao-Dispatcher")
+HERMES_EVENTS_PATH = ROOT / "hermes-events.jsonl"
+DISPATCH_TIMEOUT_SECONDS = int(CONFIG.get("dispatch_timeout_seconds", 900))
+HERMES_EVENT_TYPES = ("needs-review", "blocked", "dispatch-timeout")
+HERMES_FINAL_STATUSES = ("claiming", "dispatching", "dispatched", "needs-review", "dispatch-timeout", "blocked")
 
 
 def get_control_mode() -> str:
@@ -539,8 +543,13 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         LOG.info("DRY RUN eligible=%s existing_workspace=%s", issue_id, existing.get("path") if existing else None)
         return False
     issue_state = state["issues"].setdefault(issue_id, {})
-    issue_state.update({"status": "claiming", "claimedAt": utc_epoch(), "attempts": issue_state.get("attempts", 0) + 1})
+    if issue_state.get("dispatchId") and issue_state.get("status") in HERMES_FINAL_STATUSES:
+        LOG.info("Skipping %s: dispatch %s already in %s; second tick never duplicates worktree/agent", issue_id, issue_state.get("dispatchId"), issue_state.get("status"))
+        return False
+    dispatch_id = ensure_dispatch_claim(issue_id, state)
+    issue_state.update({"status": "dispatching", "claimedAt": utc_epoch(), "attempts": issue_state.get("attempts", 0) + 1})
     save_state(state)
+    side_effect_started = False
     try:
         matched_worker = preflight_model()
         if isinstance(matched_worker, dict):
@@ -548,6 +557,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
             dispatch_label = worker_label(matched_worker)
         else:
             dispatch_label = "authorized worker"
+        side_effect_started = True
         if existing:
             worktree = existing
             handle = recover_existing(issue, existing)
@@ -558,6 +568,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         sync_started(issue_id)
         issue_state.update({
             "status": "dispatched",
+            "dispatchId": dispatch_id,
             "dispatchedAt": utc_epoch(),
             "workspacePath": worktree["path"],
             "workspaceName": worktree.get("displayName"),
@@ -580,6 +591,16 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         LOG.info("Dispatched %s to %s terminal=%s created=%s", issue_id, worktree["path"], handle, created)
         return True
     except Exception as exc:
+        if side_effect_started:
+            clean = re.sub(r"\s+", " ", str(exc)).strip()[:900]
+            issue_state.update({"status": "dispatching", "ambiguousError": clean, "ambiguousAt": utc_epoch()})
+            save_state(state)
+            try:
+                linear_comment(issue_id, "Dispatch encontrou falha ambigua apos iniciar o side effect; nenhum retry automatico sera feito e nenhum segundo agente foi criado. Aguarde o timeout e a recuperacao manual. Erro: `" + clean + "`.")
+            except Exception as comment_error:
+                LOG.error("Could not report ambiguous failure for %s: %s", issue_id, comment_error)
+            LOG.exception("Ambiguous dispatch failure for %s (no auto-retry)", issue_id)
+            return False
         record_error(issue_id, state, str(exc))
         LOG.exception("Dispatch failed for %s", issue_id)
         return False
@@ -646,6 +667,129 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
             LOG.exception("Dispatch reconciliation failed for %s", issue_id)
 
 
+def stable_dispatch_id(issue_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "dispatch:" + str(issue_id).upper()))
+
+
+def ensure_dispatch_claim(issue_id: str, state: dict) -> str:
+    issue_state = state["issues"].setdefault(issue_id, {})
+    dispatch_id = issue_state.get("dispatchId") or stable_dispatch_id(issue_id)
+    issue_state["dispatchId"] = dispatch_id
+    return dispatch_id
+
+
+def hermes_fingerprint(issue_id: str, event_type: str, detail: str = "") -> str:
+    base = str(issue_id).upper() + ":" + str(event_type)
+    if detail:
+        base += ":" + str(detail)
+    return base
+
+
+def hermes_prompt(issue_id: str, event_type: str) -> str:
+    return "Leia a " + str(issue_id).upper() + " no Linear e processe conforme o fluxo padrao. (evento=" + str(event_type) + ")"
+
+
+def append_hermes_outbox(entry: dict) -> None:
+    outbox = Path(HERMES_EVENTS_PATH)
+    outbox.parent.mkdir(parents=True, exist_ok=True)
+    with open(outbox, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def emit_hermes_event(issue_id: str, event_type: str, fingerprint: str, state: dict) -> bool:
+    if event_type not in HERMES_EVENT_TYPES:
+        raise ValueError("unknown hermes event: " + str(event_type))
+    issue_state = state["issues"].setdefault(issue_id, {})
+    notified = issue_state.setdefault("hermesNotified", {})
+    if fingerprint in notified:
+        return False
+    notified[fingerprint] = {"at": utc_epoch(), "event": event_type}
+    save_state(state)
+    try:
+        append_hermes_outbox({"issue": str(issue_id).upper(), "event": event_type, "fingerprint": fingerprint, "at": utc_epoch(), "prompt": hermes_prompt(issue_id, event_type)})
+    except Exception as exc:
+        LOG.error("Hermes outbox append failed for %s: %s", issue_id, exc)
+    return True
+
+
+def linear_scope_ok(current: dict) -> bool:
+    return current.get("team", {}).get("name") == TEAM and current.get("project", {}).get("name") == PROJECT
+
+
+def is_blocked_issue(current: dict) -> bool:
+    state_name = str((current.get("state") or {}).get("name") or "").strip().lower()
+    if state_name == "blocked":
+        return True
+    for label in current.get("labels", []) or []:
+        if str((label or {}).get("name") or "").strip().lower() == "blocked":
+            return True
+    return False
+
+
+def check_blocked_via_linear(state: dict) -> int:
+    count = 0
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state["issues"][issue_id]
+        if local.get("status") not in ("dispatched", "dispatching", "needs-review"):
+            continue
+        try:
+            current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+        except Exception:
+            LOG.exception("Blocked check failed for %s", issue_id)
+            continue
+        if not linear_scope_ok(current):
+            continue
+        if not is_blocked_issue(current):
+            continue
+        local["status"] = "blocked"
+        save_state(state)
+        if emit_hermes_event(issue_id, "blocked", hermes_fingerprint(issue_id, "blocked"), state):
+            count += 1
+    return count
+
+
+def check_dispatch_timeouts(state: dict, now: int | None = None) -> int:
+    moment = now if now is not None else utc_epoch()
+    count = 0
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state.get("issues", {}).get(issue_id, {})
+        if local.get("status") not in ("claiming", "dispatching"):
+            continue
+        claimed = local.get("claimedAt")
+        if claimed is None:
+            claimed = local.get("dispatchedAt")
+        if claimed is None:
+            claimed = moment
+        try:
+            claimed_int = int(claimed)
+        except (TypeError, ValueError):
+            claimed_int = moment
+        if moment - claimed_int < DISPATCH_TIMEOUT_SECONDS:
+            continue
+        try:
+            current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+        except Exception:
+            LOG.exception("Timeout check failed for %s", issue_id)
+            continue
+        if not linear_scope_ok(current):
+            continue
+        if str((current.get("state") or {}).get("name") or "") == "In Progress":
+            local.update({"status": "dispatched", "confirmedLateAt": moment})
+            save_state(state)
+            continue
+        dispatch_id = local.get("dispatchId") or stable_dispatch_id(issue_id)
+        local.update({"status": "dispatch-timeout", "dispatchId": dispatch_id, "timeoutAt": moment})
+        save_state(state)
+        if emit_hermes_event(issue_id, "dispatch-timeout", hermes_fingerprint(issue_id, "dispatch-timeout", dispatch_id), state):
+            count += 1
+    return count
+
+
+def poll_linear_outcomes(state: dict, now: int | None = None) -> None:
+    check_dispatch_timeouts(state, now=now)
+    check_blocked_via_linear(state)
+
+
 def gh_pr_for_branch(branch_ref: str) -> dict | None:
     branch = branch_ref.removeprefix("refs/heads/")
     output = run([
@@ -697,6 +841,7 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
             stages["commentError"] = str(exc)[:500]; save_state(state); raise
         stages["commentDone"] = True; save_state(state)
     issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()}); save_state(state)
+    emit_hermes_event(issue_id, "needs-review", hermes_fingerprint(issue_id, "needs-review", marker), state)
     LOG.info("Marked %s for review from PR #%s", issue_id, pr["number"])
 def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
     preflight_model()
@@ -766,10 +911,12 @@ def main() -> int:
         if not args.dry_run:
             reconcile_dispatches(state, worktrees)
             monitor_deliveries(state, worktrees)
+            poll_linear_outcomes(state)
         if paused and not args.dry_run:
             record_runtime(state, mode, 0, "paused for new tasks; reconcile and monitor continued", manual_once)
             save_state(state)
             monitor_deliveries(state, worktrees)
+            poll_linear_outcomes(state)
             LOG.info("Control mode PAUSED: skipped discovery and dispatch; reconcile and monitor continued")
             return 0
         issues = list_eligible_issues()
@@ -787,6 +934,7 @@ def main() -> int:
                 worktrees = list_worktrees()
         if not args.dry_run:
             monitor_deliveries(state, worktrees)
+            poll_linear_outcomes(state)
             record_runtime(state, mode, dispatched, f"eligible={len(issues)} dispatched={dispatched} manual_once={manual_once}", manual_once)
             save_state(state)
         LOG.info("Run complete eligible=%d dispatched=%d dry_run=%s mode=%s manual_once=%s", len(issues), dispatched, args.dry_run, mode, manual_once)

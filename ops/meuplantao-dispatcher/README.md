@@ -41,3 +41,41 @@ configuração local são ignorados pelo Git.
 ## Maick Dispatcher Control (MAI-66)
 
 GUI Windows em Python 3.11 + Tkinter que controla o dispatcher sem criar um segundo motor. Detalhes em docs/operations/maick-dispatcher-control.md. Build local ignorado: powershell -ExecutionPolicy Bypass -File build-control-app.ps1 gera dist/MaickDispatcherControl.exe.
+
+## MAI-69: Linear como barramento canonico
+
+O dispatcher e um coordenador deterministico em Python, sem chamadas a LLM
+para polling, decisao, claim, lock, deduplicacao, timeout ou notificacao.
+`worker_id` apenas seleciona qual worker o Orca inicia; nao e modelo do dispatcher.
+
+Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
+
+1. Consultar o Linear (projeto de operacao, estado `Todo`, label `Orca Ready`).
+2. Claim deterministico com `dispatchId` persistido antes do side effect; o segundo
+   tick nunca duplica worktree/agente para o mesmo `dispatchId`.
+3. Confirmacao minima do side effect de criacao/vinculo; o caminho normal apos o
+   dispatch aguarda estados/comentarios no Linear, sem polling de terminal para progresso.
+4. Falha ambigua apos iniciar o side effect: sem retry automatico e sem segundo
+   agente; se `dispatching` exceder `dispatch_timeout_seconds` sem confirmacao no
+   Linear, marca `dispatch-timeout` sem redisparar.
+5. `Needs Review`, `Blocked` e `Dispatch Timeout` sao detectados exclusivamente pelo
+   Linear e disparam Hermes exatamente uma vez por fingerprint (issue + PR + SHA
+   para review; issue + marcador para os demais; novo SHA reseta o fingerprint).
+6. Evento Hermes minimo via `hermes-events.jsonl` (ignorado pelo Git): somente o
+   identificador da issue e o tipo do evento; Hermes le o conteudo no Linear e faz
+   verificacao rapida no GitHub, sem auditoria semantica automatica e sem polling.
+
+Diagrama de estados (Linear + estado local):
+
+    Todo + Orca Ready
+      -> dispatching (claim + dispatchId)
+      -> In Progress (dispatched)
+      -> In Progress + Needs Review (PR/SHA; Hermes 1x por fingerprint)
+      -> Blocked (Hermes 1x) | dispatch-timeout (Hermes 1x; sem redispatch)
+
+Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge confirmado.
+Lock, filtros, maximo por tick, review gate e proibicao de auto-merge preservados.
+
+Testes: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
+(caminho feliz, erro reportado, timeout, crash ambiguo, deduplicacao Hermes,
+novo SHA resetando fingerprint, sem policy/worker, sem LLM no polling).

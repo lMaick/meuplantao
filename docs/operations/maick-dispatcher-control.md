@@ -234,3 +234,76 @@ falha fechado (`ok=False`). `dispatcher.py` ausente no home falha fechado. Lock,
 `--manual-once`, maximo 1 dispatch e safe skip estao preservados.
 Smoke headless isolado: `MaickDispatcherControl.exe --run-once` (sem GUI, sem Linear,
 Orca, AppData, scheduler ou dispatcher operacional).
+
+## MAI-69: dispatcher como coordenacao orientada pelo Linear
+
+O dispatcher (`ops/meuplantao-dispatcher/dispatcher.py`) e um coordenador
+deterministico em Python. Nao chama LLM para polling, decisao, claim, lock,
+deduplicacao, timeout ou notificacao. `worker_id` apenas seleciona qual worker
+o Orca inicia; nao e modelo do dispatcher.
+
+### Linear como barramento canonico
+
+- Entrada: projeto de operacao, estado `Todo`, label `Orca Ready` (filtros exatos;
+  consulta truncada falha fechado).
+- Claim deterministico antes do side effect com `dispatchId` estavel
+  (`uuid5(dispatch:<ISSUE>)`) persistido em `state.json`; o segundo tick nunca
+  duplica worktree/agente para o mesmo `dispatchId`.
+- Confirmacao minima do side effect de criacao/vinculo no dispatch; o caminho
+  normal apos o dispatch aguarda estados/comentarios no Linear, sem polling de
+  terminal para progresso ou conclusao.
+- Falha ambigua (excecao apos iniciar criacao/recuperacao, antes da confirmacao
+  no Linear): status local volta a `dispatching` com erro sanitizado, sem retry
+  automatico e sem segundo agente. Falha antes do side effect (ex.: preflight sem
+  policy/worker valido) mantem `error` com zero criacao e erro sanitizado.
+- `dispatching` sem confirmacao no Linear alem de `dispatch_timeout_seconds`
+  (default 900, override em `config.toml`) vira `dispatch-timeout`, sem redispatch.
+- Deteccao de `Needs Review` (via PR aberta com base `main` + transicao com review
+  gate), `Blocked` (estado ou label no Linear) e `Dispatch Timeout` exclusivamente
+  pelo Linear (+ `gh` para PRs); nunca por terminal Orca.
+- Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge;
+  auditorias e correcoes vivem em comentarios no Linear.
+
+### Hermes: eventos minimos e deduplicados
+
+- Acionado apenas nos estados configurados (`needs-review`, `blocked`,
+  `dispatch-timeout`), nunca para polling periodico.
+- Transporte: `ops/meuplantao-dispatcher/hermes-events.jsonl` (append-only,
+  ignorado pelo Git) + dedup em `state.json/issues/<ID>/hermesNotified`.
+- Cada evento contem somente identificador da issue e tipo do evento
+  (`issue`, `event`, `fingerprint`, `at`, `prompt`); o prompt e
+  `Leia a MAI-N no Linear e processe conforme o fluxo padrao. (evento=<tipo>)`.
+- Hermes le issue/comentarios diretamente no Linear e faz verificacao rapida no
+  GitHub, sem auditoria semantica interna automatica.
+- Fingerprints: review = `ISSUE:needs-review:<PR>:<SHA>` (novo SHA reseta);
+  blocked = `ISSUE:blocked`; timeout = `ISSUE:dispatch-timeout:<dispatchId>`.
+  Repeticao do mesmo fingerprint = zero escritas (outbox e Linear intactos).
+
+### Diagrama de estados
+
+    Todo + Orca Ready
+      |> claim: dispatchId estavel + status dispatching (claim persistido)
+      |> side effect minimo: criar/reutilizar worktree + 1 agente autorizado
+      |> sync: In Progress + remove Orca Ready (readback confirma)
+      |> dispatched: segundo tick com mesmo dispatchId = skip (sem duplicar)
+      |> PR aberta (base main): In Progress + Needs Review + Hermes needs-review 1x
+      |> Linear Blocked: status blocked + Hermes blocked 1x
+      |> dispatching alem do timeout sem In Progress: dispatch-timeout + Hermes 1x
+      |> falha ambigua no side effect: dispatching + erro sanitizado, sem retry
+      |> falha pre-side-effect: error + erro sanitizado, zero criacao
+
+### Testes (TDD, `ops/meuplantao-dispatcher/test_dispatcher_linear_bus.py`)
+
+- Caminho feliz com `dispatchId` persistido; segundo tick sem duplicar.
+- Erro reportado avanca pelo Linear sem consultar terminal Orca.
+- Timeout marca `dispatch-timeout`, notifica 1x e nao redispara.
+- Crash ambiguo nao causa retry nem segundo agente.
+- Review notifica Hermes 1x por fingerprint; novo SHA reseta.
+- Blocked notifica Hermes 1x.
+- Evento Hermes contem somente issue + tipo (sem URL/SHA/segredos).
+- Nenhuma chamada a modelo/LLM no polling e na coordenacao.
+- Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
+
+Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
+plus `git diff --check`. Base empilhada sobre o SHA da MAI-67; PR contra
+`lMaick/MAI-67-desacoplar-preflight-modelo-unico` com dependencia explicita da PR #37.

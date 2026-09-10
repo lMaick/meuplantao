@@ -43,3 +43,9 @@ provider = "opencode-go"
 command = "opencode"
 identity = "opencode"
 auth_mode = "opencode"
+
+dispatch_timeout_seconds = 900
+# MAI-69 Linear bus: the dispatcher is mechanical Python with no LLM calls for
+# polling, claim, lock, dedup, timeout or notify. worker_id only selects which
+# worker Orca starts. Hermes is notified via the local hermes-events.jsonl
+# outbox with a minimal issue+event prompt and reads content from Linear itself.
