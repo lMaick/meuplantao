@@ -6,6 +6,7 @@ const migration = fs.readFileSync("supabase/migrations/20260906120000_atomic_shi
 const ui = fs.readFileSync("src/components/shifts/shift-calendar.tsx", "utf8");
 const dal = fs.readFileSync("src/lib/shifts/index.ts", "utf8");
 const removal = fs.readFileSync("supabase/migrations/20260906130000_remove_legacy_obligation_sync.sql", "utf8");
+const hardening = fs.readFileSync("supabase/migrations/20260908193728_financial_obligation_consistency.sql", "utf8");
 
 function save(state, input) {
   if (input.userId !== state.userId) throw new Error("ownership");
@@ -82,4 +83,48 @@ test("RPC allows increase and blocks reduction/reversal with registered payment"
   assert.throws(() => save(state, { userId: "a", status: "realizado", value: 59, placeId: "p", placeOwner: "a", dueDate: "2026-09-11" }), /abaixo/);
   assert.throws(() => save(state, { userId: "a", status: "agendado", value: null, placeId: "p", placeOwner: "a", dueDate: null }), /transicao/);
   assert.throws(() => save(state, { userId: "a", status: "cancelado", value: null, placeId: "p", placeOwner: "a", dueDate: null }), /transicao/);
+});
+
+test("MAI-65 hardens obligation ownership and reversal reconciliation", () => {
+  assert.match(hardening, /new\.shift_id is distinct from old\.shift_id/);
+  assert.match(hardening, /Obrigacao somente pode pertencer a plantao realizado/);
+  assert.match(hardening, /delete from public\.obligations/);
+  assert.match(hardening, /old\.status = 'realizado'/);
+  assert.match(hardening, /new\.status in \('agendado', 'cancelado'\)/);
+  assert.match(hardening, /v_registered > 0/);
+  assert.match(hardening, /app\.reconciling_obligation_shift_id/);
+  assert.match(hardening, /app\.saving_shift_obligation_id/);
+  assert.match(hardening, /Altere valor do plantao realizado pela RPC financeira/);
+  assert.match(hardening, /MAI-65 abortada/);
+  assert.match(hardening, /reconcilie os dados legados/);
+  assert.match(hardening, /historico de pagamentos/);
+  assert.match(hardening, /Reconciliation runbook/);
+  assert.match(hardening, /not exists \(select 1 from public\.payments/);
+  assert.match(hardening, /create or replace function public\.validate_obligation_financial_integrity/);
+  assert.match(hardening, /create or replace function public\.validate_shift_financial_integrity/);
+  assert.match(hardening, /create or replace function public\.save_shift_with_obligation/);
+  assert.match(hardening, /security invoker/);
+  assert.match(hardening, /grant execute.*authenticated/);
+});
+
+test("MAI-65 blocker 1: obligation realizada e imutavel fora da RPC e igual ao shift", () => {
+  const immutability = fs.readFileSync("supabase/migrations/20260909180000_obligation_immutability.sql", "utf8");
+  assert.match(immutability, /valor_devido is not null/i);
+  assert.match(immutability, /is not distinct from/i);
+  assert.match(immutability, /app\.saving_shift_obligation_id/);
+  assert.match(immutability, /pela RPC financeira/);
+  assert.match(immutability, /validate_obligation_financial_integrity/);
+  assert.match(immutability, /security invoker/);
+  assert.match(immutability, /divergente|divergence|valor_devido.*valor_previsto/i);
+});
+
+test("MAI-65 autoridade nao falsificavel: RPC definer e coluna financeira sem UPDATE direto", () => {
+  const authority = fs.readFileSync("supabase/migrations/20260909190000_financial_authority_definer.sql", "utf8");
+  assert.match(authority, /security definer/);
+  assert.match(authority, /revoke update \(valor_previsto\) on public\.shifts/i);
+  assert.match(authority, /revoke update \(valor_devido\) on public\.obligations/i);
+  assert.match(authority, /reconcile_obligation_on_reversal/);
+  assert.match(authority, /after update.*on public\.shifts/is);
+  assert.doesNotMatch(authority, /app\.saving_shift_obligation_id/);
+  assert.doesNotMatch(authority, /app\.reconciling_obligation_shift_id/);
 });
