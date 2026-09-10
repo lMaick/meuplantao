@@ -5,8 +5,254 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 PAUSE_MESSAGE = "Dispatcher pausado para novas tarefas \u2014 execu\u00e7\u00e3o atual n\u00e3o foi interrompida."
+
+AGENT_STATE_CONTRACT = "mai-68/agent-state-v1"
+ACTIVE_AGENT_STATES = frozenset({"working"})
+WAITING_AGENT_STATES = frozenset({"blocked", "waiting"})
+IDLE_AGENT_STATES = frozenset({"done"})
+KNOWN_AGENT_STATES = frozenset(set(ACTIVE_AGENT_STATES) | set(WAITING_AGENT_STATES) | set(IDLE_AGENT_STATES))
+STRUCTURED_INCOMPLETE = object()
+ALLOWED_AGENT_TYPES = frozenset({"codex"})
+
+
+def normalize_agent_state(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text or None
+
+
+def classify_agent_state(value) -> str:
+    state = normalize_agent_state(value)
+    if state in ACTIVE_AGENT_STATES:
+        return "EXECUTANDO"
+    if state in WAITING_AGENT_STATES:
+        return "AGUARDANDO"
+    if state in IDLE_AGENT_STATES:
+        return "OCIOSO"
+    return "DESCONHECIDO"
+
+
+def summarize_agent_states(states: list | None) -> dict:
+    summary = {"total": 0, "active": 0, "waiting": 0, "idle": 0, "failed": 0, "unknown": 0, "contract": AGENT_STATE_CONTRACT}
+    for entry in states or []:
+        raw = entry.get("state") if isinstance(entry, dict) else None
+        state = normalize_agent_state(raw)
+        summary["total"] += 1
+        if state in ACTIVE_AGENT_STATES:
+            summary["active"] += 1
+        elif state in WAITING_AGENT_STATES:
+            summary["waiting"] += 1
+        elif state in IDLE_AGENT_STATES:
+            summary["idle"] += 1
+        else:
+            summary["unknown"] += 1
+    return summary
+
+
+def _coerce_structured_states(payload) -> list | None:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        if "worktrees" in payload:
+            worktrees = payload.get("worktrees")
+            if not isinstance(worktrees, list):
+                return None
+            candidates = []
+            for worktree in worktrees:
+                if not isinstance(worktree, dict):
+                    return None
+                agents = worktree.get("agents")
+                if not isinstance(agents, list):
+                    return None
+                for agent in agents:
+                    if not isinstance(agent, dict):
+                        return None
+                    candidates.append({"worktree": worktree.get("path") or worktree.get("worktreePath") or "", "pane": agent.get("paneKey", ""), "state": agent.get("state"), "agentType": agent.get("agentType", "")})
+        elif isinstance(payload.get("agents"), list):
+            candidates = []
+            for agent in payload.get("agents"):
+                if not isinstance(agent, dict):
+                    return None
+                candidates.append({"worktree": agent.get("worktree") or agent.get("worktreePath") or agent.get("path") or "", "pane": agent.get("pane") or agent.get("paneKey") or agent.get("handle") or "", "state": agent.get("state"), "agentType": agent.get("agentType") or agent.get("agentIdentity") or ""})
+        else:
+            return None
+    elif isinstance(payload, list):
+        candidates = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                return None
+            candidates.append({"worktree": entry.get("worktree") or entry.get("worktreePath") or entry.get("path") or "", "pane": entry.get("pane") or entry.get("paneKey") or entry.get("handle") or "", "state": entry.get("state"), "agentType": entry.get("agentType") or entry.get("agentIdentity") or ""})
+    else:
+        return None
+    for candidate in candidates:
+        worktree = candidate.get("worktree")
+        pane = candidate.get("pane")
+        agent_type = candidate.get("agentType")
+        if not isinstance(worktree, str) or not worktree.strip():
+            return None
+        if not isinstance(pane, str) or not pane.strip():
+            return None
+        if not isinstance(agent_type, str) or agent_type.strip().lower() not in ALLOWED_AGENT_TYPES:
+            return None
+        if normalize_agent_state(candidate.get("state")) not in KNOWN_AGENT_STATES:
+            return None
+    return candidates
+
+
+_HEX_DIGITS = frozenset("0123456789ABCDEFabcdef")
+
+
+def _parse_execution_host_id(value):
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text == "local":
+        return {"kind": "local", "id": "local"}
+    if text.startswith("ssh:"):
+        kind, encoded = "ssh", text[4:]
+    elif text.startswith("runtime:"):
+        kind, encoded = "runtime", text[8:]
+    else:
+        return None
+    if not encoded or "|" in encoded:
+        return None
+    i = 0
+    while i < len(encoded):
+        if encoded[i] == "%":
+            if i + 2 >= len(encoded) or encoded[i + 1] not in _HEX_DIGITS or encoded[i + 2] not in _HEX_DIGITS:
+                return None
+            i += 3
+        else:
+            i += 1
+    try:
+        decoded = unquote(encoded, encoding="utf-8", errors="strict")
+    except Exception:
+        return None
+    if not decoded:
+        return None
+    return {"kind": kind, "id": text}
+
+
+def _complete_items(result, items_key, what):
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{what}: invalid envelope")
+    scope = result.get("hostScope")
+    if not isinstance(scope, dict):
+        raise RuntimeError(f"{what}: missing host scope")
+    host_ids = scope.get("hostIds")
+    if not isinstance(host_ids, list) or not host_ids:
+        raise RuntimeError(f"{what}: unverifiable host scope")
+    for hid in host_ids:
+        if _parse_execution_host_id(hid) is None:
+            raise RuntimeError(f'{what}: unverifiable host scope')
+    if scope.get("omittedHostIds") != []:
+        raise RuntimeError(f"{what}: partial host scope")
+    if result.get("truncated") is not False:
+        raise RuntimeError(f"{what}: truncated discovery")
+    if items_key not in result:
+        raise RuntimeError(f'{what}: missing items')
+    items = result.get(items_key)
+    if not isinstance(items, list):
+        raise RuntimeError(f"{what}: invalid items")
+    total = result.get("totalCount")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0 or total != len(items):
+        raise RuntimeError(f"{what}: incoherent total count")
+    return items
+
+
+def _validate_list_worktree(wt, repo, canonical_id=None, what='worktree list'):
+    if not isinstance(wt, dict):
+        raise RuntimeError(f'{what}: invalid worktree')
+    declared = wt.get('repo', None)
+    if declared is not None:
+        if not isinstance(declared, str) or not declared.strip():
+            raise RuntimeError(f'{what}: invalid worktree identity')
+        if declared != repo:
+            raise RuntimeError(f'{what}: foreign repo')
+    repo_id = wt.get('repoId')
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        raise RuntimeError(f'{what}: invalid worktree identity')
+    if canonical_id is not None and repo_id != canonical_id:
+        raise RuntimeError(f'{what}: foreign repo')
+    path = wt.get('path') or wt.get('worktreePath')
+    if not isinstance(path, str) or not path.strip():
+        raise RuntimeError(f'{what}: invalid worktree identity')
+    return path
+
+
+def _resolve_canonical_repo_id(repo) -> str:
+    result = _orca_run("repo", "list")
+    if not isinstance(result, dict):
+        raise RuntimeError("repo list: invalid response")
+    repos = result.get("repos")
+    if not isinstance(repos, list):
+        raise RuntimeError("repo list: invalid repos")
+    matches = []
+    for entry in repos:
+        if not isinstance(entry, dict):
+            raise RuntimeError("repo list: invalid repo")
+        name = entry.get("displayName")
+        rid = entry.get("id")
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError("repo list: invalid repo")
+        if not isinstance(rid, str) or not rid.strip():
+            raise RuntimeError("repo list: invalid repo")
+        if name == repo:
+            matches.append(rid)
+    if len(matches) != 1:
+        raise RuntimeError("repo list: no unique repo")
+    return matches[0]
+
+
+def _fetch_scoped_worktrees(repo, canonical_id) -> list:
+    worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
+    if not worktrees:
+        raise RuntimeError("worktree list: no unique repo id")
+    for wt in worktrees:
+        _validate_list_worktree(wt, repo, canonical_id)
+    return worktrees
+
+
+def _canonical_repo_id() -> str:
+    import dispatcher_home
+    config = dispatcher_home.load_config_dict()
+    repo = str(config.get("repo_name", "meuplantao"))
+    canonical_id = _resolve_canonical_repo_id(repo)
+    _fetch_scoped_worktrees(repo, canonical_id)
+    return canonical_id
+
+
+def _duplicate_writable_panes(agents: list) -> list:
+    groups: dict = {}
+    for term in agents or []:
+        if not isinstance(term, dict):
+            continue
+        if term.get("orphaned"):
+            continue
+        identity = str(term.get("agentIdentity") or term.get("agentType") or "")
+        if identity and identity != "codex":
+            continue
+        if term.get("writable") is False:
+            continue
+        if term.get("connected") is False:
+            continue
+        path = term.get("worktreePath") or term.get("worktree") or term.get("path") or ""
+        groups.setdefault(path, []).append(term.get("handle") or term.get("pane") or term.get("paneKey") or "")
+    return [{"worktree": path, "panes": handles} for path, handles in groups.items() if len(handles) > 1]
+
+
+def _duplicate_warning(duplicates: list) -> str:
+    parts = []
+    for dup in duplicates:
+        parts.append(f"{dup.get('worktree', '')}: {len(dup.get('panes', []))} panes Codex gravaveis")
+    detail = "; ".join(parts)
+    return f"ATENCAO: multiplos panes Codex gravaveis no mesmo worktree ({detail}); vinculo unico issue->worktree->agente violado; nenhum pane foi fechado automaticamente."
 
 def _real_deps() -> dict:
     return {
@@ -16,6 +262,7 @@ def _real_deps() -> dict:
         "check_config": _check_config_real,
         "check_orca": _check_orca_real,
         "list_agents": _list_agents_real,
+        "get_agent_states": _get_agent_states_real,
         "read_state": _read_state_real,
         "run_dispatcher": _run_dispatcher_real,
         "read_logs": _read_logs_real,
@@ -37,10 +284,18 @@ def pause(deps: dict | None = None) -> str:
     handle = d["acquire_tick_lock"](timeout)
     try:
         agents = d["list_agents"]() or []
+        raw_states = _safe_agent_states(d)
+        if raw_states is STRUCTURED_INCOMPLETE:
+            raise RuntimeError("indeterminado (fail-closed): estado estruturado incompleto ou sem escopo verificavel")
+        structured = _coerce_structured_states(raw_states)
         d["set_mode"]("PAUSED")
     finally:
         d["release_tick_lock"](handle)
-    if agents:
+    if structured is not None:
+        executing = any(normalize_agent_state(entry.get("state")) in ACTIVE_AGENT_STATES for entry in structured)
+    else:
+        executing = bool(agents)
+    if executing:
         return PAUSE_MESSAGE
     return "Dispatcher pausado para novas tarefas."
 
@@ -108,8 +363,23 @@ def get_status(deps: dict | None = None) -> dict:
         sched = {"exists": False, "enabled": False, "status": "Error", "error": str(exc)[:300]}
     try:
         agents = d["list_agents"]() or []
-    except Exception:
+        agents_ok = True
+        agents_error = ""
+    except Exception as exc:
         agents = []
+        agents_ok = False
+        agents_error = str(exc)[:300]
+    raw_states = _safe_agent_states(d)
+    if raw_states is STRUCTURED_INCOMPLETE:
+        structured = None
+        structured_ok = False
+        structured_incomplete = True
+    else:
+        structured = _coerce_structured_states(raw_states)
+        structured_ok = structured is not None
+        structured_incomplete = False
+    duplicates = _duplicate_writable_panes(agents)
+    warning = _duplicate_warning(duplicates) if duplicates else ""
     try:
         orca_ok = bool(d["check_orca"]())
     except Exception:
@@ -118,15 +388,30 @@ def get_status(deps: dict | None = None) -> dict:
         runtime_state = d["read_state"]() or {}
     except Exception as exc:
         return {"visual": "ERRO", "mode": mode, "error": str(exc)[:300], "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False}
+    if structured_ok:
+        summary = summarize_agent_states(structured)
+        executing = summary["active"] > 0
+        active_count = summary["active"]
+    else:
+        executing = bool(agents)
+        active_count = len(agents)
+        summary = {"total": len(agents), "active": len(agents), "waiting": 0, "idle": 0, "failed": 0, "unknown": 0, "contract": AGENT_STATE_CONTRACT, "fallback": "legacy-connected-panes"}
     if not config_ok or not sched.get("exists") or not sched.get("enabled") or not orca_ok:
-        return {"visual": "ERRO", "mode": mode, "scheduler": sched, "configOk": bool(config_ok), "configError": config_error, "linearOk": bool(config_ok), "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": len(agents), "runtime": _sanitized_runtime(runtime_state)}
-    if agents:
+        return {"visual": "ERRO", "mode": mode, "scheduler": sched, "configOk": bool(config_ok), "configError": config_error, "linearOk": bool(config_ok), "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": active_count, "structuredOk": structured_ok, "agentStates": summary, "duplicateAgents": duplicates, "warning": warning, "runtime": _sanitized_runtime(runtime_state)}
+    if structured_incomplete:
+        return {"visual": "ERRO", "mode": mode, "error": "indeterminado (fail-closed): estado estruturado incompleto ou sem escopo verificavel", "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": 0, "structuredOk": False, "agentStates": summary, "duplicateAgents": [], "warning": "", "runtime": _sanitized_runtime(runtime_state)}
+    if not structured_ok and not agents_ok:
+        return {"visual": "ERRO", "mode": mode, "error": f"indeterminado (fail-closed): descoberta legada falhou e sem estado estruturado: {agents_error}", "scheduler": sched, "configOk": bool(config_ok), "linearOk": False, "orcaOk": bool(orca_ok), "schedulerOk": False, "agents": 0, "structuredOk": False, "agentStates": summary, "duplicateAgents": [], "warning": "", "runtime": _sanitized_runtime(runtime_state)}
+    if executing:
         visual = "EXECUTANDO"
     elif mode == "PAUSED":
         visual = "PAUSADO"
     else:
         visual = "ATIVO"
-    return {"visual": visual, "mode": mode, "scheduler": sched, "configOk": True, "linearOk": True, "orcaOk": True, "schedulerOk": True, "agents": len(agents), "runtime": _sanitized_runtime(runtime_state), "nextRun": sched.get("nextRun", ""), "message": PAUSE_MESSAGE if (mode == "PAUSED" and agents) else ""}
+    message = PAUSE_MESSAGE if (mode == "PAUSED" and executing) else ""
+    if warning:
+        message = f"{message} {warning}".strip() if message else warning
+    return {"visual": visual, "mode": mode, "scheduler": sched, "configOk": True, "linearOk": True, "orcaOk": True, "schedulerOk": True, "agents": active_count, "structuredOk": structured_ok, "agentStates": summary, "duplicateAgents": duplicates, "warning": warning, "panes": len(agents), "runtime": _sanitized_runtime(runtime_state), "nextRun": sched.get("nextRun", ""), "message": message}
 
 def _sanitized_runtime(state: dict) -> dict:
     rt = dict((state or {}).get("runtime", {}) or {})
@@ -182,21 +467,73 @@ def _check_orca_real() -> bool:
     except Exception:
         return False
 
+def _safe_agent_states(d: dict):
+    fn = d.get("get_agent_states")
+    if not callable(fn):
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _get_agent_states_real() -> list | None:
+    import dispatcher_home
+    try:
+        result = _orca_run("worktree", "ps")
+    except Exception:
+        return None
+    try:
+        worktrees = _complete_items(result, "worktrees", "worktree ps")
+    except Exception:
+        return STRUCTURED_INCOMPLETE
+    for wt in worktrees:
+        if not isinstance(wt, dict):
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("repo"), str) or not wt.get("repo").strip():
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("repoId"), str) or not wt.get("repoId").strip():
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("path") or wt.get("worktreePath"), str) or not (wt.get("path") or wt.get("worktreePath")).strip():
+            return STRUCTURED_INCOMPLETE
+        if not isinstance(wt.get("agents"), list):
+            return STRUCTURED_INCOMPLETE
+    try:
+        repo = str(dispatcher_home.load_config_dict().get("repo_name", "meuplantao"))
+        repo_id = _canonical_repo_id()
+    except Exception:
+        return STRUCTURED_INCOMPLETE
+    scoped = [wt for wt in worktrees if wt.get("repoId") == repo_id and wt.get("repo") == repo]
+    return _coerce_structured_states({"worktrees": scoped})
+
+
 def _list_agents_real() -> list:
     import dispatcher_home
     config = dispatcher_home.load_config_dict()
     repo = str(config.get("repo_name", "meuplantao"))
     agents = []
-    worktrees = _orca_run("worktree", "list", "--repo", f"name:{repo}").get("worktrees", [])
+    canonical_id = _resolve_canonical_repo_id(repo)
+    worktrees = _fetch_scoped_worktrees(repo, canonical_id)
     for wt in worktrees:
-        path = wt.get("path", "")
-        if not path:
-            continue
+        path = _validate_list_worktree(wt, repo, canonical_id)
         try:
-            terminals = _orca_run("terminal", "list", "--worktree", f"path:{path}").get("terminals", [])
-        except Exception:
-            continue
-        agents.extend(t for t in terminals if t.get("agentIdentity") == "codex" and not t.get("orphaned"))
+            terminals = _complete_items(_orca_run("terminal", "list", "--worktree", f"path:{path}"), "terminals", "terminal list")
+        except Exception as exc:
+            raise RuntimeError(f"terminal list failed for worktree {path}: {exc}") from exc
+        for term in terminals:
+            if not isinstance(term, dict):
+                raise RuntimeError('terminal list: invalid terminal')
+            handle = term.get('handle')
+            if not isinstance(handle, str) or not handle.strip():
+                raise RuntimeError('terminal list: invalid terminal')
+            identity = term.get('agentIdentity', None)
+            if identity is not None and not isinstance(identity, str):
+                raise RuntimeError('terminal list: invalid terminal')
+            if identity != 'codex' or term.get('orphaned'):
+                continue
+            term["worktreePath"] = path
+            term["worktreeId"] = wt.get("worktreeId", "")
+            agents.append(term)
     return agents
 
 def _read_state_real() -> dict:
