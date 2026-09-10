@@ -36,6 +36,14 @@ SPARK_ENTRY = {
     "identity": "opencode", "auth_mode": "opencode",
 }
 POLICY = [dict(CODEX_ENTRY), dict(SPARK_ENTRY)]
+# Suite legada (test_dispatcher.py) fixa MEUPLANTAO_DISPATCHER_CONFIG sem policy
+# antes de importar dispatcher. Sob unittest discover este modulo e importado
+# antes de qualquer teste executar, entao semear o CONFIG global com a policy
+# canonica valida permite que os testes legados de reconcile operem sob policy
+# valida (identidade codex + tail gpt-5.6-luna low). Producao continua estrita:
+# sem policy, reconcile falha fechado com zero mutacao Linear (WorkerGuardrailTests).
+dispatcher.CONFIG.setdefault("allowed_workers", [dict(entry) for entry in POLICY])
+dispatcher.CONFIG.setdefault("worker_id", "codex-luna")
 ISSUE = {"id": "uuid-70", "identifier": "MAI-70", "title": "Worker work"}
 WORKTREE = {"id": "wt-70", "path": "C:/work/MAI-70", "displayName": "MAI-70-work", "linkedLinearIssue": "MAI-70"}
 
