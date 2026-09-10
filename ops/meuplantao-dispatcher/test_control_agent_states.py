@@ -40,9 +40,13 @@ def _envelope(items_key, items):
 
 
 def _orca_side_effect(worktrees, terminals_by_path):
+    if isinstance(worktrees, dict):
+        wl_payload = worktrees
+    else:
+        wl_payload = _envelope('worktrees', [dict(dict(w, repoId=w.get('repoId', 'repo-meuplantao')), repo=w.get('repo', 'meuplantao')) if isinstance(w, dict) else w for w in worktrees])
     def fake(*args, **kwargs):
-        if tuple(args[:2]) == ("worktree", "list"):
-            return _envelope("worktrees", worktrees)
+        if tuple(args[:2]) == ('worktree', 'list'):
+            return wl_payload
         if tuple(args[:2]) == ("terminal", "list"):
             selector = next((a for a in args if isinstance(a, str) and a.startswith("path:")), "")
             result = terminals_by_path.get(selector[len("path:"):], [])
@@ -358,14 +362,41 @@ class DuplicateAssociationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _discovered(worktrees, terminals)
 
-    def test_list_agents_filters_and_skips(self):
-        worktrees = [{"path": WT1}, {"no-path": True}, 42]
+    def test_list_agents_filters_legitimate_non_codex(self):
+        worktrees = [{'path': WT1}]
         terminals = {
-            WT1: [_raw_terminal("h1"), _raw_terminal("h2", agent="claude"), _raw_terminal("h3", orphaned=True), 42, _raw_terminal("h4", connected=False)],
+            WT1: [_raw_terminal('h1'), _raw_terminal('h2', agent='claude'), _raw_terminal('h3', orphaned=True), _raw_terminal('h4', connected=False), {'handle': 'shell-1'}],
         }
         agents = _discovered(worktrees, terminals)
-        self.assertEqual([a["handle"] for a in agents], ["h1", "h4"])
-        self.assertTrue(all(a["worktreePath"] == WT1 for a in agents))
+        self.assertEqual([a['handle'] for a in agents], ['h1', 'h4'])
+        self.assertTrue(all(a['worktreePath'] == WT1 for a in agents))
+
+    def test_list_agents_malformed_worktree_raises(self):
+        bad_lists = [
+            [{'path': WT1}, {'no-path': True}],
+            [{'path': WT1}, 42],
+            [{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x'}],
+            [{'repo': 'meuplantao', 'path': WT1}],
+            [{'repo': 'meuplantao', 'repoId': '', 'path': WT1}],
+            [{'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': ''}],
+        ]
+        for bad in bad_lists:
+            with self.subTest(wl=bad):
+                with self.assertRaises(RuntimeError):
+                    _discovered(_envelope('worktrees', bad), {WT1: [_raw_terminal('h1')]})
+
+    def test_list_agents_malformed_terminal_raises(self):
+        bad_terms = [
+            [42],
+            [{'agentIdentity': 'codex'}],
+            [{'handle': '', 'agentIdentity': 'codex'}],
+            [{'handle': 42, 'agentIdentity': 'codex'}],
+            [{'handle': 'h9', 'agentIdentity': 42}],
+        ]
+        for bad in bad_terms:
+            with self.subTest(terminals=bad):
+                with self.assertRaises(RuntimeError):
+                    _discovered([{'path': WT1}], {WT1: bad})
 
     def test_same_worktree_two_panes_flagged(self):
         agents = _discovered([{"path": WT1}], {WT1: [_raw_terminal("h1"), _raw_terminal("h2")]})
@@ -571,7 +602,6 @@ class CanonicalRepoValidationTests(unittest.TestCase):
 
     def test_worktree_list_identity_fields_strict(self):
         bad_ids = [
-            {'repoId': 'repo-meuplantao', 'path': WT1},
             {'repo': '', 'repoId': 'repo-meuplantao', 'path': WT1},
             {'repo': 42, 'repoId': 'repo-meuplantao', 'path': WT1},
             {'repo': 'meuplantao', 'path': WT1},
@@ -621,6 +651,94 @@ class CanonicalRepoValidationTests(unittest.TestCase):
         self.assertNotIn('mode', seen)
 
 
+
+
+class EnvelopeStrictnessTests(unittest.TestCase):
+    def test_ps_missing_worktrees_key_is_error(self):
+        ps = {'hostScope': {'hostIds': ['host-1'], 'omittedHostIds': []}, 'totalCount': 0, 'truncated': False}
+        status = _real_status(ps, [{'path': WT1}], {WT1: []})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+        self.assertIn('fail-closed', status.get('error', ''))
+
+    def test_worktree_list_missing_worktrees_key_is_error(self):
+        wl = {'hostScope': {'hostIds': ['host-1'], 'omittedHostIds': []}, 'totalCount': 0, 'truncated': False}
+        status = _real_status(RuntimeError('ps down'), wl, {})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+
+    def test_terminal_list_missing_terminals_key_is_error(self):
+        tl = {'hostScope': {'hostIds': ['host-1'], 'omittedHostIds': []}, 'totalCount': 0, 'truncated': False}
+        status = _real_status(RuntimeError('ps down'), [{'path': WT1}], {WT1: tl})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+
+    def test_host_ids_strict_on_ps(self):
+        bad_scopes = [
+            {'hostIds': [42], 'omittedHostIds': []},
+            {'hostIds': [''], 'omittedHostIds': []},
+            {'hostIds': ['   '], 'omittedHostIds': []},
+            {'hostIds': [True], 'omittedHostIds': []},
+            {'hostIds': [None], 'omittedHostIds': []},
+        ]
+        for scope in bad_scopes:
+            with self.subTest(scope=scope):
+                ps = _ps_result([_ps_worktree('meuplantao', [_ps_agent('p1', 'working')])], hostScope=scope)
+                status = _real_status(ps, [{'path': WT1}], {WT1: []})
+                self.assertFalse(status['structuredOk'])
+                self.assertEqual(status['visual'], 'ERRO')
+                self.assertIn('fail-closed', status.get('error', ''))
+
+    def test_host_ids_strict_on_worktree_list(self):
+        wl = _envelope('worktrees', [{'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': WT1}])
+        wl['hostScope'] = {'hostIds': [42], 'omittedHostIds': []}
+        status = _real_status(RuntimeError('ps down'), wl, {})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+
+
+class LegacyFallbackValidationTests(unittest.TestCase):
+    def test_ps_down_with_foreign_list_is_error(self):
+        wl = _envelope('worktrees', [{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x'}])
+        status = _real_status(RuntimeError('ps down'), wl, {})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+
+    def test_ps_down_with_malformed_list_is_error(self):
+        bad_lists = [
+            [{'repoId': 'repo-meuplantao'}],
+            [{'repo': 'meuplantao', 'repoId': '', 'path': WT1}],
+            [42],
+        ]
+        for bad in bad_lists:
+            with self.subTest(wl=bad):
+                wl = _envelope('worktrees', bad)
+                status = _real_status(RuntimeError('ps down'), wl, {})
+                self.assertFalse(status['structuredOk'])
+                self.assertEqual(status['visual'], 'ERRO')
+
+    def test_ps_down_with_valid_list_and_codex_terminal_executes(self):
+        wl = [{'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': WT1}]
+        terms = [{'handle': 'h1', 'agentIdentity': 'codex', 'connected': True, 'writable': True}]
+        status = _real_status(RuntimeError('ps down'), wl, {WT1: terms})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'EXECUTANDO')
+        self.assertEqual(status['agents'], 1)
+
+    def test_ps_down_with_valid_empty_discovery_is_ativo(self):
+        wl = [{'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': WT1}]
+        status = _real_status(RuntimeError('ps down'), wl, {WT1: []})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ATIVO')
+        self.assertEqual(status['agents'], 0)
+
+    def test_ps_down_with_plain_shell_only_is_ativo_not_error(self):
+        wl = [{'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': WT1}]
+        terms = [{'handle': 'shell-1', 'connected': True, 'writable': True}]
+        status = _real_status(RuntimeError('ps down'), wl, {WT1: terms})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ATIVO')
+        self.assertEqual(status['agents'], 0)
 class ClassifyTests(unittest.TestCase):
     def test_classify_mapping(self):
         cases = {

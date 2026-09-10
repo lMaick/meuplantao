@@ -111,11 +111,16 @@ def _complete_items(result, items_key, what):
     host_ids = scope.get("hostIds")
     if not isinstance(host_ids, list) or not host_ids:
         raise RuntimeError(f"{what}: unverifiable host scope")
+    for hid in host_ids:
+        if not isinstance(hid, str) or not hid.strip():
+            raise RuntimeError(f'{what}: unverifiable host scope')
     if scope.get("omittedHostIds") != []:
         raise RuntimeError(f"{what}: partial host scope")
     if result.get("truncated") is not False:
         raise RuntimeError(f"{what}: truncated discovery")
-    items = result.get(items_key, [])
+    if items_key not in result:
+        raise RuntimeError(f'{what}: missing items')
+    items = result.get(items_key)
     if not isinstance(items, list):
         raise RuntimeError(f"{what}: invalid items")
     total = result.get("totalCount")
@@ -124,22 +129,31 @@ def _complete_items(result, items_key, what):
     return items
 
 
+def _validate_list_worktree(wt, repo, what='worktree list'):
+    if not isinstance(wt, dict):
+        raise RuntimeError(f'{what}: invalid worktree')
+    declared = wt.get('repo', None)
+    if declared is not None:
+        if not isinstance(declared, str) or not declared.strip():
+            raise RuntimeError(f'{what}: invalid worktree identity')
+        if declared != repo:
+            raise RuntimeError(f'{what}: foreign repo')
+    repo_id = wt.get('repoId')
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        raise RuntimeError(f'{what}: invalid worktree identity')
+    path = wt.get('path') or wt.get('worktreePath')
+    if not isinstance(path, str) or not path.strip():
+        raise RuntimeError(f'{what}: invalid worktree identity')
+    return path
+
+
 def _canonical_repo_id() -> str:
     import dispatcher_home
     config = dispatcher_home.load_config_dict()
     repo = str(config.get("repo_name", "meuplantao"))
     worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
     for wt in worktrees:
-        if not isinstance(wt, dict):
-            raise RuntimeError('worktree list: invalid worktree identity')
-        if not isinstance(wt.get('repo'), str) or not wt.get('repo').strip():
-            raise RuntimeError('worktree list: invalid worktree identity')
-        if wt.get('repo') != repo:
-            raise RuntimeError('worktree list: foreign repo')
-        if not isinstance(wt.get('repoId'), str) or not wt.get('repoId').strip():
-            raise RuntimeError('worktree list: invalid worktree identity')
-        if not isinstance(wt.get('path') or wt.get('worktreePath'), str) or not (wt.get('path') or wt.get('worktreePath')).strip():
-            raise RuntimeError('worktree list: invalid worktree identity')
+        _validate_list_worktree(wt, repo)
     repo_ids = {wt.get('repoId') for wt in worktrees}
     if len(repo_ids) != 1:
         raise RuntimeError("worktree list: no unique repo id")
@@ -431,19 +445,21 @@ def _list_agents_real() -> list:
     agents = []
     worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
     for wt in worktrees:
-        if not isinstance(wt, dict):
-            continue
-        path = wt.get("path", "")
-        if not path:
-            continue
+        path = _validate_list_worktree(wt, repo)
         try:
             terminals = _complete_items(_orca_run("terminal", "list", "--worktree", f"path:{path}"), "terminals", "terminal list")
         except Exception as exc:
             raise RuntimeError(f"terminal list failed for worktree {path}: {exc}") from exc
         for term in terminals:
             if not isinstance(term, dict):
-                continue
-            if term.get("agentIdentity") != "codex" or term.get("orphaned"):
+                raise RuntimeError('terminal list: invalid terminal')
+            handle = term.get('handle')
+            if not isinstance(handle, str) or not handle.strip():
+                raise RuntimeError('terminal list: invalid terminal')
+            identity = term.get('agentIdentity', None)
+            if identity is not None and not isinstance(identity, str):
+                raise RuntimeError('terminal list: invalid terminal')
+            if identity != 'codex' or term.get('orphaned'):
                 continue
             term["worktreePath"] = path
             term["worktreeId"] = wt.get("worktreeId", "")

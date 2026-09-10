@@ -54,6 +54,10 @@ a descoberta legada esteja completa); `worktree list`/`terminal list`
 incompleto propaga erro e, sem estado estruturado valido, tambem resulta em
 `ERRO`/indeterminado. Zero valido (envelope completo + lista vazia) continua
 distinguivel de descoberta incompleta.
+A chave de itens precisa estar presente com valor lista (`worktrees` no ps/list,
+`terminals` no terminal list): chave ausente nunca vira zero valido. Cada `hostId`
+precisa ser string nao vazia apos strip (bool, numero, vazio, espacos ou item
+nao-string invalidam o envelope inteiro).
 
 ## Escopo por repo (repoId canonico)
 
@@ -66,12 +70,18 @@ ambiguidade). Sem correspondencia unica (nenhum repoId) ou com ambiguidade
 indeterminado). Nunca se compara `repoId` com `repo_name`: um `ps` com
 `repo='outro-repo'` e `repoId='meuplantao'` e descartado pelo filtro, e dois
 repos chamados `meuplantao` com repoIds diferentes nao se misturam. `working`
-Toda a lista e validada item a item ANTES de coletar repoIds: cada worktree
-precisa ser objeto com `repo`, `repoId` e `path` como strings nao vazias e `repo`
-EXATAMENTE igual ao `repo_name` configurado; entrada estrangeira (`repo` divergente)
-ou identidade ausente/vazia/com tipo incorreto invalida a resposta inteira
-(`ERRO`/indeterminado fail-closed) e nunca e descartada silenciosamente. Multiplos
-worktrees legitimos com mesmo nome+ID continuam validos (deduplicacao por repoId).
+Toda a lista e validada item a item ANTES de coletar repoIds: cada worktree precisa
+ser objeto com `repoId` e `path` como strings nao vazias; `repo`, quando declarado,
+precisa ser string nao vazia EXATAMENTE igual ao `repo_name` (o contrato real do
+`worktree list` no Orca 1.4.198 nao expoe `repo`; o escopo vem do filtro servidor
+mais a exigencia de exatamente um `repoId`); entrada estrangeira declarada,
+identidade ausente/vazia/com tipo incorreto ou item nao-objeto invalida a resposta
+inteira (`ERRO`/indeterminado fail-closed). Cada terminal precisa ser objeto com
+`handle` string nao vazia e `agentIdentity` ausente ou string (shell sem agente e
+terminal de outro agente sao filtros legitimos, nao erro); terminal nao-objeto, sem
+`handle` ou com identidade de tipo invalido invalida a descoberta e nunca e pulado
+silenciosamente. Multiplos worktrees legitimos com mesmo ID continuam validos
+(deduplicacao por repoId).
 de outro repo nunca altera o MeuPlantao. O `worktree list` e consultado tanto
 pela descoberta legada quanto pela resolucao canonica; ambas as chamadas usam
 envelopes verificados, sem duplicar chamadas inseguras.
@@ -195,7 +205,7 @@ reabilitando o botao.
 - Regressao MAI-68: `test_control_agent_states.py` (done conectado nao e EXECUTANDO;
   working e; blocked/waiting nunca EXECUTANDO; idle/failed rejeitados; envelope
   truncado/hostScope/totalCount; escopo por repo; payload ausente/malformado;
-  multiplos panes).
+  multiplos panes; hostIds por item; chave de itens ausente; fallback legado validado).
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
   control_pause_lock (concorrencia real), control_pause_evidence (agente antes/depois),
