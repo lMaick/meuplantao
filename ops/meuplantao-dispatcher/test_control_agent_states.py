@@ -72,7 +72,7 @@ def _real_status(ps_result, wl_worktrees, terminals_by_path):
     if isinstance(wl_worktrees, dict):
         wl_payload = wl_worktrees
     else:
-        wl_payload = _envelope("worktrees", [dict(w, repoId=w.get("repoId", "repo-meuplantao")) if isinstance(w, dict) else w for w in wl_worktrees])
+        wl_payload = _envelope('worktrees', [dict(dict(w, repoId=w.get('repoId', 'repo-meuplantao')), repo=w.get('repo', 'meuplantao')) if isinstance(w, dict) else w for w in wl_worktrees])
     def fake_orca(*args, **kwargs):
         if tuple(args[:2]) == ("worktree", "list"):
             return wl_payload
@@ -556,6 +556,69 @@ class EnvelopeAndRepoScopeTests(unittest.TestCase):
         self.assertFalse(status["structuredOk"])
         self.assertEqual(status["visual"], "ERRO")
         self.assertIn("fail-closed", status.get("error", ""))
+
+
+
+
+class CanonicalRepoValidationTests(unittest.TestCase):
+    def test_foreign_worktree_list_entry_is_error(self):
+        wl = _envelope('worktrees', [{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x'}])
+        ps = _ps_result([{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x', 'agents': [_ps_agent('p9', 'working')]}])
+        status = _real_status(ps, wl, {})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+        self.assertIn('fail-closed', status.get('error', ''))
+
+    def test_worktree_list_identity_fields_strict(self):
+        bad_ids = [
+            {'repoId': 'repo-meuplantao', 'path': WT1},
+            {'repo': '', 'repoId': 'repo-meuplantao', 'path': WT1},
+            {'repo': 42, 'repoId': 'repo-meuplantao', 'path': WT1},
+            {'repo': 'meuplantao', 'path': WT1},
+            {'repo': 'meuplantao', 'repoId': '', 'path': WT1},
+            {'repo': 'meuplantao', 'repoId': 42, 'path': WT1},
+            {'repo': 'meuplantao', 'repoId': 'repo-meuplantao'},
+            {'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': ''},
+            {'repo': 'meuplantao', 'repoId': 'repo-meuplantao', 'path': 42},
+        ]
+        ps = _ps_result([_ps_worktree('meuplantao', [_ps_agent('p1', 'working')])])
+        for bad in bad_ids:
+            with self.subTest(wt=bad):
+                wl = _envelope('worktrees', [bad])
+                status = _real_status(ps, wl, {})
+                self.assertFalse(status['structuredOk'])
+                self.assertEqual(status['visual'], 'ERRO')
+                self.assertIn('fail-closed', status.get('error', ''))
+
+    def test_non_dict_worktree_list_entry_is_error(self):
+        wl = _envelope('worktrees', [42])
+        ps = _ps_result([_ps_worktree('meuplantao', [_ps_agent('p1', 'working')])])
+        status = _real_status(ps, wl, {})
+        self.assertFalse(status['structuredOk'])
+        self.assertEqual(status['visual'], 'ERRO')
+        self.assertIn('fail-closed', status.get('error', ''))
+
+    def test_pause_with_foreign_worktree_list_raises_without_persisting(self):
+        import dispatcher_home
+        seen = {}
+        wl = _envelope('worktrees', [{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x'}])
+        ps = _ps_result([{'repo': 'outro-repo', 'repoId': 'foreign-id', 'path': 'C:/x', 'agents': [_ps_agent('p9', 'working')]}])
+        def fake_orca(*args, **kwargs):
+            if tuple(args[:2]) == ('worktree', 'list'):
+                return wl
+            if tuple(args[:2]) == ('terminal', 'list'):
+                return _envelope('terminals', [])
+            if tuple(args[:2]) == ('worktree', 'ps'):
+                return ps
+            raise AssertionError('unexpected orca call')
+        with mock.patch.object(control_service, '_orca_run', side_effect=fake_orca):
+            with mock.patch.object(dispatcher_home, 'load_config_dict', return_value={'repo_name': 'meuplantao'}):
+                d = _deps(set_mode=lambda m: seen.update(mode=m) or m)
+                del d['list_agents']
+                del d['get_agent_states']
+                with self.assertRaises(RuntimeError):
+                    control_service.pause(d)
+        self.assertNotIn('mode', seen)
 
 
 class ClassifyTests(unittest.TestCase):

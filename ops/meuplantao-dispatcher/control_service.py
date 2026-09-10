@@ -129,7 +129,18 @@ def _canonical_repo_id() -> str:
     config = dispatcher_home.load_config_dict()
     repo = str(config.get("repo_name", "meuplantao"))
     worktrees = _complete_items(_orca_run("worktree", "list", "--repo", f"name:{repo}"), "worktrees", "worktree list")
-    repo_ids = {wt.get("repoId") for wt in worktrees if isinstance(wt, dict) and isinstance(wt.get("repoId"), str) and wt.get("repoId").strip()}
+    for wt in worktrees:
+        if not isinstance(wt, dict):
+            raise RuntimeError('worktree list: invalid worktree identity')
+        if not isinstance(wt.get('repo'), str) or not wt.get('repo').strip():
+            raise RuntimeError('worktree list: invalid worktree identity')
+        if wt.get('repo') != repo:
+            raise RuntimeError('worktree list: foreign repo')
+        if not isinstance(wt.get('repoId'), str) or not wt.get('repoId').strip():
+            raise RuntimeError('worktree list: invalid worktree identity')
+        if not isinstance(wt.get('path') or wt.get('worktreePath'), str) or not (wt.get('path') or wt.get('worktreePath')).strip():
+            raise RuntimeError('worktree list: invalid worktree identity')
+    repo_ids = {wt.get('repoId') for wt in worktrees}
     if len(repo_ids) != 1:
         raise RuntimeError("worktree list: no unique repo id")
     return next(iter(repo_ids))

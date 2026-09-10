@@ -66,6 +66,12 @@ ambiguidade). Sem correspondencia unica (nenhum repoId) ou com ambiguidade
 indeterminado). Nunca se compara `repoId` com `repo_name`: um `ps` com
 `repo='outro-repo'` e `repoId='meuplantao'` e descartado pelo filtro, e dois
 repos chamados `meuplantao` com repoIds diferentes nao se misturam. `working`
+Toda a lista e validada item a item ANTES de coletar repoIds: cada worktree
+precisa ser objeto com `repo`, `repoId` e `path` como strings nao vazias e `repo`
+EXATAMENTE igual ao `repo_name` configurado; entrada estrangeira (`repo` divergente)
+ou identidade ausente/vazia/com tipo incorreto invalida a resposta inteira
+(`ERRO`/indeterminado fail-closed) e nunca e descartada silenciosamente. Multiplos
+worktrees legitimos com mesmo nome+ID continuam validos (deduplicacao por repoId).
 de outro repo nunca altera o MeuPlantao. O `worktree list` e consultado tanto
 pela descoberta legada quanto pela resolucao canonica; ambas as chamadas usam
 envelopes verificados, sem duplicar chamadas inseguras.
