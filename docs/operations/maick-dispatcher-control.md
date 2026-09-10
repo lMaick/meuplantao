@@ -7,11 +7,138 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 
 ## Estados
 
-- `ATIVO`: modo AUTO, scheduler habilitado, Orca acessivel, sem agentes ativos.
+- `ATIVO`: modo AUTO, scheduler habilitado, Orca acessivel, sem agente `working` ativo.
+  Panes conectados com agente `done` no prompt contam como ociosos, nao como
+  EXECUTANDO, mas somente quando o estado estruturado e valido (ver contrato abaixo).
+  Sem estado estruturado valido, pane Codex conectada conta como atividade
+  (fallback legado; nunca vira ATIVO silenciosamente).
 - `PAUSADO`: novas buscas/dispatches suspensos; reconciliacao e monitoramento continuam.
-- `EXECUTANDO`: ha agente Codex ativo detectado.
+- `EXECUTANDO`: existe pelo menos um agente `working` do repo configurado ativo.
 - `ERRO`: config ausente/invalida, scheduler ausente/desabilitado/com erro, Orca inacessivel,
-  falha de parse do scheduler, ou estado ausente/invalido (falha fechada).
+  falha de parse do scheduler, ou descoberta impossivel (estado estruturado
+  ausente/invalido E descoberta legada falhou: indeterminado fail-closed).
+
+## Contrato de estados do agente (MAI-68)
+
+Fonte primaria: estado estruturado do Orca (`worktree ps --json`, `agents[].state`,
+contrato `mai-68/agent-state-v1`). Os unicos estados validos sao os declarados
+pelo Orca (`AGENT_STATUS_STATES`: `working`, `blocked`, `waiting`, `done`):
+
+- `working` -> `EXECUTANDO` (unico estado que acende EXECUTANDO na GUI).
+- `blocked` -> `AGUARDANDO` (aguarda intervencao; nunca acende EXECUTANDO).
+- `waiting` -> `AGUARDANDO` (GUI mostra ATIVO/PAUSADO; detalhe em `agentStates`).
+- `done` -> `OCIOSO` (pane conectado no prompt nao e atividade).
+
+`idle`/`failed` nao existem como `agents[].state` e sao tratados como estado
+desconhecido: rejeitados na validacao estrita (fail-closed, ver abaixo).
+
+Validade estrita: o payload so e aceito quando cada item e objeto com
+`worktree`/`pane` como strings nao vazias, `agentType` valido (`codex`) e
+`state` conhecido, e cada worktree traz `agents` como lista. Qualquer desvio
+(worktree/pane ausente, vazio ou com tipo incorreto; `agentType` ausente,
+vazio, com tipo incorreto ou desconhecido; state ausente, vazio ou
+desconhecido; worktrees/agents/itens com forma invalida; payload parcialmente
+malformado) invalida a LISTA INTEIRA: o controle aplica o criterio legado
+conservador, nunca um "vazio valido".
+
+## Envelope de completude e escopo (ps, worktree list, terminal list)
+
+Toda resposta de descoberta precisa provar que esta completa: `truncated`
+precisa ser booleano `false`, `totalCount` precisa ser inteiro nao-negativo
+igual a quantidade de itens retornados, e `hostScope` precisa ser verificavel
+(`hostIds` como lista nao vazia de IDs de host de execucao validos e `omittedHostIds` vazio). Resposta
+nao-objeto, `hostScope` ausente/incompleto, `truncated=true` ou lista parcial
+(`totalCount` incoerente) significa descoberta incompleta: `worktree ps`
+incompleto retorna `ERRO`/indeterminado fail-closed (jamais `ATIVO`, mesmo que
+a descoberta legada esteja completa); `worktree list`/`terminal list`
+incompleto propaga erro e, sem estado estruturado valido, tambem resulta em
+`ERRO`/indeterminado. Zero valido (envelope completo + lista vazia) continua
+distinguivel de descoberta incompleta.
+A chave de itens precisa estar presente com valor lista (`worktrees` no ps/list,
+`terminals` no terminal list): chave ausente nunca vira zero valido. Cada `hostId`
+precisa passar no parser de ExecutionHostId do Orca 1.4.198 (`local`, `ssh:<id>` ou
+`runtime:<id>` com payload nao vazio e percent-encoding valido; `|` nao codificado,
+prefixo vazio, percent-encoding invalido ou qualquer outra string invalidam o
+envelope inteiro, incluindo `host-1`).
+
+## Escopo por repo (repoId canonico via repo list)
+
+O `ps` e filtrado EXCLUSIVAMENTE por um repoId canonico provado: o controle
+resolve primeiro exatamente um repo cujo `displayName` seja EXATAMENTE igual ao
+`repo_name` configurado a partir de `repo list --json` (`result.repos[]` com
+`displayName`/`id` autoritativos; o contrato real nao tem `hostScope`).
+Cada entrada precisa ser objeto com `displayName`/`id` como strings nao vazias;
+zero ou multiplos matches falham fechado (`ERRO`/indeterminado). Lista vazia
+de worktrees tambem falha fechado: ownership sem worktree provado nao decide
+nada.
+
+Todo `worktree list` e validado item a item ANTES de qualquer uso: cada worktree
+precisa ser objeto com `repoId` e `path` como strings nao vazias, `repoId`
+EXATAMENTE igual ao ID canonico do `repo list` e `repo`, quando declarado, string
+nao vazia EXATAMENTE igual ao `repo_name` (o contrato real do `worktree list` no
+Orca 1.4.198 omite `repo`; item sem `repo` mas com `repoId` canonico e caminho
+legitimo continua valendo). Qualquer FOREIGN-ID invalida a resposta inteira,
+mesmo com `repo` ausente; identidade ausente/vazia/com tipo incorreto ou item
+nao-objeto tambem invalida tudo (`ERRO`/indeterminado fail-closed). Nunca se
+compara `repoId` com `repo_name`. Multiplos worktrees legitimos com mesmo nome
+e mesmo ID canonico sao esperados (nao e ambiguidade).
+
+Cada worktree do `ps` e validado ANTES de qualquer filtro (item nao-objeto,
+`repo`/`repoId`/`path` ausente, vazio ou com tipo incorreto, ou `agents` que nao
+seja lista = `ERRO`/indeterminado); depois da validacao, pertencem ao escopo
+somente os itens com `repoId` igual ao canonico E `repo` igual ao `repo_name`.
+`working` de outro repo nunca altera o MeuPlantao. O `worktree list` e consultado
+tanto pela descoberta legada quanto pela resolucao canonica; ambas as chamadas
+usam envelopes verificados, sem duplicar chamadas inseguras.
+
+Cada worktree do `ps` e validado ANTES de qualquer filtro: item nao-objeto,
+`repo`/`repoId`/`path` ausente, vazio ou com tipo incorreto, ou `agents` que
+nao seja lista significa descoberta incompleta (`ERRO`/indeterminado
+fail-closed), nunca descarte silencioso virando `ATIVO`.
+
+## Fallback legado / fail-closed (sem estado estruturado)
+
+Sem estado estruturado utilizavel, vale uma unica regra com dois casos.
+Quando o `ps` esta indisponivel (Orca antigo, erro de leitura, payload ausente
+ou com estado desconhecido/rejeitado pelo parser), tenta-se o criterio legado:
+se a descoberta legada funciona, ela decide (pane Codex conectada conta como
+atividade: GUI `EXECUTANDO`; `pause()` informa que a execucao atual nao foi
+interrompida; zero panes descobertos com sucesso decidem `ATIVO`). Se a
+descoberta legada tambem falha, o estado e `ERRO`/indeterminado fail-closed
+(nunca `ATIVO` nem `EXECUTANDO` presumido). Quando o `ps` responde mas o
+envelope esta incompleto ou sem escopo verificavel (ver secao acima), o estado
+e `ERRO`/indeterminado fail-closed e `pause()` propaga sem persistir, mesmo
+que a descoberta legada esteja completa. O controle nunca presume ociosidade
+sem prova: pane conectada jamais vira `ATIVO` silenciosamente nem recebe
+mensagem de "nenhuma execucao" nesse caso.
+
+`ERRO` fora disso: config ausente/invalida, scheduler ausente/desabilitado/
+com erro, Orca inacessivel ou estado de disco ausente/invalido. Fallback
+legado bem-sucedido nao e `ERRO`: com config/scheduler/Orca ok e descoberta
+legada funcionando, a GUI mostra EXECUTANDO/ATIVO/PAUSADO normalmente.
+
+Descoberta (`_list_agents_real`): os terminais sao agregados por worktree e o
+path do worktree pai e autoritativo: substitui sempre qualquer `worktreePath`/
+`worktreeId` trazido pelo terminal (sem `setdefault`), de modo que dois
+terminais listados sob o mesmo pai agrupam juntos mesmo com paths vazios ou
+divergentes, e dois pais diferentes nunca agrupam juntos. A deteccao de
+multiplos panes agrupa por esse path: dois panes em worktrees diferentes nunca
+geram falso `duplicateAgents`; dois no mesmo worktree geram aviso sem fechar
+nada. Falha em `terminal list` para qualquer worktree (excecao ou forma
+invalida) propaga erro em vez de virar zero silencioso: sem estado
+estruturado valido, `get_status` retorna `ERRO`/indeterminado fail-closed
+e `pause()` propaga sem persistir nem afirmar seguranca.
+
+Vinculo unico issue -> worktree -> agente: multiplos panes Codex gravaveis no mesmo
+worktree geram `duplicateAgents` + aviso na mensagem
+("nenhum pane foi fechado automaticamente"); a GUI nunca fecha panes sozinha.
+
+## Ownership do workflow
+
+- Hermes coordena e consolida evidências operacionais; a auditoria técnica externa é realizada separadamente.
+- Dispatcher reivindica e sincroniza o despacho; Orca executa o trabalho no worktree.
+- GitHub e canonico para PR/checks; Linear e canonico para trabalho;
+  merge permanece humano (a GUI nao faz merge nem deploy).
 
 PAUSAR nunca mata agentes: nao chama close/delete/kill/stop. Com agente ativo a GUI informa
 "Dispatcher pausado para novas tarefas - execucao atual nao foi interrompida."
@@ -80,6 +207,10 @@ reabilitando o botao.
 ## Testes
 
 - `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v`
+- Regressao MAI-68: `test_control_agent_states.py` (done conectado nao e EXECUTANDO;
+  working e; blocked/waiting nunca EXECUTANDO; idle/failed rejeitados; envelope
+  truncado/hostScope/totalCount; escopo por repo via repo list canonico; payload ausente/malformado;
+  multiplos panes; hostIds estritos (ExecutionHostId); chave de itens ausente; fallback legado validado).
 - 21 testes legados preservados + novos: control_state (fail-closed/bootstrap), dispatcher_control,
   dispatcher_home (frozen), windows_scheduler (XML + pt-BR/en-US), control_service (orca-ERRO),
   control_pause_lock (concorrencia real), control_pause_evidence (agente antes/depois),
