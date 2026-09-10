@@ -59,31 +59,41 @@ def _coerce_structured_states(payload) -> list | None:
     if payload is None:
         return None
     if isinstance(payload, dict):
-        if isinstance(payload.get("worktrees"), list):
-            items = []
-            for worktree in payload.get("worktrees"):
+        if "worktrees" in payload:
+            worktrees = payload.get("worktrees")
+            if not isinstance(worktrees, list):
+                return None
+            candidates = []
+            for worktree in worktrees:
                 if not isinstance(worktree, dict):
-                    continue
-                path = worktree.get("path") or worktree.get("worktreePath") or ""
-                for agent in worktree.get("agents") or []:
+                    return None
+                agents = worktree.get("agents")
+                if not isinstance(agents, list):
+                    return None
+                for agent in agents:
                     if not isinstance(agent, dict):
-                        continue
-                    items.append({"worktree": path, "pane": agent.get("paneKey", ""), "state": agent.get("state"), "agentType": agent.get("agentType", "")})
-            return items
-        if isinstance(payload.get("agents"), list):
-            items = payload.get("agents")
+                        return None
+                    candidates.append({"worktree": worktree.get("path") or worktree.get("worktreePath") or "", "pane": agent.get("paneKey", ""), "state": agent.get("state"), "agentType": agent.get("agentType", "")})
+        elif isinstance(payload.get("agents"), list):
+            candidates = []
+            for agent in payload.get("agents"):
+                if not isinstance(agent, dict):
+                    return None
+                candidates.append({"worktree": agent.get("worktree") or agent.get("worktreePath") or agent.get("path") or "", "pane": agent.get("pane") or agent.get("paneKey") or agent.get("handle") or "", "state": agent.get("state"), "agentType": agent.get("agentType") or agent.get("agentIdentity") or ""})
         else:
             return None
     elif isinstance(payload, list):
-        items = payload
+        candidates = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                return None
+            candidates.append({"worktree": entry.get("worktree") or entry.get("worktreePath") or entry.get("path") or "", "pane": entry.get("pane") or entry.get("paneKey") or entry.get("handle") or "", "state": entry.get("state"), "agentType": entry.get("agentType") or entry.get("agentIdentity") or ""})
     else:
         return None
-    normalized = []
-    for entry in items:
-        if not isinstance(entry, dict):
-            continue
-        normalized.append({"worktree": entry.get("worktree") or entry.get("worktreePath") or entry.get("path") or "", "pane": entry.get("pane") or entry.get("paneKey") or entry.get("handle") or "", "state": entry.get("state"), "agentType": entry.get("agentType") or entry.get("agentIdentity") or ""})
-    return normalized
+    for candidate in candidates:
+        if normalize_agent_state(candidate.get("state")) not in KNOWN_AGENT_STATES:
+            return None
+    return candidates
 
 
 def _duplicate_writable_panes(agents: list) -> list:
@@ -332,6 +342,8 @@ def _list_agents_real() -> list:
     agents = []
     worktrees = _orca_run("worktree", "list", "--repo", f"name:{repo}").get("worktrees", [])
     for wt in worktrees:
+        if not isinstance(wt, dict):
+            continue
         path = wt.get("path", "")
         if not path:
             continue
@@ -339,7 +351,16 @@ def _list_agents_real() -> list:
             terminals = _orca_run("terminal", "list", "--worktree", f"path:{path}").get("terminals", [])
         except Exception:
             continue
-        agents.extend(t for t in terminals if t.get("agentIdentity") == "codex" and not t.get("orphaned"))
+        if not isinstance(terminals, list):
+            continue
+        for term in terminals:
+            if not isinstance(term, dict):
+                continue
+            if term.get("agentIdentity") != "codex" or term.get("orphaned"):
+                continue
+            term.setdefault("worktreePath", path)
+            term.setdefault("worktreeId", wt.get("worktreeId", ""))
+            agents.append(term)
     return agents
 
 def _read_state_real() -> dict:

@@ -9,7 +9,9 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 
 - `ATIVO`: modo AUTO, scheduler habilitado, Orca acessivel, sem agente `working` ativo.
   Panes conectados com agente `done`/`idle` no prompt contam como ociosos, nao como
-  EXECUTANDO (contrato `mai-68/agent-state-v1`).
+  EXECUTANDO, mas somente quando o estado estruturado e valido (ver contrato abaixo).
+  Sem estado estruturado valido, pane Codex conectada conta como atividade
+  (fallback legado; nunca vira ATIVO silenciosamente).
 - `PAUSADO`: novas buscas/dispatches suspensos; reconciliacao e monitoramento continuam.
 - `EXECUTANDO`: existe pelo menos um agente `working` (ou equivalente) ativo.
 - `ERRO`: config ausente/invalida, scheduler ausente/desabilitado/com erro, Orca inacessivel,
@@ -17,17 +19,39 @@ real e dispara no maximo uma iteracao pelo mesmo `dispatcher.py`.
 
 ## Contrato de estados do agente (MAI-68)
 
-Mapeamento do estado estruturado do Orca (`worktree ps --json`, `agents[].state`):
+Fonte primaria: estado estruturado do Orca (`worktree ps --json`, `agents[].state`,
+contrato `mai-68/agent-state-v1`). So valem estados conhecidos:
 
 - `working` -> `EXECUTANDO` (unico estado que acende EXECUTANDO na GUI).
 - `waiting` -> `AGUARDANDO` (GUI mostra ATIVO/PAUSADO; detalhe em `agentStates`).
 - `done`/`idle` -> `OCIOSO` (pane conectado no prompt nao e atividade).
 - `failed` -> `FALHA` (nao conta como atividade; detalhe em `agentStates`).
-- ausente/desconhecido -> `DESCONHECIDO` (contado em `agentStates.unknown`).
 
-Fallback fail-closed: sem estado estruturado (Orca antigo, payload ausente ou
-malformado, erro de leitura), o controle volta ao criterio legado conservador
-(pane Codex conectado = EXECUTANDO); nunca presume ociosidade.
+Validade estrita: o payload so e aceito quando cada item e objeto com `state`
+conhecido e cada worktree traz `agents` como lista. Qualquer desvio (state
+ausente, vazio ou desconhecido; worktrees/agents/itens com forma invalida;
+payload parcialmente malformado) invalida o conjunto inteiro: o controle
+aplica o criterio legado conservador, nunca um "vazio valido".
+
+## Fallback legado / fail-closed (sem estado estruturado)
+
+Sem estado estruturado utilizavel (Orca antigo, erro de leitura, payload
+ausente ou malformado), vale o criterio legado: pane Codex conectada conta
+como atividade (GUI `EXECUTANDO`; `pause()` informa que a execucao atual nao
+foi interrompida). O controle nunca presume ociosidade sem prova: pane
+conectada jamais vira `ATIVO` silenciosamente nem recebe mensagem de
+"nenhuma execucao" nesse caso.
+
+`ERRO` e outra coisa: config ausente/invalida, scheduler ausente/desabilitado/
+com erro, Orca inacessivel ou estado de disco ausente/invalido. Fallback
+legado nao e `ERRO`: com config/scheduler/Orca ok, a GUI mostra
+EXECUTANDO/ATIVO/PAUSADO normalmente.
+
+Descoberta (`_list_agents_real`): os terminais sao agregados por worktree e o
+path do worktree pai e injetado (`worktreePath`) quando o pane nao traz o
+proprio; valor proprio, quando existe, e preservado. A deteccao de multiplos
+panes agrupa por esse path: dois panes em worktrees diferentes nunca geram
+falso `duplicateAgents`; dois no mesmo worktree geram aviso sem fechar nada.
 
 Vinculo unico issue -> worktree -> agente: multiplos panes Codex gravaveis no mesmo
 worktree geram `duplicateAgents` + aviso na mensagem
