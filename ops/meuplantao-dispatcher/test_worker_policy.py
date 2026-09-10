@@ -6,20 +6,45 @@ from unittest.mock import patch
 
 import os
 _fixture = Path(tempfile.gettempdir()) / "mai67-worker-policy-config.toml"
-if not _fixture.exists():
-    _fixture.write_text(
-        "orca_dir = \"C:/orca\"\n"
-        "gh_executable = \"\"\n"
-        "github_repo = \"example/repository\"\n"
-        "repo_name = \"meuplantao\"\n"
-        "repo_path = \"C:/repo\"\n"
-        "worktree_root = \"C:/worktrees\"\n"
-        "linear_workspace_id = \"workspace-id\"\n"
-        "team = \"Team\"\n"
-        "project = \"Proj\"\n",
-        encoding="utf-8",
-    )
+_fixture.write_text(
+    "orca_dir = \"C:/orca\"\n"
+    "gh_executable = \"\"\n"
+    "github_repo = \"example/repository\"\n"
+    "repo_name = \"meuplantao\"\n"
+    "repo_path = \"C:/repo\"\n"
+    "worktree_root = \"C:/worktrees\"\n"
+    "linear_workspace_id = \"workspace-id\"\n"
+    "team = \"Team\"\n"
+    "project = \"Proj\"\n"
+    "worker_id = \"codex-luna\"\n"
+    "[[allowed_workers]]\n"
+    "id = \"codex-luna\"\n"
+    "agent = \"codex\"\n"
+    "model = \"gpt-5.6-luna\"\n"
+    "reasoning = \"low\"\n"
+    "command = \"codex\"\n"
+    "identity = \"codex\"\n"
+    "auth_mode = \"chatgpt\"\n"
+    "[[allowed_workers]]\n"
+    "id = \"opencode-spark\"\n"
+    "model = \"muse-spark-1.3-contributor\"\n"
+    "reasoning = \"medium\"\n"
+    "provider = \"opencode-go\"\n"
+    "command = \"opencode\"\n"
+    "identity = \"opencode\"\n"
+    "auth_mode = \"opencode\"\n",
+    encoding="utf-8",
+)
 os.environ["MEUPLANTAO_DISPATCHER_CONFIG"] = str(_fixture)
+_home = Path(tempfile.gettempdir()) / "mai67-worker-home"
+(_home / ".codex").mkdir(parents=True, exist_ok=True)
+(_home / ".codex" / "config.toml").write_text("model = \"gpt-5.6-luna\"\nmodel_reasoning_effort = \"low\"\n", encoding="utf-8")
+(_home / ".codex" / "auth.json").write_text("{\"auth_mode\": \"chatgpt\"}", encoding="utf-8")
+(_home / ".config" / "opencode").mkdir(parents=True, exist_ok=True)
+(_home / ".config" / "opencode" / "opencode.json").write_text("{\"model\": \"muse-spark-1.3-contributor\", \"reasoning\": \"medium\", \"provider\": \"opencode-go\"}", encoding="utf-8")
+(_home / ".config" / "opencode" / "auth.json").write_text("{\"auth_mode\": \"opencode\"}", encoding="utf-8")
+os.environ["HOME"] = str(_home)
+os.environ["USERPROFILE"] = str(_home)
 
 sys.path.insert(0, str(Path(__file__).parent))
 import dispatcher
@@ -36,14 +61,6 @@ SPARK_ENTRY = {
     "identity": "opencode", "auth_mode": "opencode",
 }
 POLICY = [dict(CODEX_ENTRY), dict(SPARK_ENTRY)]
-# Suite legada (test_dispatcher.py) fixa MEUPLANTAO_DISPATCHER_CONFIG sem policy
-# antes de importar dispatcher. Sob unittest discover este modulo e importado
-# antes de qualquer teste executar, entao semear o CONFIG global com a policy
-# canonica valida permite que os testes legados de reconcile operem sob policy
-# valida (identidade codex + tail gpt-5.6-luna low). Producao continua estrita:
-# sem policy, reconcile falha fechado com zero mutacao Linear (WorkerGuardrailTests).
-dispatcher.CONFIG.setdefault("allowed_workers", [dict(entry) for entry in POLICY])
-dispatcher.CONFIG.setdefault("worker_id", "codex-luna")
 ISSUE = {"id": "uuid-70", "identifier": "MAI-70", "title": "Worker work"}
 WORKTREE = {"id": "wt-70", "path": "C:/work/MAI-70", "displayName": "MAI-70-work", "linkedLinearIssue": "MAI-70"}
 
@@ -399,6 +416,76 @@ class WorkerGuardrailTests(unittest.TestCase):
         comment.assert_not_called()
         self.assertEqual(len(fake.call_args_list), 2)
 
+
+    def test_reconcile_divergent_provider_zero_linear_mutation(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = str(_opencode_home(d, provider="other-provider"))
+            with patch.object(dispatcher, "CONFIG", _config("opencode-spark")), \
+                    patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                    patch.object(dispatcher, "orca") as fake, \
+                    patch.object(dispatcher, "linear_comment") as comment, \
+                    patch.object(dispatcher, "save_state") as save:
+                state = {"issues": {}}
+                with self.assertRaisesRegex(RuntimeError, "provider mismatch"):
+                    dispatcher.reconcile_dispatches(state, [dict(WORKTREE)])
+            fake.assert_not_called()
+            comment.assert_not_called()
+            save.assert_not_called()
+            self.assertEqual(state, {"issues": {}})
+
+    def test_reconcile_missing_auth_zero_linear_mutation(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = str(_opencode_home(d, with_auth=False))
+            with patch.object(dispatcher, "CONFIG", _config("opencode-spark")), \
+                    patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                    patch.object(dispatcher, "orca") as fake, \
+                    patch.object(dispatcher, "linear_comment") as comment, \
+                    patch.object(dispatcher, "save_state") as save:
+                state = {"issues": {}}
+                with self.assertRaisesRegex(RuntimeError, "auth mismatch"):
+                    dispatcher.reconcile_dispatches(state, [dict(WORKTREE)])
+            fake.assert_not_called()
+            comment.assert_not_called()
+            save.assert_not_called()
+            self.assertEqual(state, {"issues": {}})
+
+    def test_monitor_divergent_provider_zero_linear_mutation(self):
+        wt = dict(WORKTREE)
+        wt["branch"] = "feature"
+        state = {"issues": {"MAI-70": {"status": "dispatched"}}}
+        with tempfile.TemporaryDirectory() as d:
+            home = str(_opencode_home(d, provider="other-provider"))
+            with patch.object(dispatcher, "CONFIG", _config("opencode-spark")), \
+                    patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                    patch.object(dispatcher, "orca") as fake, \
+                    patch.object(dispatcher, "linear_comment") as comment, \
+                    patch.object(dispatcher, "save_state") as save, \
+                    patch.object(dispatcher, "gh_pr_for_branch") as gh:
+                with self.assertRaisesRegex(RuntimeError, "provider mismatch"):
+                    dispatcher.monitor_deliveries(state, [wt])
+            fake.assert_not_called()
+            comment.assert_not_called()
+            save.assert_not_called()
+            gh.assert_not_called()
+
+    def test_monitor_missing_auth_zero_linear_mutation(self):
+        wt = dict(WORKTREE)
+        wt["branch"] = "feature"
+        state = {"issues": {"MAI-70": {"status": "dispatched"}}}
+        with tempfile.TemporaryDirectory() as d:
+            home = str(_opencode_home(d, with_auth=False))
+            with patch.object(dispatcher, "CONFIG", _config("opencode-spark")), \
+                    patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                    patch.object(dispatcher, "orca") as fake, \
+                    patch.object(dispatcher, "linear_comment") as comment, \
+                    patch.object(dispatcher, "save_state") as save, \
+                    patch.object(dispatcher, "gh_pr_for_branch") as gh:
+                with self.assertRaisesRegex(RuntimeError, "auth mismatch"):
+                    dispatcher.monitor_deliveries(state, [wt])
+            fake.assert_not_called()
+            comment.assert_not_called()
+            save.assert_not_called()
+            gh.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

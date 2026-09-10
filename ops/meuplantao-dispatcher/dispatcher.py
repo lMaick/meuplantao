@@ -586,8 +586,9 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
 
 
 def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
-    """Recover a confirmed dispatch if a prior run died during post-dispatch reporting."""
-    worker = selected_worker()
+    """Recover a confirmed dispatch if a prior run died during post-dispatch reporting.
+    Worker evidence is validated before any Linear mutation."""
+    worker = preflight_model()
     label = worker_label(worker)
     for worktree in worktrees:
         issue_id = str(worktree.get("linkedLinearIssue") or "").upper()
@@ -698,6 +699,7 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
     issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()}); save_state(state)
     LOG.info("Marked %s for review from PR #%s", issue_id, pr["number"])
 def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
+    preflight_model()
     for worktree in worktrees:
         issue_id = str(worktree.get("linkedLinearIssue") or "").upper()
         branch = str(worktree.get("branch") or worktree.get("git", {}).get("branch") or "")
