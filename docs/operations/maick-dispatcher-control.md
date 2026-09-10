@@ -61,7 +61,10 @@ terminais listados sob o mesmo pai agrupam juntos mesmo com paths vazios ou
 divergentes, e dois pais diferentes nunca agrupam juntos. A deteccao de
 multiplos panes agrupa por esse path: dois panes em worktrees diferentes nunca
 geram falso `duplicateAgents`; dois no mesmo worktree geram aviso sem fechar
-nada.
+nada. Falha em `terminal list` para qualquer worktree (excecao ou forma
+invalida) propaga erro em vez de virar zero silencioso: sem estado
+estruturado valido, `get_status` retorna `ERRO`/indeterminado fail-closed
+e `pause()` propaga sem persistir nem afirmar seguranca.
 
 Vinculo unico issue -> worktree -> agente: multiplos panes Codex gravaveis no mesmo
 worktree geram `duplicateAgents` + aviso na mensagem

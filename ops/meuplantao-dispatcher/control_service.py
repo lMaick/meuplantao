@@ -365,10 +365,10 @@ def _list_agents_real() -> list:
             continue
         try:
             terminals = _orca_run("terminal", "list", "--worktree", f"path:{path}").get("terminals", [])
-        except Exception:
-            continue
+        except Exception as exc:
+            raise RuntimeError(f"terminal list failed for worktree {path}: {exc}") from exc
         if not isinstance(terminals, list):
-            continue
+            raise RuntimeError(f"terminal list returned invalid shape for worktree {path}")
         for term in terminals:
             if not isinstance(term, dict):
                 continue

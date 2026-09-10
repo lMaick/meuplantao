@@ -221,6 +221,29 @@ class StatusFailClosedTests(unittest.TestCase):
                 self.assertEqual(status["visual"], "ERRO")
                 self.assertIn("fail-closed", status.get("error", ""))
 
+    def test_real_route_terminal_failure_without_structured_is_error(self):
+        import dispatcher_home
+        for ps_payload in (None, {"unexpected": True}):
+            with self.subTest(ps_payload=ps_payload):
+                def fake_orca(*args, _ps=ps_payload, **kwargs):
+                    if tuple(args[:2]) == ("worktree", "list"):
+                        return {"worktrees": [{"path": WT1, "worktreeId": "w1"}]}
+                    if tuple(args[:2]) == ("terminal", "list"):
+                        raise RuntimeError("terminal list failed")
+                    if tuple(args[:2]) == ("worktree", "ps"):
+                        return _ps
+                    raise AssertionError(f"unexpected orca call: {args}")
+                with mock.patch.object(control_service, "_orca_run", side_effect=fake_orca):
+                    with mock.patch.object(dispatcher_home, "load_config_dict", return_value={"repo_name": "meuplantao"}):
+                        d = _deps()
+                        del d["list_agents"]
+                        del d["get_agent_states"]
+                        status = control_service.get_status(d)
+                self.assertFalse(status["structuredOk"])
+                self.assertEqual(status["visual"], "ERRO")
+                self.assertEqual(status["agents"], 0)
+                self.assertIn("fail-closed", status.get("error", ""))
+
     def test_valid_structured_decides_even_when_legacy_fails(self):
         def boom():
             raise RuntimeError("terminal list failed")
@@ -275,11 +298,22 @@ class DuplicateAssociationTests(unittest.TestCase):
         self.assertEqual(len(status["duplicateAgents"]), 1)
         self.assertEqual(status["duplicateAgents"][0]["worktree"], WT1)
 
+    def test_list_agents_terminal_failure_propagates(self):
+        worktrees = [{"path": WT1}, {"path": WT2}]
+        terminals = {WT1: [_raw_terminal("h1")], WT2: RuntimeError("transient list failure")}
+        with self.assertRaises(RuntimeError):
+            _discovered(worktrees, terminals)
+
+    def test_list_agents_terminal_invalid_shape_propagates(self):
+        worktrees = [{"path": WT1}]
+        terminals = {WT1: {"terminals": "not-a-list"}}
+        with self.assertRaises(RuntimeError):
+            _discovered(worktrees, terminals)
+
     def test_list_agents_filters_and_skips(self):
-        worktrees = [{"path": WT1}, {"no-path": True}, 42, {"path": WT2}]
+        worktrees = [{"path": WT1}, {"no-path": True}, 42]
         terminals = {
             WT1: [_raw_terminal("h1"), _raw_terminal("h2", agent="claude"), _raw_terminal("h3", orphaned=True), 42, _raw_terminal("h4", connected=False)],
-            WT2: RuntimeError("transient list failure"),
         }
         agents = _discovered(worktrees, terminals)
         self.assertEqual([a["handle"] for a in agents], ["h1", "h4"])
