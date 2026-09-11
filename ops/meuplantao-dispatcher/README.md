@@ -155,6 +155,39 @@ Diagrama de estados (Linear + estado local):
 Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge confirmado.
 Lock, filtros, maximo por tick, review gate e proibicao de auto-merge preservados.
 
+## MAI-81: preflight contra a rota efetiva do wrapper Codex
+
+Rota operacional aprovada: agente/comando/identidade `codex`, modelo
+`muse-spark-1.3-contributor`, provider `opencode-go`, reasoning `high`, aplicada
+pelo wrapper Orca `settings.agentCmdOverrides.codex`. O `~/.codex/config.toml`
+descreve outra superficie (`gpt-5.6-sol low`) e nao a rota efetiva do processo
+iniciado pelo Orca, por isso o preflight nao confia nele para este worker.
+
+Regras (`dispatcher.py`, antes de qualquer workspace/agente ou mutacao Linear):
+
+- Worker `agent = "codex"` com `provider` declarado e rota de wrapper: a
+evidencia efetiva vem do settings do Orca (`settings.agentCmdOverrides.codex`,
+string/dict/lista, nas formas `settings.agentCmdOverrides` ou raiz
+`agentCmdOverrides`), nunca so do `~/.codex/config.toml`.
+- Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` > `orca_settings_path` da
+config; ausente ou ilegivel falha fechado. Worker `codex` nativo (sem
+`provider`) mantem o comportamento anterior e ignora o wrapper.
+- Exige modelo, provider e reasoning exatos da politica, comando/identidade
+`codex` e auth local presente com `auth_mode` exato; o comando efetivamente
+criado continua `codex` (`terminal create --command codex`).
+- Fail-closed: wrapper ausente, comando nao resolvido, quoting/override ambiguo
+(aspas nao fechadas, flags duplicadas, duplo aninhamento divergente), campo
+ausente, modelo/provider/reasoning divergente, conteudo malformado e auth
+ausente/divergente, tudo antes de qualquer side effect.
+- Segredos: erros carregam so `worker_id`; args/env/tokens/conteudo de arquivos
+nunca entram em logs, estado ou Linear. Payload Hermes segue estrito
+`{issue, event}`.
+
+Operacao: ver `config.example.toml` (`codex-spark` + `orca_settings_path`) e
+`docs/operations/maick-dispatcher-control.md` (secao MAI-81). Testes:
+`test_dispatcher_codex_wrapper.py` (RED da divergencia, GREEN da rota efetiva e
+fail-closed) + suite completa `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`.
+
 Testes: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 (caminho feliz, erro reportado via Linear sem GitHub, timeout com marca no Linear,
 crash ambiguo sanitizado sem retry, entrega Hermes duravel (falha nao perde evento),

@@ -1,4 +1,4 @@
-﻿# Maick Dispatcher Control (MAI-66)
+# Maick Dispatcher Control (MAI-66)
 
 GUI Windows (Python 3.11 + Tkinter + PyInstaller) que controla com seguranca o dispatcher existente.
 Autoridade unica: `ops/meuplantao-dispatcher/dispatcher.py`. Fluxo preservado: Linear -> dispatcher.py -> Orca.
@@ -421,6 +421,37 @@ o Orca inicia; nao e modelo do dispatcher.
 - Canonicalizacao convergente com limites: nao-convergente/superlimite vira `[REDACTED]`; payload grande limitado.
 - Nenhuma chamada a modelo/LLM no polling e na coordenacao.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
+
+### MAI-81: preflight do Dispatcher contra a rota efetiva do wrapper Codex no Orca
+
+Contexto: no rollout da MAI-69 (scheduler desabilitado, controle `PAUSED`, suite
+264/264, dry-run read-only), o smoke real falhou fechado com `worker model
+mismatch`: o preflight lia so `~/.codex/config.toml` (`gpt-5.6-sol low`) enquanto
+a rota efetiva aprovada do Orca para `terminal create --command codex` vem do
+wrapper `settings.agentCmdOverrides.codex` (`muse-spark-1.3-contributor` via
+`opencode-go`, effort `high`). Nenhum segredo e lido/publicado/persistido; o
+`config.toml` operacional real nunca e commitado nem usado nos testes.
+
+Comportamento (`ops/meuplantao-dispatcher/dispatcher.py`, antes de qualquer
+workspace/agente ou mutacao Linear): worker `agent = "codex"` com `provider`
+declarado (`codex-spark`: comando/identidade `codex`, modelo
+`muse-spark-1.3-contributor`, provider `opencode-go`, reasoning `high`, auth
+`opencode`) valida a rota efetiva do wrapper com modelo/provider/reasoning
+exatos; `~/.codex/config.toml` divergente e ignorado para este worker e o
+comando efetivo continua `codex`. Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS`
+> `orca_settings_path` da config. Worker `codex` nativo (sem `provider`) e
+workers `opencode` seguem inalterados; payload Hermes segue estrito
+`{issue, event}`.
+
+Fail-closed: wrapper ausente, comando nao resolvido, quoting/override ambiguo,
+campo ausente, modelo/provider/reasoning divergente, conteudo malformado e auth
+ausente/divergente. Erros carregam so `worker_id`, sem args/env/tokens/conteudo.
+Exemplo operacional em `config.example.toml` (`codex-spark` + `orca_settings_path`)
+e runbook em `ops/meuplantao-dispatcher/README.md` (secao MAI-81). Cobertura em
+`test_dispatcher_codex_wrapper.py`: RED da divergencia no SHA base, GREEN da rota
+efetiva (string/dict/raiz), comando `codex` provado inclusive no `recover_existing`,
+`codex` nativo preservado, Hermes estrito preservado e 14 casos fail-closed +
+antivazamento de segredos.
 
 Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 plus `git diff --check`. PR #39 contra `main` (integracao final; MAI-67/PR #37
