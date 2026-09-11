@@ -187,6 +187,18 @@ Com runtime alcancavel o Orca prefere `settings.get` via RPC; sem runtime, o
 arquivo do perfil ativo e o que o startup carrega. O preflight replica
 `getDataPath()` deterministicamente e le SOMENTE
 `state.settings.agentCmdOverrides.codex` desse arquivo.
+- Rota completa: o Orca anexa `settings.agentDefaultArgs.codex` ao comando
+efetivamente executado (`shared/tui-agent-launch-command.js`:
+`resolveAgentLaunchCommand` soma `agentArgs`; `shared/tui-agent-startup.js`
+propaga `agentEnv` ao ambiente; defaults em
+`shared/tui-agent-launch-defaults.js`, default embutido do codex
+`--dangerously-bypass-approvals-and-sandbox` em
+`shared/tui-agent-permissions.js`). Para o worker `codex-spark` o contrato
+operacional nao preve args extras: o preflight exige
+`settings.agentDefaultArgs.codex` presente e vazio (ausente herdaria o default
+yolo do Orca) e `settings.agentDefaultEnv.codex` ausente/vazio (qualquer valor
+capaz de alterar rota/modelo/provider falha fechado; sem allowlist por ora).
+Workers `codex` nativos seguem inalterados.
 - Por isso o dispatcher cria via `worktree create --agent codex` (usa o
 override) e a recuperacao em worktree existente falha fechado para workers de
 wrapper: nao existe rota agent-aware via CLI para relancar agente em worktree

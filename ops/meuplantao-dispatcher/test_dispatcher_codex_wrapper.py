@@ -148,7 +148,16 @@ def _orca_env(tmp, pin=None):
 
 
 def _good_payload(override):
-    return {"settings": {"agentCmdOverrides": {"codex": override}}}
+    return {"settings": {"agentCmdOverrides": {"codex": override},
+                         "agentDefaultArgs": {"codex": ""}}}
+
+
+def _payload_with_defaults(override, default_args="", default_env=None):
+    settings = {"agentCmdOverrides": {"codex": override},
+                "agentDefaultArgs": {"codex": default_args}}
+    if default_env is not None:
+        settings["agentDefaultEnv"] = default_env
+    return {"settings": settings}
 
 
 class CodexWrapperRedTests(unittest.TestCase):
@@ -518,6 +527,72 @@ class CodexWrapperSourceAuthorityTests(unittest.TestCase):
                 with _orca_env(d):
                     matched = dispatcher.preflight_model(home=home)
         self.assertEqual(matched["id"], "codex-spark")
+
+
+
+class CodexWrapperDefaultArgsTests(unittest.TestCase):
+    def _check_payload(self, payload, pattern):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            _orca_state(d, payload)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    with self.assertRaisesRegex(RuntimeError, pattern):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_default_args_model_override_rejected(self):
+        self._check_payload(
+            _payload_with_defaults(GOOD_OVERRIDE, "--model outro"),
+            "unauthorized default args")
+
+    def test_red_default_args_extra_flag_rejected(self):
+        self._check_payload(
+            _payload_with_defaults(GOOD_OVERRIDE, "--verbose"),
+            "unauthorized default args")
+
+    def test_red_default_args_codex_yolo_flag_rejected(self):
+        self._check_payload(
+            _payload_with_defaults(
+                GOOD_OVERRIDE, "--dangerously-bypass-approvals-and-sandbox"),
+            "unauthorized default args")
+
+    def test_red_default_args_missing_rejected(self):
+        self._check_payload(
+            {"settings": {"agentCmdOverrides": {"codex": GOOD_OVERRIDE}}},
+            "default args missing")
+
+    def test_red_default_env_non_empty_rejected(self):
+        self._check_payload(
+            _payload_with_defaults(
+                GOOD_OVERRIDE, "", {"codex": {"SOME_ROUTING_VAR": "1"}}),
+            "unauthorized default env")
+
+    def test_red_default_env_malformed_rejected(self):
+        self._check_payload(
+            _payload_with_defaults(GOOD_OVERRIDE, "", {"codex": "nao-dict"}),
+            "wrapper malformed")
+
+    def test_green_empty_default_args_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            _orca_state(d, _payload_with_defaults(GOOD_OVERRIDE, ""))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    matched = dispatcher.preflight_model(home=home)
+        self.assertEqual(matched["id"], "codex-spark")
+        self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+        self.assertEqual(matched["provider"], "opencode-go")
+        self.assertEqual(matched["reasoning"], "high")
+
+    def test_green_exact_operational_route_without_extras_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            _orca_state(d, _payload_with_defaults(GOOD_OVERRIDE, "", {}))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    matched = dispatcher.preflight_model(home=home)
+        self.assertEqual(matched["id"], "codex-spark")
+        self.assertEqual(matched["command"], "codex")
 
 
 if __name__ == "__main__":

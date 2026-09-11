@@ -327,6 +327,33 @@ def extract_codex_override(settings_data: dict, worker_id: str):
     raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
 
 
+def require_empty_wrapper_default_args(settings_data: dict, worker_id: str) -> None:
+    nested = settings_data.get("settings")
+    args_record = nested.get("agentDefaultArgs") if isinstance(nested, dict) else None
+    if not isinstance(args_record, dict) or CODEX_WRAPPER_KEY not in args_record:
+        raise RuntimeError(f"preflight: codex wrapper default args missing (worker_id={worker_id})")
+    value = args_record[CODEX_WRAPPER_KEY]
+    if not isinstance(value, str) or value.strip():
+        raise RuntimeError(f"preflight: codex wrapper unauthorized default args (worker_id={worker_id})")
+
+
+def require_empty_wrapper_default_env(settings_data: dict, worker_id: str) -> None:
+    nested = settings_data.get("settings")
+    env_record = nested.get("agentDefaultEnv") if isinstance(nested, dict) else None
+    if env_record is None or (isinstance(env_record, dict) and CODEX_WRAPPER_KEY not in env_record):
+        return
+    if not isinstance(env_record, dict):
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+    value = env_record[CODEX_WRAPPER_KEY]
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+    remaining = {name: item for name, item in value.items() if str(name).strip() and isinstance(item, str)}
+    if remaining:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized default env (worker_id={worker_id})")
+
+
 def _parse_wrapper_flags(tokens: list, worker_id: str) -> dict:
     model_vals: list = []
     provider_vals: list = []
@@ -413,6 +440,8 @@ def read_codex_wrapper_route(
     resolved = resolve_wrapper_settings_path(worker_id, explicit=settings_path)
     settings_data = load_orca_settings(resolved, worker_id)
     raw = extract_codex_override(settings_data, worker_id)
+    require_empty_wrapper_default_args(settings_data, worker_id)
+    require_empty_wrapper_default_env(settings_data, worker_id)
     route = parse_wrapper_route(raw, worker_id)
     expected_executable = str(entry.get("wrapper_executable", "") or "")
     if not expected_executable or route.get("executable") != expected_executable:

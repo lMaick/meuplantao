@@ -58,7 +58,12 @@ auth_mode = "opencode"
 
 # MAI-81 rota efetiva do wrapper Codex no Orca: `worktree create --agent codex`
 # resolve o wrapper `settings.agentCmdOverrides.codex` para
-# muse-spark-1.3-contributor via opencode-go com effort high. (`terminal create
+# muse-spark-1.3-contributor via opencode-go com effort high, MAIS
+# `settings.agentDefaultArgs.codex` anexado ao comando executado (o default
+# embutido do Orca para codex e `--dangerously-bypass-approvals-and-sandbox`,
+# que seria anexado ao executavel opencode: por isso o contrato operacional
+# exige `agentDefaultArgs = { codex = "" }` e `agentDefaultEnv.codex`
+# ausente/vazio). (`terminal create
 # --command codex` repassa o comando literalmente ao runtime e NAO aplica
 # agentCmdOverrides, por isso nao e rota agent-aware.) O preflight valida a rota
 # efetiva inteira do wrapper (executavel + modelo/provider/reasoning exatos, sem
@@ -66,7 +71,8 @@ auth_mode = "opencode"
 # (gpt-5.6-sol low) para este worker.
 # Para operar nesta rota, ajuste worker_id para "codex-spark" e aponte
 # orca_settings_path (ou MEUPLANTAO_ORCA_SETTINGS) para o settings.json do Orca.
-# Wrapper ausente, fonte nao autoritativa, comando nao resolvido,
+# Wrapper ausente, fonte nao autoritativa, default args/env nao vazio,
+# comando nao resolvido,
 # quoting/override ambiguo (incl. `agentCmdOverrides` top-level, que o Orca nao
 # executa), campo ausente, modelo/provider/reasoning divergente,
 # token/operador de shell ou flag desconhecida, ou conteudo malformado falha

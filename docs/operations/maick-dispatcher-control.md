@@ -466,6 +466,14 @@ rejeitado, pin `orca_settings_path`/`MEUPLANTAO_ORCA_SETTINGS` so aceito se
 igual ao autoritativo (`not authoritative` caso contrario) e exemplo
 `.../Orca/settings.json` corrigido para o `orca-data.json` do perfil ativo.
 
+Auditoria externa (reprovacao do SHA `294111b`): fonte autoritativa aprovada;
+restava a rota completa — o Orca 1.4.198 anexa `settings.agentDefaultArgs.codex`
+ao comando do `worktree create --agent codex` (default embutido do codex:
+`--dangerously-bypass-approvals-and-sandbox`, que seria anexado ao `opencode`).
+Correcoes: leitura de `agentDefaultArgs.codex`/`agentDefaultEnv.codex` da mesma
+fonte autoritativa; exigencia de default args vazio e default env ausente/vazio
+para o `codex-spark` (sem allowlist); nativos inalterados.
+
 Fail-closed: wrapper ausente, fonte nao autoritativa, comando nao resolvido
 (incl. executavel divergente), quoting/override ambiguo (incl. top-level),
 campo ausente, modelo/provider/reasoning divergente, token/operador de shell
