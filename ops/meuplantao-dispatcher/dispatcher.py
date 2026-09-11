@@ -750,8 +750,10 @@ def emit_hermes_event(issue_id: str, event_type: str, fingerprint: str, state: d
     next tick retries instead of losing the event. Activation of Hermes itself (something
     waking it on a new comment) is out of dispatcher scope: no Orca automation or webhook
     exists (see docs); the dispatcher only guarantees the event is persisted exactly once
-    per fingerprint. Returns True when delivered and recorded, False when the fingerprint
-    was already notified.
+    per fingerprint. Consumption is tracked via `MeuPlantao-Ack: <fingerprint>` comments;
+    `hermes_precheck()` lists unacked events as the gate for the operator-owned Orca
+    automation (see docs). Returns True when delivered and recorded, False when the
+    fingerprint was already notified.
     """
     if event_type not in HERMES_EVENT_TYPES:
         raise ValueError("unknown hermes event: " + str(event_type))
@@ -1026,6 +1028,54 @@ def check_dispatch_timeouts(state: dict, now: int | None = None) -> int:
     return count
 
 
+HERMES_ACK_KIND = "meuplantao-ack:"
+
+
+def hermes_acknowledged(bodies: list[str], fingerprint: str) -> bool:
+    want = HERMES_ACK_KIND + " " + str(fingerprint).strip().lower()
+    for body in bodies:
+        for line in str(body).splitlines():
+            if line.strip().lower() == want:
+                return True
+    return False
+
+
+def unacked_hermes_events(state: dict) -> list[dict]:
+    pending_events: list[dict] = []
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state.get("issues", {}).get(issue_id, {})
+        pending = pending_hermes_event(issue_id, local)
+        if pending is None:
+            continue
+        event_type, fingerprint = pending
+        try:
+            current = fetch_linear_issue_full(issue_id)
+        except Exception:
+            log_exception_safe("Hermes precheck fetch failed for %s", issue_id)
+            pending_events.append({"issue": issue_id, "event": event_type,
+                                   "fingerprint": fingerprint, "linearReachable": False})
+            continue
+        if not linear_scope_ok(current):
+            continue
+        if hermes_acknowledged(extract_comment_bodies(current), fingerprint):
+            continue
+        pending_events.append({"issue": issue_id, "event": event_type,
+                               "fingerprint": fingerprint, "linearReachable": True})
+    return pending_events
+
+
+def hermes_precheck(state: dict) -> tuple[list[dict], int]:
+    events = unacked_hermes_events(state)
+    return events, (0 if events else 1)
+
+
+def hermes_precheck_main() -> int:
+    state = load_state()
+    events, code = hermes_precheck(state)
+    print(json.dumps({"events": events}, ensure_ascii=False))
+    return code
+
+
 def poll_linear_outcomes(state: dict, now: int | None = None) -> None:
     sync_worker_reports(state)
     check_dispatch_timeouts(state, now=now)
@@ -1143,7 +1193,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--issue", help="Restrict a run to one Linear identifier")
     parser.add_argument("--manual-once", action="store_true", help="Single manual iteration ignoring PAUSED in this process only")
+    parser.add_argument("--hermes-precheck", action="store_true", help="Read-only gate: list unacknowledged Hermes events as JSON (exit 0 when pending, 1 when quiet)")
     args = parser.parse_args()
+    if args.hermes_precheck:
+        return hermes_precheck_main()
 
     lock = acquire_lock()
     if lock is None:
@@ -1155,6 +1208,8 @@ def main() -> int:
         manual_once = bool(args.manual_once)
         paused = (mode == "PAUSED" and not manual_once)
         max_per_run = 1 if manual_once else MAX_DISPATCH_PER_RUN
+        if not args.dry_run:
+            poll_linear_outcomes(state)
         status = orca("status")
         if not status.get("runtime", {}).get("reachable"):
             raise RuntimeError("Orca runtime is not reachable")

@@ -258,6 +258,10 @@ o Orca inicia; nao e modelo do dispatcher.
   policy/worker valido) mantem `error` com zero criacao e erro sanitizado.
 - `dispatching` sem confirmacao no Linear alem de `dispatch_timeout_seconds`
   (default 900, override em `config.toml`) vira `dispatch-timeout`, sem redispatch.
+- Linear-first: `poll_linear_outcomes` abre cada tick (antes de status Orca,
+  reconcile, monitor e dispatch), de modo que resultado/erro ja publicado avancam
+  mesmo com preflight invalido ou sem terminal; `reconcile_dispatches` fica so como
+  recuperacao excepcional e `monitor_deliveries` segue fail-closed no preflight.
 - Conclusao/erro/review detectados exclusivamente por comentarios/estados do Linear:
   o worker publica `MeuPlantao-Report: delivery pr=<PR-URL> sha=<SHA> tests=<resumo>`
   ou `MeuPlantao-Report: error|blocked <texto>` sanitizado; o dispatcher verifica a
@@ -270,21 +274,30 @@ o Orca inicia; nao e modelo do dispatcher.
 - Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge;
   auditorias e correcoes vivem em comentarios no Linear.
 
-### Hermes: eventos minimos e deduplicados (persistencia; acionamento pendente)
+### Hermes: evento duravel + gate de consumo + atuador do operador
+
+- Acionamento em duas partes implementadas nesta PR, sem LLM no dispatcher:
+  (a) evento duravel como comentario Linear minimo (somente issue + tipo),
+  deduplicado por fingerprint gravado so apos post confirmado, com retry no
+  proximo tick em vez de perda (idempotente e crash-safe);
+  (b) gate de consumo `run-dispatcher.cmd --hermes-precheck` (somente leitura,
+  sem lock) que lista eventos emitidos ainda sem `MeuPlantao-Ack: <fingerprint>`
+  (exit 0 = pendente, exit 1 = quieto; Linear inacessivel e fail-closed pendente).
+  O Hermes, ao consumir, posta `MeuPlantao-Ack: <fingerprint>` na issue.
+  (c) Atuador: automacao Orca do operador via contrato suportado
+  (`orca automations create --trigger <cron> --precheck "<DISPATCHER_DIR>\run-dispatcher.cmd
+  --hermes-precheck" --prompt "<prompt Hermes com ack>" --provider <agent>`;
+  exit 0 continua, demais registram skipped). A criacao NAO foi executada nesta PR
+  (AppData/rollout do dono; vedada pela auditoria) e fica como unico passo pendente
+  do operador, com comando exato acima.
 
 - Persistido apenas nos estados configurados (`needs-review`, `blocked`,
   `dispatch-timeout`), nunca para polling periodico.
-- Transporte: comentario Linear com o prompt minimo
+- Evento: comentario Linear com o prompt minimo
   `Leia a MAI-N no Linear e processe conforme o fluxo padrao. (evento=<tipo>)`.
   Contrato verificado: Hermes le issue/comentarios diretamente no Linear
   (evidencia MAI-59); nao existe comando Hermes/notify no Orca CLI e nenhum
-  transporte lateral e usado. O comentario e persistencia duravel do evento,
-  nao acionamento: em 2026-09-11, `orca automations list` retornou vazio e
-  nenhum webhook/assinatura foi localizado no escopo do repositorio; a MAI-59
-  comprova capacidade de leitura, nao ativacao por comentario. O caminho
-  evento -> acionamento do Hermes e um bloqueio registrado aguardando decisao
-  do operador (exigiria AppData/Task Scheduler/config operacional, fora do
-  escopo desta PR); o criterio de acionamento real NAO esta declarado atendido.
+  transporte lateral e usado.
 - Entrega reportada so e persistida/promovida apos validacao exata de PR + SHA;
   relatorio divergente tem zero promocoes em dois ciclos (sem fallback por branch).
 - Timeout retryavel de verdade: label e comentario so marcam `Done` apos escrita
@@ -329,6 +342,8 @@ o Orca inicia; nao e modelo do dispatcher.
 - Falha de entrega Hermes nao perde o evento (retry proximo tick).
 - Evento Hermes contem estritamente issue + tipo.
 - Relatorio divergente: zero Needs Review em dois ciclos.
+- main() Linear-first: delivery/error/blocked via Linear com preflight invalido e sem terminal.
+- Monitor fail-closed preservado; ack/precheck com fail-closed de Linear fora.
 - Timeout: falha de label/comentario no 1o ciclo retenta e finaliza so no 2o.
 - Logs capturados sem tokens/senhas/credenciais.
 - Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.

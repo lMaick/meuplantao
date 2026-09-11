@@ -66,19 +66,28 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    Etapas de marcacao de timeout so concluem apos escrita confirmada no Linear;
    falha mantem a etapa pendente para retry no proximo tick, sem finalizar o
    timeout nem notificar antes de label e comentario confirmados.
-6. Evento Hermes minimo como comentario Linear (`Leia a MAI-N no Linear e processe
-   conforme o fluxo padrao. (evento=<tipo>)`): somente identificador da issue e tipo
-   do evento; o comentario e a persistencia duravel e deduplicada do evento, nao o
-   acionamento do Hermes. Nao existe comando Hermes no Orca e nenhuma automacao
-   (`orca automations list` vazio em 2026-09-11) ou webhook acorda o Hermes quando
-   o comentario e criado; a MAI-59 comprova apenas que o Hermes le issues e
-   comentarios no Linear. O caminho evento -> acionamento do Hermes e uma decisao
-   operacional fora do escopo desta PR (exigiria AppData/Task Scheduler/config
-   operacional, intocados aqui); o criterio de acionamento real NAO esta declarado
-   como atendido. O fingerprint e gravado em `state.json` somente apos o comentario
-   ser confirmado; falha de entrega gera retry no proximo tick em vez de perda
-   definitiva. Nenhuma excecao com potencial sensivel e registrada sem sanitizacao
-   (`sanitize_for_log` + `log_exception_safe` cobrem Linear/estado/logs).
+   Outcomes do Linear sao processados primeiro em cada tick, antes de qualquer
+   dependencia de worker/terminal (`poll_linear_outcomes` abre o tick); resultado
+   ou erro ja publicado avancam mesmo com preflight invalido ou sem terminal.
+   `reconcile_dispatches` permanece so como recuperacao excepcional e
+   `monitor_deliveries` continua fail-closed no preflight (sem worker valido:
+   zero mutacao no Linear).
+6. Acionamento Hermes em duas partes, sem LLM no dispatcher. (a) Evento duravel:
+   comentario Linear minimo (`Leia a MAI-N no Linear e processe conforme o fluxo
+   padrao. (evento=<tipo>)`), somente issue + tipo; fingerprint gravado em
+   `state.json` somente apos o comentario confirmado; falha gera retry no proximo
+   tick (sem perda); repeticao do mesmo fingerprint gera zero escritas (idempotente
+   e crash-safe). (b) Gate de consumo: `run-dispatcher.cmd --hermes-precheck`
+   (somente leitura, sem lock) lista eventos emitidos ainda sem
+   `MeuPlantao-Ack: <fingerprint>` na issue (exit 0 = ha pendencias, exit 1 =
+   quieto); Linear inacessivel e fail-closed como pendente. O Hermes, ao consumir
+   cada evento, posta `MeuPlantao-Ack: <fingerprint>`. (c) Atuador: automacao Orca
+   do operador (contrato suportado: `orca automations create --trigger <cron>
+   --precheck "<DISPATCHER_DIR>\run-dispatcher.cmd --hermes-precheck" --prompt
+   "<prompt Hermes com ack>" --provider <agent>`), NAO criada nesta PR (AppData e
+   rollout sao do dono; criacao vedada pela auditoria). Nenhuma excecao com
+   potencial sensivel e registrada sem sanitizacao (`sanitize_for_log` +
+   `log_exception_safe` cobrem Linear/estado/logs).
 
 Protocolo do worker (unica fonte de conclusao no fluxo normal): ao concluir ou
 travar, o worker registra na issue um comentario `MeuPlantao-Report: delivery
@@ -95,8 +104,9 @@ Diagrama de estados (Linear + estado local):
     Todo + Orca Ready
       -> dispatching (claim + dispatchId)
       -> In Progress (dispatched)
-      -> In Progress + Needs Review (PR/SHA; Hermes 1x por fingerprint)
-      -> Blocked (Hermes 1x) | dispatch-timeout (Hermes 1x; sem redispatch)
+      -> In Progress + Needs Review (PR/SHA; evento Hermes 1x por fingerprint)
+      -> Blocked (evento 1x) | dispatch-timeout (evento 1x; sem redispatch)
+      -> Hermes consome e posta MeuPlantao-Ack; --hermes-precheck lista nao-ack
 
 Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge confirmado.
 Lock, filtros, maximo por tick, review gate e proibicao de auto-merge preservados.
@@ -107,5 +117,7 @@ crash ambiguo sanitizado sem retry, entrega Hermes duravel (falha nao perde even
 deduplicacao Hermes, novo SHA resetando fingerprint, evento estrito issue+tipo,
 sanitizacao de segredos, relatorio divergente com zero promocoes em dois ciclos,
 timeout com label/comentario retryaveis (falha-nao-finaliza), logs sem segredos
-(captura de logs), sem policy/worker, sem LLM no polling, sem mutacao
-global de CONFIG).
+(captura de logs), main() Linear-first com preflight invalido (delivery/error/
+blocked via Linear sem terminal), monitor fail-closed, ack/precheck (incl.
+fail-closed com Linear fora), transporte com dedup/retry/crash-safe,
+sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG).

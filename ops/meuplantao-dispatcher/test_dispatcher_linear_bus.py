@@ -379,5 +379,171 @@ class LinearBusTests(unittest.TestCase):
         self.assertNotIn("hunter2", blob)
 
 
+    def test_main_processes_linear_delivery_with_invalid_preflight_and_no_terminal(self):
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=12 ok"]
+        payload = _linear_issue("In Progress", [], comments=comments)
+        calls = []
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+              "statusCheckRollup": []}
+        with patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=pr):
+            _run_main(state, _main_orca(payload, calls))
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "needs-review")
+        self.assertEqual(state["issues"]["MAI-69"].get("reviewMarker"), "44:abc1234")
+        self.assertEqual(len(_hermes_bodies(comment)), 1)
+        self.assertEqual([c for c in calls if c and c[0] == "terminal"], [])
+
+    def test_main_processes_linear_error_with_invalid_preflight(self):
+        evil = "ghp_0123456789abcdef0123456789abcdef0123 password=hunter2"
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: error tests failed token=" + evil]
+        payload = _linear_issue("In Progress", [], comments=comments)
+        calls = []
+        with patch.object(dispatcher, "linear_comment") as comment:
+            _run_main(state, _main_orca(payload, calls))
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "error")
+        bodies = " ".join(c.args[1] for c in comment.call_args_list)
+        self.assertNotIn("ghp_0123456789abcdef0123456789abcdef0123", bodies)
+        self.assertNotIn("hunter2", bodies)
+        self.assertNotIn("hunter2", json.dumps(state["issues"]["MAI-69"]))
+        self.assertEqual([c for c in calls if c and c[0] == "terminal"], [])
+
+    def test_main_processes_linear_blocked_with_invalid_preflight(self):
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        payload = _linear_issue("Blocked", [])
+        calls = []
+        with patch.object(dispatcher, "linear_comment") as comment:
+            _run_main(state, _main_orca(payload, calls))
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "blocked")
+        self.assertEqual(len(_hermes_bodies(comment)), 1)
+        self.assertEqual([c for c in calls if c and c[0] == "terminal"], [])
+
+    def test_monitor_keeps_preflight_fail_closed(self):
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1",
+                                       "workerReport": {"kind": "delivery",
+                                                        "pr": "https://example.test/pr/44",
+                                                        "sha": "abc1234", "tests": "ok",
+                                                        "number": 44, "head": "abc1234"}}}}
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+              "statusCheckRollup": []}
+        wt = dict(WORKTREE, branch="lMaick/MAI-69-x")
+        with patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: gone")), \
+             patch.object(dispatcher, "orca") as fake, \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state") as save, \
+             patch.object(dispatcher, "gh_pr_for_branch") as branch_gh:
+            with self.assertRaisesRegex(RuntimeError, "preflight"):
+                dispatcher.monitor_deliveries(state, [wt])
+        fake.assert_not_called()
+        comment.assert_not_called()
+        save.assert_not_called()
+        branch_gh.assert_not_called()
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "dispatched")
+
+    def test_hermes_ack_quiets_precheck(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "44:abc1234")
+        state = {"issues": {"MAI-69": {"status": "needs-review", "reviewMarker": "44:abc1234",
+                                       "hermesNotified": {fp: {"at": 1, "event": "needs-review"}}}}}
+        acked = _linear_issue("In Progress", [], comments=["obrigado", "MeuPlantao-Ack: " + fp])
+        with patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: gone")), \
+             patch.object(dispatcher, "orca", side_effect=_main_orca(acked)):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual(events, [])
+        self.assertEqual(code, 1)
+        bare = _linear_issue("In Progress", [], comments=["sem ack aqui"])
+        with patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: gone")), \
+             patch.object(dispatcher, "orca", side_effect=_main_orca(bare)):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["fingerprint"], fp)
+        self.assertEqual(events[0]["event"], "needs-review")
+        self.assertEqual(code, 0)
+
+    def test_precheck_unreachable_linear_is_fail_closed_pending(self):
+        state = {"issues": {"MAI-69": {"status": "blocked", "dispatchId": "d-1"}}}
+        def down(*args, **kwargs):
+            raise RuntimeError("linear down")
+        with patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: gone")), \
+             patch.object(dispatcher, "orca", side_effect=down):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual(len(events), 1)
+        self.assertFalse(events[0]["linearReachable"])
+        self.assertEqual(code, 0)
+
+    def test_failed_emit_stays_precheck_pending(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "44:abc1234")
+        state = {"issues": {"MAI-69": {"status": "needs-review", "reviewMarker": "44:abc1234"}}}
+        with patch.object(dispatcher, "linear_comment", side_effect=RuntimeError("post down")), \
+             patch.object(dispatcher, "save_state"):
+            with self.assertRaises(RuntimeError):
+                dispatcher.emit_hermes_event("MAI-69", "needs-review", fp, state)
+        self.assertNotIn(fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        with patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: gone")), \
+             patch.object(dispatcher, "orca", side_effect=_main_orca(_linear_issue("In Progress", []))):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual([e["fingerprint"] for e in events], [fp])
+        self.assertEqual(code, 0)
+
+    def test_hermes_precheck_mode_is_read_only(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "blocked")
+        state = {"issues": {"MAI-69": {"status": "blocked", "dispatchId": "d-1",
+                                       "hermesNotified": {fp: {"at": 1, "event": "blocked"}}}}}
+        with patch.object(dispatcher, "acquire_lock") as lock, \
+             patch.object(dispatcher, "load_state", return_value=state), \
+             patch.object(dispatcher, "save_state") as save, \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "orca", side_effect=_main_orca(_linear_issue("Blocked", []))), \
+             patch.object(sys, "argv", ["dispatcher.py", "--hermes-precheck"]):
+            code = dispatcher.main()
+        self.assertEqual(code, 0)
+        lock.assert_not_called()
+        save.assert_not_called()
+        comment.assert_not_called()
+
+    def test_hermes_transport_contract_symbols(self):
+        source = Path(dispatcher.__file__).read_text(encoding="utf-8")
+        for symbol in ("def hermes_precheck", "def unacked_hermes_events",
+                       "def hermes_acknowledged", "MeuPlantao-Ack:", "--hermes-precheck"):
+            self.assertIn(symbol, source)
+
+class _NoopLock:
+    def seek(self, *a):
+        return None
+    def fileno(self):
+        return 0
+    def close(self):
+        return None
+
+
+def _main_orca(issue_payload=None, calls=None):
+    def fake(*args, **kwargs):
+        if calls is not None:
+            calls.append(args)
+        if args and args[0] == "terminal":
+            raise AssertionError("outcome path must not consult terminals")
+        if args[:1] == ("status",):
+            return {"runtime": {"reachable": True}}
+        if len(args) >= 2 and args[0] == "linear" and args[1] == "issue":
+            if issue_payload is not None:
+                return issue_payload
+            return _linear_issue("In Progress", [])
+        return {}
+    return fake
+
+
+def _run_main(state, orca_fake, argv=("dispatcher.py",)):
+    with patch.object(dispatcher, "acquire_lock", return_value=_NoopLock()), \
+         patch.object(dispatcher.msvcrt, "locking"), \
+         patch.object(dispatcher, "load_state", return_value=state), \
+         patch.object(dispatcher, "get_control_mode", return_value="AUTO"), \
+         patch.object(dispatcher, "orca", side_effect=orca_fake), \
+         patch.object(dispatcher, "list_worktrees", return_value=[]), \
+         patch.object(dispatcher, "list_eligible_issues", return_value=[]), \
+         patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: worker config missing")), \
+         patch.object(dispatcher, "save_state"), \
+         patch.object(sys, "argv", list(argv)):
+        return dispatcher.main()
+
 if __name__ == "__main__":
     unittest.main()
