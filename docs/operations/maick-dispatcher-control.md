@@ -325,8 +325,10 @@ o Orca inicia; nao e modelo do dispatcher.
   exatamente `number/headRefOid/url/statusCheckRollup`, sem `dict(raw)` e sem mutar
   a entrada; `number` e int nao-bool maior que zero ou string decimal, `headRefOid`/`url`
   exigem `str`, SHA nao-vazio de ate 128 chars em minusculas e cada check exige `dict`
-  com `name` de `name||context` e `conclusion` de `conclusion||state||status` (strings com
-  strip e teto de 300; ausente/None vira `[]`); ambiguidade falha fechado.
+  com `name` de `name||context` e `conclusion` de `conclusion||state||status` (strings sanitizadas por `sanitize_for_linear` com teto de 300: mesma canonicalizacao
+  convergente -- unquote + escapes Unicode/JSON ate fixpoint -- e scrub de segredos apos a
+  convergencia; nao-convergente/estouro vira `[REDACTED]`; ausente/None vira `[]`);
+  ambiguidade ou campo nao-str falha fechado.
   Enforcement no sink (MAI-77): `mark_for_review` abre com `canonical_pr(pr)`
   antes de qualquer mutacao de estado; chamada direta nao canonica falha fechado
   (`RuntimeError`) sem promover nem persistir, e todos os callers passam pela mesma
@@ -405,14 +407,18 @@ o Orca inicia; nao e modelo do dispatcher.
 - Objeto PR canonico ponta a ponta: state, attachment e comentario exigem a URL canonica exata.
 - Verificador adulterado (8 formas) nunca alcanca sinks; monitor rejeita branch PR com numero divergente.
 - `gh_pr_for_url` devolve objeto canonico validado (SHA normalizado; sujo falha fechado).
-- - Matriz Unicode/JSON: escapes literais, par surrogate, JSON misto e combinacao com
+- Matriz Unicode/JSON: escapes literais, par surrogate, JSON misto e combinacao com
   percent-encoding normalizados ate fixpoint ou `[REDACTED]`; sentinelas nunca cruas
   nos sinks.
 - Schema PR fechado: chaves/tipos exatos da saida, tipos ambiguos rejeitados e numero
   zero sem promocao.
 - Fronteira de review: chamada direta com URL spoofada/SHA invalido falha fechado sem
   sinks crus; SHA maiusculo normalizado e extras descartados em todos os sinks.
-Canonicalizacao convergente com limites: nao-convergente/superlimite vira `[REDACTED]`; payload grande limitado.
+- Checks sanitizados: `name`/`conclusion` (forma moderna e legada) com segredo
+  sintetico e escapes percent/Unicode/JSON redigidos antes do objeto canonico;
+  comentario Linear e demais sinks sem conteudo cru ou reversivel; limites de
+  tamanho verificados.
+- Canonicalizacao convergente com limites: nao-convergente/superlimite vira `[REDACTED]`; payload grande limitado.
 - Nenhuma chamada a modelo/LLM no polling e na coordenacao.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
 

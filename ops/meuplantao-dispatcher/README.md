@@ -88,8 +88,10 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
   exatamente `number/headRefOid/url/statusCheckRollup`, sem `dict(raw)` e sem mutar
   a entrada; `number` e int nao-bool maior que zero ou string decimal, `headRefOid`/`url`
   exigem `str`, SHA nao-vazio de ate 128 chars em minusculas e cada check exige `dict`
-  com `name` de `name||context` e `conclusion` de `conclusion||state||status` (strings com
-  strip e teto de 300; ausente/None vira `[]`); ambiguidade falha fechado.
+  com `name` de `name||context` e `conclusion` de `conclusion||state||status` (strings sanitizadas por `sanitize_for_linear` com teto de 300: mesma canonicalizacao
+  convergente -- unquote + escapes Unicode/JSON ate fixpoint -- e scrub de segredos apos a
+  convergencia; nao-convergente/estouro vira `[REDACTED]`; ausente/None vira `[]`);
+  ambiguidade ou campo nao-str falha fechado.
   Enforcement no sink (MAI-77): `mark_for_review` abre com `canonical_pr(pr)`
   antes de qualquer mutacao de estado; chamada direta nao canonica falha fechado
   (`RuntimeError`) sem promover nem persistir, e todos os callers passam pela mesma
@@ -173,7 +175,9 @@ sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG, objeto PR c
    monitor rejeitando branch PR com numero divergente, `gh_pr_for_url` com objeto
    validado, canonicalizacao convergente com limites (nao-convergente/superlimite
    vira [REDACTED]) e payload grande limitado, matriz Unicode/JSON ate fixpoint,
-   schema PR fechado com tipos exatos e fronteira `mark_for_review` fail-closed com sinks inspecionados).
+   schema PR fechado com tipos exatos e fronteira `mark_for_review` fail-closed com sinks inspecionados,
+   campos textuais de checks sanitizados antes do objeto canonico (moderno+legado,
+   sem conteudo cru ou reversivel nos sinks)).
 
 Entrega na PR #39 contra `main` (integracao final; MAI-67/PR #37 sao historico,
 nao dependencia ativa); sem merge/rollout pelo agente.
