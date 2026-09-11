@@ -63,6 +63,9 @@ OPENCODE_REL_AUTHS = (Path(".config/opencode/auth.json"), Path(".local/share/ope
 DEFAULT_FORBIDDEN_ROUTING = ("model_provider", "openrouter")
 ORCA_SETTINGS_ENV = "MEUPLANTAO_ORCA_SETTINGS"
 ORCA_SETTINGS_KEY = "orca_settings_path"
+ORCA_USER_DATA_ENV = "ORCA_USER_DATA_PATH"
+ORCA_PROFILE_INDEX_NAME = "orca-profile-index.json"
+ORCA_PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 CODEX_WRAPPER_KEY = "codex"
 WRAPPER_MODEL_FLAGS = ("--model",)
 WRAPPER_PROVIDER_FLAGS = ("--provider",)
@@ -257,32 +260,69 @@ def load_orca_settings(settings_path: Path | str, worker_id: str) -> dict:
     return data
 
 
+def orca_user_data_dir(worker_id: str) -> Path:
+    override = str(os.environ.get(ORCA_USER_DATA_ENV, "") or "").strip()
+    if override:
+        return Path(os.path.expandvars(override)).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "orca"
+    if sys.platform == "win32":
+        appdata = str(os.environ.get("APPDATA", "") or "").strip()
+        if not appdata:
+            raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+        return Path(appdata) / "orca"
+    base = str(os.environ.get("XDG_CONFIG_HOME", "") or "").strip()
+    return (Path(base) if base else Path.home() / ".config") / "orca"
+
+
+def discover_authoritative_orca_settings(worker_id: str, user_data: Path | None = None) -> Path:
+    base = user_data or orca_user_data_dir(worker_id)
+    for candidate in (base / ORCA_PROFILE_INDEX_NAME, base / (ORCA_PROFILE_INDEX_NAME + ".bak")):
+        try:
+            parsed = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("profiles"), list):
+            continue
+        profile_id = parsed.get("activeProfileId")
+        if not isinstance(profile_id, str) or not ORCA_PROFILE_ID_RE.match(profile_id):
+            continue
+        if not any(isinstance(item, dict) and item.get("id") == profile_id for item in parsed["profiles"]):
+            continue
+        return base / "profiles" / profile_id / "orca-data.json"
+    return base / "orca-data.json"
+
+
+def _same_settings_file(left: Path | str, right: Path | str) -> bool:
+    try:
+        return os.path.normcase(str(Path(left).resolve())) == os.path.normcase(str(Path(right).resolve()))
+    except OSError:
+        return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
+
+
+def resolve_wrapper_settings_path(worker_id: str, explicit: Path | str | None = None) -> Path:
+    authoritative = discover_authoritative_orca_settings(worker_id)
+    pinned = orca_settings_path(explicit=explicit)
+    if pinned is not None and not _same_settings_file(pinned, authoritative):
+        raise RuntimeError(f"preflight: codex wrapper not authoritative (worker_id={worker_id})")
+    return authoritative
+
+
 def extract_codex_override(settings_data: dict, worker_id: str):
-    top_raw = settings_data.get("agentCmdOverrides")
-    top = top_raw if isinstance(top_raw, dict) else None
-    nested_raw = settings_data.get("settings")
-    nested = nested_raw if isinstance(nested_raw, dict) else None
-    nested_overrides_raw = nested.get("agentCmdOverrides") if isinstance(nested, dict) else None
-    nested_overrides = nested_overrides_raw if isinstance(nested_overrides_raw, dict) else None
-    if "agentCmdOverrides" in settings_data and not isinstance(top_raw, dict):
-        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
-    if isinstance(nested, dict) and "agentCmdOverrides" in nested and not isinstance(nested_overrides_raw, dict):
-        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
-    top_present = isinstance(top, dict) and CODEX_WRAPPER_KEY in top
-    nested_present = isinstance(nested_overrides, dict) and CODEX_WRAPPER_KEY in nested_overrides
-    if top_present and nested_present:
-        if top[CODEX_WRAPPER_KEY] != nested_overrides[CODEX_WRAPPER_KEY]:
-            raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
-        raw = top[CODEX_WRAPPER_KEY]
-    elif top_present:
-        raw = top[CODEX_WRAPPER_KEY]
-    elif nested_present:
-        raw = nested_overrides[CODEX_WRAPPER_KEY]
-    else:
+    if "agentCmdOverrides" in settings_data:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
+    nested = settings_data.get("settings")
+    if not isinstance(nested, dict):
         raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+    overrides_raw = nested.get("agentCmdOverrides")
+    if overrides_raw is None or (isinstance(overrides_raw, dict) and CODEX_WRAPPER_KEY not in overrides_raw):
+        raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+    if not isinstance(overrides_raw, dict):
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+    raw = overrides_raw[CODEX_WRAPPER_KEY]
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
-    if isinstance(raw, (str, dict, list)):
+    if isinstance(raw, str):
         return raw
     raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
 
@@ -370,9 +410,7 @@ def read_codex_wrapper_route(
     worker_id = str(entry.get("id", "") or "")
     if entry.get("command") != CODEX_WRAPPER_KEY or entry.get("identity") != CODEX_WRAPPER_KEY:
         raise RuntimeError(f"preflight: codex wrapper command not resolved (worker_id={worker_id})")
-    resolved = orca_settings_path(explicit=settings_path)
-    if resolved is None:
-        raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+    resolved = resolve_wrapper_settings_path(worker_id, explicit=settings_path)
     settings_data = load_orca_settings(resolved, worker_id)
     raw = extract_codex_override(settings_data, worker_id)
     route = parse_wrapper_route(raw, worker_id)

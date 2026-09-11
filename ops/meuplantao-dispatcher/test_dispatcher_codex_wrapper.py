@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import os
 import tempfile
+import contextlib
 import unittest
 from unittest.mock import patch
 
@@ -93,16 +94,57 @@ def _home_with_diverging_codex(tmp, with_opencode_auth=True, opencode_auth_mode=
     return base
 
 
+def _orca_state(tmp, payload, profile="profile-a"):
+    root = Path(tmp) / "orca-user"
+    profdir = root / "profiles" / profile
+    profdir.mkdir(parents=True, exist_ok=True)
+    (root / "orca-profile-index.json").write_text(
+        json.dumps({"activeProfileId": profile, "profiles": [{"id": profile}]}),
+        encoding="utf-8",
+    )
+    data_path = profdir / "orca-data.json"
+    data_path.write_text(json.dumps(payload), encoding="utf-8")
+    return data_path
+
+
+def _orca_state_raw(tmp, text, profile="profile-a"):
+    root = Path(tmp) / "orca-user"
+    profdir = root / "profiles" / profile
+    profdir.mkdir(parents=True, exist_ok=True)
+    (root / "orca-profile-index.json").write_text(
+        json.dumps({"activeProfileId": profile, "profiles": [{"id": profile}]}),
+        encoding="utf-8",
+    )
+    data_path = profdir / "orca-data.json"
+    data_path.write_text(text, encoding="utf-8")
+    return data_path
+
+
 def _settings_path(tmp, payload):
-    path = Path(tmp) / ("settings-" + next(tempfile._get_candidate_names()) + ".json")
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    return path
+    return _orca_state(tmp, payload)
 
 
 def _settings_raw(tmp, text):
-    path = Path(tmp) / ("settings-" + next(tempfile._get_candidate_names()) + ".json")
-    path.write_text(text, encoding="utf-8")
-    return path
+    return _orca_state_raw(tmp, text)
+
+
+@contextlib.contextmanager
+def _orca_env(tmp, pin=None):
+    root = Path(tmp) / "orca-user"
+    old_pin = os.environ.pop("MEUPLANTAO_ORCA_SETTINGS", None)
+    old_data = os.environ.pop("ORCA_USER_DATA_PATH", None)
+    os.environ["ORCA_USER_DATA_PATH"] = str(root)
+    if pin is not None:
+        os.environ["MEUPLANTAO_ORCA_SETTINGS"] = str(pin)
+    try:
+        yield root
+    finally:
+        os.environ.pop("MEUPLANTAO_ORCA_SETTINGS", None)
+        os.environ.pop("ORCA_USER_DATA_PATH", None)
+        if old_pin is not None:
+            os.environ["MEUPLANTAO_ORCA_SETTINGS"] = old_pin
+        if old_data is not None:
+            os.environ["ORCA_USER_DATA_PATH"] = old_data
 
 
 def _good_payload(override):
@@ -115,7 +157,7 @@ class CodexWrapperRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     matched = dispatcher.preflight_model(home=home)
         self.assertEqual(matched["id"], "codex-spark")
         self.assertEqual(matched["command"], "codex")
@@ -127,27 +169,27 @@ class CodexWrapperGreenTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     matched = dispatcher.preflight_model(home=home)
         self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
         self.assertEqual(matched["provider"], "opencode-go")
         self.assertEqual(matched["reasoning"], "high")
 
-    def test_green_toplevel_overrides_without_settings_nesting(self):
+    def test_top_level_only_overrides_rejected_as_untrusted(self):
         with tempfile.TemporaryDirectory() as d:
             home = _home_with_diverging_codex(d)
-            settings = _settings_path(d, {"agentCmdOverrides": {"codex": GOOD_OVERRIDE}})
+            _settings_path(d, {"agentCmdOverrides": {"codex": GOOD_OVERRIDE}})
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
-                    matched = dispatcher.preflight_model(home=home)
-        self.assertEqual(matched["id"], "codex-spark")
+                with _orca_env(d):
+                    with self.assertRaisesRegex(RuntimeError, "wrapper ambiguous"):
+                        dispatcher.preflight_model(home=home)
 
     def test_effective_command_remains_codex(self):
         with tempfile.TemporaryDirectory() as d:
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     matched = dispatcher.preflight_model(home=home)
         self.assertEqual(matched["command"], "codex")
         self.assertEqual(matched["identity"], "codex")
@@ -225,9 +267,14 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
     def test_wrapper_file_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as d:
             home = _home_with_diverging_codex(d)
-            missing = Path(d) / "nope-81.json"
+            root = Path(d) / "orca-user"
+            (root / "profiles" / "profile-a").mkdir(parents=True, exist_ok=True)
+            (root / "orca-profile-index.json").write_text(
+                json.dumps({"activeProfileId": "profile-a", "profiles": [{"id": "profile-a"}]}),
+                encoding="utf-8",
+            )
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(missing)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper missing"):
                         dispatcher.preflight_model(home=home)
 
@@ -236,7 +283,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, {"settings": {"agentCmdOverrides": {}}})
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper missing"):
                         dispatcher.preflight_model(home=home)
 
@@ -247,7 +294,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark", bad)):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "command not resolved"):
                         dispatcher.preflight_model(home=home)
 
@@ -257,7 +304,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper ambiguous"):
                         dispatcher.preflight_model(home=home)
 
@@ -270,7 +317,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper ambiguous"):
                         dispatcher.preflight_model(home=home)
 
@@ -283,7 +330,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, payload)
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper ambiguous"):
                         dispatcher.preflight_model(home=home)
 
@@ -293,7 +340,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "field missing"):
                         dispatcher.preflight_model(home=home)
 
@@ -303,7 +350,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "model mismatch"):
                         dispatcher.preflight_model(home=home)
 
@@ -313,7 +360,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "provider mismatch"):
                         dispatcher.preflight_model(home=home)
 
@@ -323,7 +370,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "reasoning mismatch"):
                         dispatcher.preflight_model(home=home)
 
@@ -332,7 +379,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_raw(d, "{nao-json-valido")
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper malformed"):
                         dispatcher.preflight_model(home=home)
 
@@ -341,7 +388,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(12345))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper malformed"):
                         dispatcher.preflight_model(home=home)
 
@@ -350,7 +397,7 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d, with_opencode_auth=False)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "auth mismatch"):
                         dispatcher.preflight_model(home=home)
 
@@ -366,13 +413,111 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
             )
             settings = _settings_path(d, _good_payload(bad_override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaises(RuntimeError) as ctx:
                         dispatcher.preflight_model(home=home)
             message = str(ctx.exception)
             self.assertNotIn(secret, message)
             self.assertNotIn("api_key", message.lower())
             self.assertNotIn("outro", message)
+
+
+
+class CodexWrapperSourceAuthorityTests(unittest.TestCase):
+    def test_red_stale_pin_with_divergent_active_state_rejected(self):
+        divergent = _good_payload(
+            "opencode --model outro-modelo --provider opencode-go --reasoning high"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            _orca_state(d, divergent)
+            stale = Path(d) / "stale-81.json"
+            stale.write_text(json.dumps(_good_payload(GOOD_OVERRIDE)), encoding="utf-8")
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d, pin=stale):
+                    with self.assertRaisesRegex(RuntimeError, "not authoritative"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_top_level_only_override_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            _orca_state(d, {"agentCmdOverrides": {"codex": GOOD_OVERRIDE}})
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    with self.assertRaisesRegex(RuntimeError, "wrapper ambiguous"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_green_active_profile_state_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            _orca_state(d, _good_payload(GOOD_OVERRIDE))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    matched = dispatcher.preflight_model(home=home)
+        self.assertEqual(matched["id"], "codex-spark")
+        self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+        self.assertEqual(matched["provider"], "opencode-go")
+        self.assertEqual(matched["reasoning"], "high")
+        self.assertEqual(matched["command"], "codex")
+
+    def test_red_profile_switch_with_stale_pin_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            root = Path(d) / "orca-user"
+            for profile in ("profile-a", "profile-b"):
+                (root / "profiles" / profile).mkdir(parents=True, exist_ok=True)
+            (root / "profiles" / "profile-a" / "orca-data.json").write_text(
+                json.dumps(_good_payload(GOOD_OVERRIDE)), encoding="utf-8")
+            (root / "profiles" / "profile-b" / "orca-data.json").write_text(
+                json.dumps(_good_payload(
+                    "opencode --model outro-modelo --provider opencode-go --reasoning high")),
+                encoding="utf-8")
+            (root / "orca-profile-index.json").write_text(
+                json.dumps({"activeProfileId": "profile-b",
+                            "profiles": [{"id": "profile-a"}, {"id": "profile-b"}]}),
+                encoding="utf-8")
+            stale_pin = root / "profiles" / "profile-a" / "orca-data.json"
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d, pin=stale_pin):
+                    with self.assertRaisesRegex(RuntimeError, "not authoritative"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_switched_profile_missing_state_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            root = Path(d) / "orca-user"
+            (root / "profiles" / "profile-a").mkdir(parents=True, exist_ok=True)
+            (root / "profiles" / "profile-a" / "orca-data.json").write_text(
+                json.dumps(_good_payload(GOOD_OVERRIDE)), encoding="utf-8")
+            (root / "orca-profile-index.json").write_text(
+                json.dumps({"activeProfileId": "profile-b",
+                            "profiles": [{"id": "profile-a"}, {"id": "profile-b"}]}),
+                encoding="utf-8")
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    with self.assertRaisesRegex(RuntimeError, "wrapper missing"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_pin_equal_to_authoritative_path_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            authoritative = _orca_state(d, _good_payload(GOOD_OVERRIDE))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d, pin=authoritative):
+                    matched = dispatcher.preflight_model(home=home)
+        self.assertEqual(matched["id"], "codex-spark")
+
+    def test_legacy_orca_data_fallback_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            root = Path(d) / "orca-user"
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "orca-data.json").write_text(
+                json.dumps(_good_payload(GOOD_OVERRIDE)), encoding="utf-8")
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with _orca_env(d):
+                    matched = dispatcher.preflight_model(home=home)
+        self.assertEqual(matched["id"], "codex-spark")
 
 
 if __name__ == "__main__":
@@ -396,7 +541,7 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with patch.object(dispatcher, "orca", side_effect=fake_orca):
                         with patch.object(dispatcher, "wait_for_worker", return_value=("h-x", {})):
                             with self.assertRaisesRegex(RuntimeError, "recovery unavailable"):
@@ -415,7 +560,7 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(evil))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "command not resolved"):
                         dispatcher.preflight_model(home=home)
 
@@ -424,7 +569,7 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(dict(GOOD_DICT_OVERRIDE)))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper malformed"):
                         dispatcher.preflight_model(home=home)
 
@@ -435,7 +580,7 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper malformed"):
                         dispatcher.preflight_model(home=home)
 
@@ -446,7 +591,7 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, "wrapper_executable"):
                         dispatcher.preflight_model(home=home)
 
@@ -466,7 +611,7 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with patch.object(dispatcher, "orca", side_effect=fake_orca):
                         with patch.object(dispatcher, "wait_for_worker", return_value=("h-81", {})):
                             worktree, handle = dispatcher.create_workspace(
@@ -486,7 +631,7 @@ class CodexWrapperStrictRouteTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(override))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     with self.assertRaisesRegex(RuntimeError, pattern):
                         dispatcher.preflight_model(home=home)
 
@@ -510,7 +655,7 @@ class CodexWrapperStrictRouteTests(unittest.TestCase):
             home = _home_with_diverging_codex(d)
             settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
             with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                with _orca_env(d):
                     matched = dispatcher.preflight_model(home=home)
         self.assertEqual(matched["id"], "codex-spark")
         self.assertEqual(matched["model"], "muse-spark-1.3-contributor")

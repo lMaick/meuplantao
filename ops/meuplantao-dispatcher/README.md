@@ -174,7 +174,19 @@ agent-aware e `worktree create --agent <id>` (so ids TUI conhecidos via
 substitui o lancamento padrao) + args/eventuais opcoes de sessao.
 - Schema real: `agentCmdOverrides` e objeto `{<agente>: <comando string>}`
 (default `{}` em `shared/default-global-settings.js`); formas dict/lista nao
-sao executadas pelo Orca e sao rejeitadas.
+sao executadas pelo Orca e sao rejeitadas. `agentCmdOverrides` top-level nao
+existe no schema real e e rejeitado como nao confiavel.
+- Fonte autoritativa (auditoria `2fabec4b`): o perfil ativo e resolvido por
+`orca-profile-index.json` e o estado fica em
+`profiles/<activeProfileId>/orca-data.json` (fallback legado `orca-data.json`),
+forma persistida `state.settings.agentCmdOverrides`
+(`cli/handlers/agent-hooks.js`: `getDataPath`/`readHookSettingsFromDisk`;
+`cli/runtime/metadata.js`: `getDefaultUserDataPath`, honra `ORCA_USER_DATA_PATH`;
+`orca agent hooks status --json` expoe `settingsPath` sem precisar do runtime).
+Com runtime alcancavel o Orca prefere `settings.get` via RPC; sem runtime, o
+arquivo do perfil ativo e o que o startup carrega. O preflight replica
+`getDataPath()` deterministicamente e le SOMENTE
+`state.settings.agentCmdOverrides.codex` desse arquivo.
 - Por isso o dispatcher cria via `worktree create --agent codex` (usa o
 override) e a recuperacao em worktree existente falha fechado para workers de
 wrapper: nao existe rota agent-aware via CLI para relancar agente em worktree
@@ -190,18 +202,23 @@ somente string, nas formas `settings.agentCmdOverrides` ou raiz
 token do override precisa ser exatamente esse executavel; executavel
 arbitrario com flags corretas e rejeitado (`command not resolved`). Entrada sem
 `wrapper_executable` ou com formato invalido falha na validacao da politica.
-- Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` > `orca_settings_path` RAIZ
-da config (top-level, antes de `[[allowed_workers]]`); ausente ou ilegivel
-falha fechado. Worker `codex` nativo (sem `provider`) mantem o comportamento
-anterior e ignora o wrapper.
+- Caminho do settings: descoberta autoritativa do `orca-data.json` do perfil
+ativo (raiz: `ORCA_USER_DATA_PATH` ou padrao da plataforma); pin opcional
+`MEUPLANTAO_ORCA_SETTINGS` > `orca_settings_path` RAIZ da config (top-level,
+antes de `[[allowed_workers]]`) que PRECISA coincidir com o arquivo
+autoritativo, senao falha fechado (`not authoritative`). Arquivo ausente ou
+ilegivel falha fechado. Worker `codex` nativo (sem `provider`) mantem o
+comportamento anterior e ignora o wrapper.
 - Exige modelo, provider e reasoning exatos da politica e auth local presente
 com `auth_mode` exato. A criacao usa a rota agent-aware (`worktree create
 --agent codex`, que consome o override); a recuperacao de worker de wrapper
 falha fechado em vez de criar terminal literal.
-- Fail-closed: wrapper ausente, comando nao resolvido, quoting/override ambiguo
-(aspas nao fechadas, flags duplicadas, duplo aninhamento divergente), campo
-ausente, modelo/provider/reasoning divergente, conteudo malformado e auth
-ausente/divergente, tudo antes de qualquer side effect.
+- Fail-closed: wrapper ausente, fonte nao autoritativa, comando nao resolvido,
+quoting/override ambiguo (aspas nao fechadas, flags duplicadas,
+`agentCmdOverrides` top-level ou duplo aninhamento divergente), campo ausente,
+modelo/provider/reasoning divergente, token/operador de shell ou flag
+desconhecida, conteudo malformado e auth ausente/divergente, tudo antes de
+qualquer side effect.
 - Segredos: erros carregam so `worker_id`; args/env/tokens/conteudo de arquivos
 nunca entram em logs, estado ou Linear. Payload Hermes segue estrito
 `{issue, event}`.

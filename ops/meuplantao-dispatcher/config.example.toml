@@ -11,12 +11,17 @@ ready_label = "Orca Ready"
 review_label = "Needs Review"
 max_dispatch_per_run = 1
 scheduler_task_name = "Hermes-MeuPlantao-Dispatcher"
-# orca_settings_path: CHAVE RAIZ (top-level) com o caminho do settings.json do
-# Orca que contem `settings.agentCmdOverrides` (MAI-81). Deve ficar nesta secao
-# raiz, antes de qualquer [[allowed_workers]]: chave solta depois das tabelas
-# pertenceria a ultima entrada e NAO seria lida. Vazio = sem wrapper (workers
-# nativos). Tambem aceita a env MEUPLANTAO_ORCA_SETTINGS (precedencia maior).
-# Exemplo: orca_settings_path = "C:/Users/<VOCE>/AppData/Roaming/Orca/settings.json"
+# orca_settings_path: CHAVE RAIZ (top-level, MAI-81) com um PIN opcional do
+# arquivo autoritativo do Orca. Deve ficar nesta secao raiz, antes de qualquer
+# [[allowed_workers]]: chave solta depois das tabelas pertenceria a ultima
+# entrada e NAO seria lida. Vazio = descoberta autoritativa automatica do
+# `orca-data.json` do perfil ativo (`%APPDATA%/Orca/profiles/<perfil>/orca-data.json`,
+# legado `%APPDATA%/Orca/orca-data.json`, via `orca-profile-index.json`).
+# Se preenchido, PRECISA ser exatamente o arquivo autoritativo descoberto; pin
+# divergente (snapshot/caminho arbitrario ou stale) falha fechado como
+# "not authoritative" e nunca sobrepoe a autoridade do perfil ativo.
+# Tambem aceita a env MEUPLANTAO_ORCA_SETTINGS (precedencia maior que a chave).
+# Exemplo: orca_settings_path = "C:/Users/<VOCE>/AppData/Roaming/Orca/profiles/<perfil>/orca-data.json"
 orca_settings_path = ""
 # Worker policy (MAI-67): preflight autoriza e executa SOMENTE o worker de
 # worker_id. Sem worker_id, sem [[allowed_workers]] ou com lista vazia, o
@@ -61,10 +66,11 @@ auth_mode = "opencode"
 # (gpt-5.6-sol low) para este worker.
 # Para operar nesta rota, ajuste worker_id para "codex-spark" e aponte
 # orca_settings_path (ou MEUPLANTAO_ORCA_SETTINGS) para o settings.json do Orca.
-# Wrapper ausente, comando nao resolvido, quoting/override ambiguo, campo
-# ausente, modelo/provider/reasoning divergente, token/operador de shell ou
-# flag desconhecida, ou conteudo malformado falha fechado antes de qualquer
-# workspace/agente ou mutacao Linear. Sem credenciais neste arquivo;
+# Wrapper ausente, fonte nao autoritativa, comando nao resolvido,
+# quoting/override ambiguo (incl. `agentCmdOverrides` top-level, que o Orca nao
+# executa), campo ausente, modelo/provider/reasoning divergente,
+# token/operador de shell ou flag desconhecida, ou conteudo malformado falha
+# fechado antes de qualquer workspace/agente ou mutacao Linear. Sem credenciais neste arquivo;
 # o settings operacional real nunca e commitado nem usado nos testes.
 [[allowed_workers]]
 id = "codex-spark"

@@ -455,17 +455,30 @@ fechado sem criar terminal. Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` >
 workers `opencode` seguem inalterados; payload Hermes segue estrito
 `{issue, event}`.
 
-Fail-closed: wrapper ausente, comando nao resolvido (incl. executavel
-divergente), quoting/override ambiguo, campo ausente, modelo/provider/reasoning
-divergente, conteudo malformado e auth ausente/divergente. Erros carregam so
-`worker_id`, sem args/env/tokens/conteudo. Exemplo operacional em
-`config.example.toml` (`codex-spark` + `orca_settings_path` raiz) e runbook em
-`ops/meuplantao-dispatcher/README.md` (secao MAI-81). Cobertura em
-`test_dispatcher_codex_wrapper.py`: RED da divergencia e da auditoria no SHA
-anterior, GREEN da rota efetiva (string/raiz) com criacao agent-aware provada
-(`--agent codex`, sem `terminal create`), recuperacao fail-closed para wrapper
-(com `codex` literal preservado para worker nativo), `codex` nativo preservado,
-Hermes estrito preservado e fail-closed + antivazamento de segredos.
+Auditoria externa (reprovacao do SHA `660ccba`, comentario `2fabec4b`):
+o P1 de rota estrita estava corrigido; restava autoridade da fonte (o preflight
+aceitava arquivo arbitrario e `agentCmdOverrides` top-level). Correcoes:
+descoberta deterministica do `orca-data.json` do perfil ativo replicando
+`getDataPath()` (`orca-profile-index.json` + `.bak`, `activeProfileId`
+validado, fallback legado), leitura SOMENTE de
+`state.settings.agentCmdOverrides.codex`, `agentCmdOverrides` top-level
+rejeitado, pin `orca_settings_path`/`MEUPLANTAO_ORCA_SETTINGS` so aceito se
+igual ao autoritativo (`not authoritative` caso contrario) e exemplo
+`.../Orca/settings.json` corrigido para o `orca-data.json` do perfil ativo.
+
+Fail-closed: wrapper ausente, fonte nao autoritativa, comando nao resolvido
+(incl. executavel divergente), quoting/override ambiguo (incl. top-level),
+campo ausente, modelo/provider/reasoning divergente, token/operador de shell
+ou flag desconhecida, conteudo malformado e auth ausente/divergente. Erros
+carregam so `worker_id`, sem args/env/tokens/conteudo. Exemplo operacional em
+`config.example.toml` (`codex-spark` + descoberta autoritativa/pin raiz) e
+runbook em `ops/meuplantao-dispatcher/README.md` (secao MAI-81). Cobertura em
+`test_dispatcher_codex_wrapper.py`: RED da divergencia e das auditorias no SHA
+anterior, GREEN da rota efetiva do perfil ativo com criacao agent-aware provada
+(`--agent codex`, sem `terminal create`), troca de perfil com pin stale
+rejeitada, recuperacao fail-closed para wrapper (com `codex` literal preservado
+para worker nativo), `codex` nativo preservado, Hermes estrito preservado e
+fail-closed + antivazamento de segredos.
 
 Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 plus `git diff --check`. PR #39 contra `main` (integracao final; MAI-67/PR #37
