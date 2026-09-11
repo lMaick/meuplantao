@@ -5,7 +5,7 @@ import os
 import tempfile
 import contextlib
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 _fixture = Path(tempfile.gettempdir()) / "mai81-wrapper-policy-config.toml"
 _fixture.write_text(
@@ -1313,3 +1313,230 @@ class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
             with patch.object(dispatcher, "read_process_env_block", return_value={}):
                 has_key = dispatcher.read_authoritative_runtime_env("OPENCODE_API_KEY", "codex-spark", user_data=user_data)
                 self.assertFalse(has_key)
+
+
+class WindowsProcessArchitectureSafetyTests(unittest.TestCase):
+    def test_inspect_process_architecture_windows_x64(self):
+        fake_kernel32 = MagicMock()
+
+        def mock_wow64_2(hProcess, pProc, pNative):
+            pProc._obj.value = 0x0000  # IMAGE_FILE_MACHINE_UNKNOWN
+            pNative._obj.value = 0x8664  # IMAGE_FILE_MACHINE_AMD64
+            return 1
+
+        fake_kernel32.IsWow64Process2.side_effect = mock_wow64_2
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "x64")
+
+    def test_inspect_process_architecture_wow64_32bit(self):
+        fake_kernel32 = MagicMock()
+
+        def mock_wow64_2(hProcess, pProc, pNative):
+            pProc._obj.value = 0x014C  # IMAGE_FILE_MACHINE_I386
+            pNative._obj.value = 0x8664  # IMAGE_FILE_MACHINE_AMD64
+            return 1
+
+        fake_kernel32.IsWow64Process2.side_effect = mock_wow64_2
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "wow64")
+
+    def test_inspect_process_architecture_fallback_iswow64(self):
+        fake_kernel32 = MagicMock(spec=["IsWow64Process"])
+
+        def mock_wow64(hProcess, p_is_wow64):
+            p_is_wow64._obj.value = 1
+            return 1
+
+        fake_kernel32.IsWow64Process.side_effect = mock_wow64
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "wow64")
+
+    def test_inspect_process_architecture_undetermined(self):
+        fake_kernel32 = MagicMock()
+        fake_kernel32.IsWow64Process2.return_value = 0
+        fake_kernel32.IsWow64Process.return_value = 0
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "undetermined")
+
+    def test_red_caller_not_64bit_rejected_fail_closed(self):
+        with patch("ctypes.sizeof", return_value=4):
+            env, status = dispatcher.probe_process_env_block(12345)
+            self.assertIsNone(env)
+            self.assertEqual(status, "unsupported_architecture")
+
+    def test_red_target_wow64_32bit_rejected_fail_closed_before_reading_peb_offsets(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 555
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="wow64"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertIsNone(env)
+                self.assertEqual(status, "unsupported_architecture")
+                fake_kernel32.CloseHandle.assert_called_once_with(555)
+                fake_ntdll.NtQueryInformationProcess.assert_not_called()
+                fake_kernel32.ReadProcessMemory.assert_not_called()
+
+    def test_red_target_undetermined_architecture_rejected_fail_closed_before_reading_peb_offsets(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 666
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="undetermined"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertIsNone(env)
+                self.assertEqual(status, "undetermined_architecture")
+                fake_kernel32.CloseHandle.assert_called_once_with(666)
+                fake_ntdll.NtQueryInformationProcess.assert_not_called()
+                fake_kernel32.ReadProcessMemory.assert_not_called()
+
+    def test_green_target_windows_x64_supported_reads_peb_environment_block(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 777
+
+        def fake_nt_query(hProcess, info_class, p_pbi, size, p_ret):
+            p_pbi._obj.PebBaseAddress = 0x10000
+            return 0
+
+        fake_ntdll.NtQueryInformationProcess.side_effect = fake_nt_query
+
+        def fake_read_mem(hProcess, addr, buf, size, p_read):
+            p_read._obj.value = size
+            if addr.value == 0x10020:
+                buf._obj.value = 0x20000
+                return 1
+            if addr.value == 0x20080:
+                buf._obj.value = 0x30000
+                return 1
+            if addr.value == 0x30000:
+                raw_env = "OPENCODE_API_KEY=test-auth-secret\x00SOME_VAR=hello\x00\x00".encode("utf-16-le")
+                import ctypes
+                ctypes.memmove(buf, raw_env, len(raw_env))
+                p_read._obj.value = len(raw_env)
+                return 1
+            return 0
+
+        fake_kernel32.ReadProcessMemory.side_effect = fake_read_mem
+
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="x64"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertEqual(status, "present")
+                self.assertIsNotNone(env)
+                self.assertEqual(env.get("OPENCODE_API_KEY"), "test-auth-secret")
+                self.assertEqual(env.get("SOME_VAR"), "hello")
+                fake_kernel32.CloseHandle.assert_called_once_with(777)
+                fake_ntdll.NtQueryInformationProcess.assert_called_once()
+                self.assertEqual(fake_kernel32.ReadProcessMemory.call_count, 3)
+
+    def test_close_handle_preserved_on_read_failure(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 888
+        fake_ntdll.NtQueryInformationProcess.return_value = -1
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="x64"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertIsNone(env)
+                self.assertEqual(status, "unavailable")
+                fake_kernel32.CloseHandle.assert_called_once_with(888)
+
+    def _create_script(self, d, content=SANITY_SCRIPT_WRAPPER_CONTENT, name="codex.cmd"):
+        script_path = Path(d) / name
+        script_path.write_text(content, encoding="utf-8")
+        import hashlib
+        digest = hashlib.sha256(script_path.read_bytes()).hexdigest().lower()
+        return script_path, digest
+
+    def _good_script_payload(self, script_path):
+        return {"settings": {"agentCmdOverrides": {"codex": str(script_path)},
+                             "agentDefaultArgs": {"codex": ""}}}
+
+    def _script_entry(self, script_path, digest, **overrides):
+        entry = {
+            "id": "codex-spark",
+            "agent": "codex",
+            "model": "muse-spark-1.3-contributor",
+            "reasoning": "high",
+            "provider": "opencode-go",
+            "command": "codex",
+            "identity": "codex",
+            "auth_mode": "opencode",
+            "wrapper_mode": "script_wrapper",
+            "wrapper_path": str(script_path),
+            "wrapper_sha256": digest,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_green_x64_environment_block_with_key_succeeds_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=({"OPENCODE_API_KEY": "active-orca-runtime-key"}, "present"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            matched = dispatcher.preflight_model(home=home)
+            self.assertEqual(matched["id"], "codex-spark")
+            self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+            self.assertEqual(matched["provider"], "opencode-go")
+            self.assertEqual(matched["reasoning"], "high")
+
+    def test_red_x64_environment_block_without_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=({"OTHER_VAR": "value"}, "present"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_target_wow64_architecture_fails_closed_in_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=(None, "unsupported_architecture"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_target_undetermined_architecture_fails_closed_in_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=(None, "undetermined_architecture"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)

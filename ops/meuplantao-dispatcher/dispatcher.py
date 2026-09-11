@@ -727,6 +727,8 @@ def discover_active_orca_pid(worker_id: str, user_data: Path | None = None) -> i
     candidates = []
     if user_data is not None:
         candidates.append(user_data / "orca-runtime.json")
+        if user_data.name == "profiles":
+            candidates.append(user_data.parent / "orca-runtime.json")
     default_base = orca_user_data_dir(worker_id)
     if user_data is None or user_data != default_base:
         candidates.append(default_base / "orca-runtime.json")
@@ -743,20 +745,79 @@ def discover_active_orca_pid(worker_id: str, user_data: Path | None = None) -> i
     return None
 
 
-def read_process_env_block(pid: int) -> dict[str, str] | None:
+_last_process_env_status: str = "unavailable"
+
+
+def inspect_process_architecture(kernel32: Any, hProcess: Any) -> str:
     """
-    Reads the environment block of an active process by PID.
-    On Windows, inspects the process PEB using NtQueryInformationProcess and ReadProcessMemory.
-    On Linux, inspects /proc/<pid>/environ.
-    Returns a dict of environment variables or None if unavailable.
+    Determines process architecture using Windows API:
+    Returns:
+      'x64' if native 64-bit AMD64 process
+      'wow64' if 32-bit process running under WOW64
+      'unsupported' if another architecture (e.g. ARM64)
+      'undetermined' if architecture cannot be determined
     """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        IMAGE_FILE_MACHINE_UNKNOWN = 0x0000
+        IMAGE_FILE_MACHINE_I386 = 0x014C
+        IMAGE_FILE_MACHINE_AMD64 = 0x8664
+
+        if hasattr(kernel32, "IsWow64Process2"):
+            proc_machine = wintypes.USHORT()
+            native_machine = wintypes.USHORT()
+            if kernel32.IsWow64Process2(hProcess, ctypes.byref(proc_machine), ctypes.byref(native_machine)):
+                if native_machine.value != IMAGE_FILE_MACHINE_AMD64:
+                    return "unsupported"
+                if proc_machine.value == IMAGE_FILE_MACHINE_I386:
+                    return "wow64"
+                if proc_machine.value == IMAGE_FILE_MACHINE_UNKNOWN:
+                    return "x64"
+                return "unsupported"
+            return "undetermined"
+
+        if hasattr(kernel32, "IsWow64Process"):
+            is_wow64 = wintypes.BOOL()
+            if kernel32.IsWow64Process(hProcess, ctypes.byref(is_wow64)):
+                if is_wow64.value:
+                    return "wow64"
+                return "x64"
+            return "undetermined"
+    except Exception:
+        return "undetermined"
+
+    return "undetermined"
+
+
+def _win32_dlls():
+    import ctypes
+    return ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("ntdll", use_last_error=True)
+
+
+def probe_process_env_block(pid: int) -> tuple[dict[str, str] | None, str]:
+    """
+    Reads the environment block of an active process by PID after validating
+    that caller and target processes are supported 64-bit x64 processes.
+    Returns (env_dict, status) where status is one of:
+      - 'present': environment block read successfully from verified x64 process
+      - 'unsupported_architecture': caller or target process is not supported Windows x64 (e.g. WOW64/32-bit)
+      - 'undetermined_architecture': process architecture could not be verified
+      - 'unavailable': process cannot be opened or memory cannot be read
+    """
+    global _last_process_env_status
     if not isinstance(pid, int) or pid <= 0:
-        return None
+        _last_process_env_status = "unavailable"
+        return None, "unavailable"
 
     if sys.platform == "win32":
         try:
             import ctypes
             from ctypes import wintypes
+
+            if ctypes.sizeof(ctypes.c_void_p) != 8:
+                _last_process_env_status = "unsupported_architecture"
+                return None, "unsupported_architecture"
 
             PROCESS_QUERY_INFORMATION = 0x0400
             PROCESS_VM_READ = 0x0010
@@ -770,41 +831,56 @@ def read_process_env_block(pid: int) -> dict[str, str] | None:
                     ("Reserved3", ctypes.c_void_p),
                 ]
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+            kernel32, ntdll = _win32_dlls()
 
             hProcess = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
             if not hProcess:
-                return None
+                _last_process_env_status = "unavailable"
+                return None, "unavailable"
 
             try:
+                arch = inspect_process_architecture(kernel32, hProcess)
+                if arch == "wow64":
+                    _last_process_env_status = "unsupported_architecture"
+                    return None, "unsupported_architecture"
+                if arch == "undetermined":
+                    _last_process_env_status = "undetermined_architecture"
+                    return None, "undetermined_architecture"
+                if arch != "x64":
+                    _last_process_env_status = "unsupported_architecture"
+                    return None, "unsupported_architecture"
+
                 pbi = PROCESS_BASIC_INFORMATION()
                 ret_len = wintypes.ULONG()
                 status = ntdll.NtQueryInformationProcess(
                     hProcess, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(ret_len)
                 )
                 if status != 0 or not pbi.PebBaseAddress:
-                    return None
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
 
                 proc_params_addr = ctypes.c_void_p()
                 read_bytes = ctypes.c_size_t()
                 if not kernel32.ReadProcessMemory(
                     hProcess, ctypes.c_void_p(pbi.PebBaseAddress + 0x20), ctypes.byref(proc_params_addr), 8, ctypes.byref(read_bytes)
                 ) or not proc_params_addr.value:
-                    return None
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
 
                 env_addr = ctypes.c_void_p()
                 if not kernel32.ReadProcessMemory(
                     hProcess, ctypes.c_void_p(proc_params_addr.value + 0x80), ctypes.byref(env_addr), 8, ctypes.byref(read_bytes)
                 ) or not env_addr.value:
-                    return None
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
 
                 buffer_size = 65536
                 buf = ctypes.create_string_buffer(buffer_size)
                 if not kernel32.ReadProcessMemory(
                     hProcess, env_addr, buf, buffer_size, ctypes.byref(read_bytes)
                 ) or read_bytes.value == 0:
-                    return None
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
 
                 raw = buf.raw[:read_bytes.value]
                 text = raw.decode("utf-16-le", errors="ignore")
@@ -816,11 +892,13 @@ def read_process_env_block(pid: int) -> dict[str, str] | None:
                         k, v = line.split("=", 1)
                         if k:
                             env_dict[k] = v
-                return env_dict
+                _last_process_env_status = "present"
+                return env_dict, "present"
             finally:
                 kernel32.CloseHandle(hProcess)
         except Exception:
-            return None
+            _last_process_env_status = "unavailable"
+            return None, "unavailable"
 
     if sys.platform.startswith("linux"):
         try:
@@ -836,11 +914,60 @@ def read_process_env_block(pid: int) -> dict[str, str] | None:
                         k, v = line.split("=", 1)
                         if k:
                             env_dict[k] = v
-                return env_dict
+                _last_process_env_status = "present"
+                return env_dict, "present"
+            _last_process_env_status = "unavailable"
+            return None, "unavailable"
         except Exception:
-            return None
+            _last_process_env_status = "unavailable"
+            return None, "unavailable"
 
-    return None
+    _last_process_env_status = "unsupported_architecture"
+    return None, "unsupported_architecture"
+
+
+def read_process_env_block(pid: int) -> dict[str, str] | None:
+    global _last_process_env_status
+    env_block, status = probe_process_env_block(pid)
+    _last_process_env_status = status
+    return env_block
+
+
+def probe_authoritative_runtime_env(
+    env_key: str,
+    worker_id: str,
+    user_data: Path | None = None,
+) -> tuple[bool, str]:
+    """
+    Determines whether the specified environment variable is authoritatively
+    present in the active Orca runtime process environment block without recording,
+    logging, or publishing the secret value.
+
+    Returns (has_key: bool, status: str).
+    Status values:
+      - 'present': environment block read from verified x64 process and env_key is present and non-empty
+      - 'missing_key': environment block read from verified x64 process, but env_key is absent or empty
+      - 'unsupported_architecture': caller or target process is not supported Windows x64 (e.g. WOW64/32-bit)
+      - 'undetermined_architecture': process architecture could not be verified
+      - 'unavailable': active process could not be found or opened
+    """
+    global _last_process_env_status
+    if not env_key:
+        return False, "missing_key"
+
+    pid = discover_active_orca_pid(worker_id, user_data=user_data)
+    if pid is None:
+        return False, "unavailable"
+
+    _last_process_env_status = "unavailable"
+    env_block = read_process_env_block(pid)
+    if env_block is not None:
+        val = env_block.get(env_key)
+        if val and str(val).strip():
+            return True, "present"
+        return False, "missing_key"
+
+    return False, _last_process_env_status
 
 
 def read_authoritative_runtime_env(
@@ -848,22 +975,8 @@ def read_authoritative_runtime_env(
     worker_id: str,
     user_data: Path | None = None,
 ) -> bool:
-    """
-    Determines whether the specified environment variable is authoritatively
-    present in the active Orca runtime process environment block without recording,
-    logging, or publishing the secret value.
-    """
-    if not env_key:
-        return False
-
-    pid = discover_active_orca_pid(worker_id, user_data=user_data)
-    if pid is not None:
-        env_block = read_process_env_block(pid)
-        if env_block is not None:
-            val = env_block.get(env_key)
-            return bool(val and str(val).strip())
-
-    return False
+    has_key, _ = probe_authoritative_runtime_env(env_key, worker_id, user_data=user_data)
+    return has_key
 
 
 def read_codex_script_wrapper_route(
@@ -935,8 +1048,8 @@ def read_codex_script_wrapper_route(
 
     env_key = route.get("env_key")
     dispatcher_has_key = bool(env_key and os.environ.get(env_key))
-    runtime_has_key = bool(
-        env_key and read_authoritative_runtime_env(env_key, worker_id, user_data=user_data_path)
+    runtime_has_key, runtime_status = probe_authoritative_runtime_env(
+        env_key, worker_id, user_data=user_data_path
     )
 
     if not dispatcher_has_key or not runtime_has_key:
@@ -955,6 +1068,7 @@ def read_codex_script_wrapper_route(
         "reasoning": route["reasoning"],
         "auth_present": auth_present,
         "auth_mode": auth_mode,
+        "runtime_status": runtime_status,
     }
 
 
