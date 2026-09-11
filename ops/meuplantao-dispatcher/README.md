@@ -69,6 +69,12 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    (MAI-72): `canonicalize_untrusted_text` aplica unquote ate fixpoint com limite
    de 25 rodadas e 200000 caracteres; entrada que nao converge ou estoura o limite
    vira `[REDACTED]`; o scrub de segredos roda so apos a convergencia.
+  Normalizacao de escapes Unicode/JSON antes do scrub (MAI-75): cada rodada do
+  fixpoint aplica unquote + decodificacao de escapes; pares surrogate validos sao
+  combinados, unidades `\uXXXX` solitarias/invalidas permanecem inertes e
+  escapes JSON simples rodam em passada unica; malformados nao geram excecao com
+  entrada crua e o mesmo teto (25 rodadas, 200000 caracteres) derruba
+  nao-convergente/estouro para `[REDACTED]`.
    Objeto PR canonico unico (MAI-73): `report.pr` e entrada nao confiavel usada so
    como lookup; `workerReport.pr`, campo superior `issue.pr`, attachment, comentario
    e `reviewMarker` derivam exclusivamente do objeto validado por `canonical_pr`
@@ -78,6 +84,16 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    parcial). Gates na ingestao: `gh_pr_for_url` retorna objeto canonico,
    `sync_worker_reports` re-valida e `monitor_deliveries` valida a saida de
    `gh_pr_for_branch` antes de comparar/promover.
+  Schema PR fechado (MAI-76): `canonical_pr` constroi a saida campo a campo com
+  exatamente `number/headRefOid/url/statusCheckRollup`, sem `dict(raw)` e sem mutar
+  a entrada; `number` e int nao-bool maior que zero ou string decimal, `headRefOid`/`url`
+  exigem `str`, SHA nao-vazio de ate 128 chars em minusculas e cada check exige `dict`
+  com `name` de `name||context` e `conclusion` de `conclusion||state||status` (strings com
+  strip e teto de 300; ausente/None vira `[]`); ambiguidade falha fechado.
+  Enforcement no sink (MAI-77): `mark_for_review` abre com `canonical_pr(pr)`
+  antes de qualquer mutacao de estado; chamada direta nao canonica falha fechado
+  (`RuntimeError`) sem promover nem persistir, e todos os callers passam pela mesma
+  fronteira.
    Etapas de marcacao de timeout so concluem apos escrita confirmada no Linear;
    falha mantem a etapa pendente para retry no proximo tick, sem finalizar o
    timeout nem notificar antes de label e comentario confirmados.
@@ -156,7 +172,8 @@ sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG, objeto PR c
    comentario com URL canonica exata), verificador adulterado sem sinks (8 formas),
    monitor rejeitando branch PR com numero divergente, `gh_pr_for_url` com objeto
    validado, canonicalizacao convergente com limites (nao-convergente/superlimite
-   vira [REDACTED]) e payload grande limitado).
+   vira [REDACTED]) e payload grande limitado, matriz Unicode/JSON ate fixpoint,
+   schema PR fechado com tipos exatos e fronteira `mark_for_review` fail-closed com sinks inspecionados).
 
 Entrega na PR #39 contra `main` (integracao final; MAI-67/PR #37 sao historico,
 nao dependencia ativa); sem merge/rollout pelo agente.
