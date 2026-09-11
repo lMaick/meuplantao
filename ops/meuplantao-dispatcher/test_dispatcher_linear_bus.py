@@ -932,17 +932,27 @@ class LinearBusTests(unittest.TestCase):
             self.assertNotIn("other/repo", blob, dirty)
             self.assertNotIn("pull/99", blob, dirty)
 
-    def test_mark_for_review_rejects_noncanonical_pr(self):
-        state = {"issues": {}}
-        dirty = {"number": 44, "headRefOid": "abc1234",
-                 "url": "https://evil.test/example/repository/pull/44",
-                 "statusCheckRollup": []}
-        with patch.object(dispatcher, "orca"), \
-             patch.object(dispatcher, "linear_comment"), \
-             patch.object(dispatcher, "save_state"):
-            with self.assertRaises(RuntimeError):
-                dispatcher.mark_for_review("MAI-69", dirty, state)
-        self.assertNotIn("MAI-69", state.get("issues", {}))
+    def test_monitor_rejects_tampered_branch_pr(self):
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1",
+                                       "workerReport": {"kind": "delivery",
+                                                        "pr": CANON_PR_44,
+                                                        "sha": "abc1234", "tests": "ok",
+                                                        "number": 44, "head": "abc1234"}}}}
+        tampered = {"number": 99, "headRefOid": "abc1234", "url": CANON_PR_44,
+                    "statusCheckRollup": []}
+        wt = dict(WORKTREE, branch="lMaick/MAI-69-x")
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [])), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)), \
+             patch.object(dispatcher, "gh_pr_for_branch", return_value=tampered):
+            dispatcher.monitor_deliveries(state, [wt])
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "dispatched")
+        self.assertNotIn("reviewMarker", state["issues"]["MAI-69"])
+        blob = json.dumps(state["issues"]["MAI-69"]) + "\n" + " ".join(
+            c.args[1] for c in comment.call_args_list)
+        self.assertNotIn("pull/99", blob)
 
     def test_gh_pr_for_url_returns_validated_canonical_object(self):
         clean = {"number": 44, "url": CANON_PR_44, "headRefOid": "ABC1234",
