@@ -43,3 +43,21 @@ provider = "opencode-go"
 command = "opencode"
 identity = "opencode"
 auth_mode = "opencode"
+
+dispatch_timeout_seconds = 900
+timeout_label = "Dispatch Timeout"
+# MAI-69 Linear bus: the dispatcher is mechanical Python with no LLM calls for
+# polling, claim, lock, dedup, timeout or notify. worker_id only selects which
+# worker Orca starts. Linear outcomes are processed first each tick, before any
+# worker/terminal dependency; monitor stays fail-closed on worker preflight.
+# Hermes transport: durable Linear comment carrying a strict JSON payload with
+# exactly {issue, event} (deduped per fingerprint, recorded only after a confirmed
+# post, retried on failure; delivery reconciles from a remote read-back so a crash
+# between remote accept and local save never duplicates the event) plus a read-only
+# --hermes-precheck gate listing emitted events still missing `MeuPlantao-Ack:
+# <fingerprint>` with the Linear-derivable expectedAck (exit 0 pending / 1 quiet;
+# unreachable Linear is fail-closed pending) for the operator-owned Orca automation
+# actuator, which is created by the owner and never by this PR. The
+# labels Orca Ready, Needs Review and Dispatch Timeout must exist in Linear.
+# The worker reports conclusion/error via a `MeuPlantao-Report:` Linear comment;
+# review discovery is exclusively Linear, gh only verifies a reported PR.

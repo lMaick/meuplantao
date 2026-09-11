@@ -234,3 +234,194 @@ falha fechado (`ok=False`). `dispatcher.py` ausente no home falha fechado. Lock,
 `--manual-once`, maximo 1 dispatch e safe skip estao preservados.
 Smoke headless isolado: `MaickDispatcherControl.exe --run-once` (sem GUI, sem Linear,
 Orca, AppData, scheduler ou dispatcher operacional).
+
+## MAI-69: dispatcher como coordenacao orientada pelo Linear
+
+O dispatcher (`ops/meuplantao-dispatcher/dispatcher.py`) e um coordenador
+deterministico em Python. Nao chama LLM para polling, decisao, claim, lock,
+deduplicacao, timeout ou notificacao. `worker_id` apenas seleciona qual worker
+o Orca inicia; nao e modelo do dispatcher.
+
+### Linear como barramento canonico
+
+- Entrada: projeto de operacao, estado `Todo`, label `Orca Ready` (filtros exatos;
+  consulta truncada falha fechado).
+- Claim deterministico antes do side effect com `dispatchId` estavel
+  (`uuid5(dispatch:<ISSUE>)`) persistido em `state.json`; o segundo tick nunca
+  duplica worktree/agente para o mesmo `dispatchId`.
+- Confirmacao minima do side effect de criacao/vinculo no dispatch; o caminho
+  normal apos o dispatch aguarda estados/comentarios no Linear, sem polling de
+  terminal para progresso ou conclusao.
+- Falha ambigua (excecao apos iniciar criacao/recuperacao, antes da confirmacao
+  no Linear): status local volta a `dispatching` com erro sanitizado, sem retry
+  automatico e sem segundo agente. Falha antes do side effect (ex.: preflight sem
+  policy/worker valido) mantem `error` com zero criacao e erro sanitizado.
+- `dispatching` sem confirmacao no Linear alem de `dispatch_timeout_seconds`
+  (default 900, override em `config.toml`) vira `dispatch-timeout`, sem redispatch.
+- Linear-first: `poll_linear_outcomes` abre cada tick (antes de status Orca,
+  reconcile, monitor e dispatch), de modo que resultado/erro ja publicado avancam
+  mesmo com preflight invalido ou sem terminal; `reconcile_dispatches` fica so como
+  recuperacao excepcional e `monitor_deliveries` segue fail-closed no preflight.
+- Conclusao/erro/review detectados exclusivamente por comentarios/estados do Linear:
+  o worker publica `MeuPlantao-Report: delivery pr=<PR-URL> sha=<SHA> tests=<resumo>`
+  ou `MeuPlantao-Report: error|blocked <texto>` sanitizado; o dispatcher verifica a
+  PR reportada via `gh` (aberta, base `main`, SHA igual) e nunca descobre entrega
+  pelo GitHub sozinho (`monitor_deliveries` exige report Linear antes de qualquer
+  chamada `gh`). `Blocked` por estado/label no Linear; nunca por terminal Orca.
+- `Dispatch Timeout` persistido no Linear (label `timeout_label`, default
+  `Dispatch Timeout`, + comentario) e no estado local, com estagios retentaveis.
+- Erros publicados passam por `sanitize_for_linear` (tokens, chaves, credenciais).
+- Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge;
+  auditorias e correcoes vivem em comentarios no Linear.
+
+### Hermes: evento duravel + gate de consumo + atuador do operador
+
+- Acionamento em duas partes implementadas nesta PR, sem LLM no dispatcher:
+  (a) evento duravel como comentario Linear minimo (somente issue + tipo),
+  deduplicado por fingerprint gravado so apos post confirmado, com retry no
+  proximo tick em vez de perda (idempotente e crash-safe);
+  (b) gate de consumo `run-dispatcher.cmd --hermes-precheck` (somente leitura,
+  sem lock) que lista eventos emitidos ainda sem `MeuPlantao-Ack: <fingerprint>`
+  (exit 0 = pendente, exit 1 = quieto; Linear inacessivel e fail-closed pendente).
+  O Hermes, ao consumir, posta `MeuPlantao-Ack: <fingerprint>` na issue.
+  (c) Atuador: automacao Orca do operador via contrato suportado
+  (`orca automations create --trigger <cron> --precheck "<DISPATCHER_DIR>\run-dispatcher.cmd
+  --hermes-precheck" --prompt "<prompt Hermes com ack>" --provider <agent>`;
+  exit 0 continua, demais registram skipped). A criacao NAO foi executada nesta PR
+  (AppData/rollout do dono; vedada pela auditoria) e fica como unico passo pendente
+  do operador, com comando exato acima.
+
+- Persistido apenas nos estados configurados (`needs-review`, `blocked`,
+  `dispatch-timeout`), nunca para polling periodico.
+- Evento: comentario Linear com o prompt minimo
+  `Leia a MAI-N no Linear e processe conforme o fluxo padrao. (evento=<tipo>)`.
+  Contrato verificado: Hermes le issue/comentarios diretamente no Linear
+  (evidencia MAI-59); nao existe comando Hermes/notify no Orca CLI e nenhum
+  transporte lateral e usado.
+- Entrega reportada so e persistida/promovida apos validacao exata de PR + SHA;
+  relatorio divergente tem zero promocoes em dois ciclos (sem fallback por branch).
+- Fronteira de normalizacao do WorkerReport (MAI-70): `sync_worker_reports` constroi
+  o `workerReport` em ponto unico, persistindo apenas a URL canonica verificada e o
+  resumo `tests` sanitizado e limitado; campos crus do comentario nunca entram no
+  estado. Canonicalizacao convergente fail-closed (MAI-72): `canonicalize_untrusted_text`
+  aplica unquote ate fixpoint com limite de 25 rodadas e 200000 caracteres; entrada que
+  nao converge ou estoura o limite vira `[REDACTED]`; o scrub de segredos roda so apos
+  a convergencia.
+  Normalizacao de escapes Unicode/JSON antes do scrub (MAI-75): cada rodada do
+  fixpoint aplica unquote + decodificacao de escapes; pares surrogate validos sao
+  combinados, unidades `\uXXXX` solitarias/invalidas permanecem inertes e
+  escapes JSON simples rodam em passada unica; malformados nao geram excecao com
+  entrada crua e o mesmo teto (25 rodadas, 200000 caracteres) derruba
+  nao-convergente/estouro para `[REDACTED]`.
+- Objeto PR canonico unico (MAI-73): `report.pr` e entrada nao confiavel usada so como
+  lookup; `workerReport.pr`, campo superior `issue.pr`, attachment, comentario e
+  `reviewMarker` derivam exclusivamente do objeto validado por `canonical_pr` (HTTPS,
+  host `github.com`, path `/<github_repo>/pull/<number>` com numero conferido, sem
+  userinfo/porta/query/fragmento; copia normalizada com numero int, SHA em minusculas e
+  URL reconstruida; desvio falha fechado sem persistencia parcial). Gates na ingestao:
+  `gh_pr_for_url` retorna objeto canonico, `sync_worker_reports` re-valida e
+  `monitor_deliveries` valida a saida de `gh_pr_for_branch` antes de comparar/promover.
+  Schema PR fechado (MAI-76): `canonical_pr` constroi a saida campo a campo com
+  exatamente `number/headRefOid/url/statusCheckRollup`, sem `dict(raw)` e sem mutar
+  a entrada; `number` e int nao-bool maior que zero ou string decimal, `headRefOid`/`url`
+  exigem `str`, SHA nao-vazio de ate 128 chars em minusculas e cada check exige `dict`
+  com `name` de `name||context` e `conclusion` de `conclusion||state||status` (strings sanitizadas por `sanitize_for_linear` com teto de 300: mesma canonicalizacao
+  convergente -- unquote + escapes Unicode/JSON ate fixpoint -- e scrub de segredos apos a
+  convergencia; nao-convergente/estouro vira `[REDACTED]`; ausente/None vira `[]`);
+  ambiguidade ou campo nao-str falha fechado.
+  Enforcement no sink (MAI-77): `mark_for_review` abre com `canonical_pr(pr)`
+  antes de qualquer mutacao de estado; chamada direta nao canonica falha fechado
+  (`RuntimeError`) sem promover nem persistir, e todos os callers passam pela mesma
+  fronteira.
+- Timeout retryavel de verdade: label e comentario so marcam `Done` apos escrita
+  confirmada; falha mantem a etapa pendente, sem finalizar o timeout nem notificar
+  antes de ambas confirmadas.
+- Segredos nunca em canal persistente: Linear/estado sanitizados e logs via
+  `sanitize_for_log` + `log_exception_safe` (cobertura por captura de logs).
+- Cada evento carrega estritamente identificador da issue e tipo do evento no bloco
+  JSON (`{issue, event}`); o dedup vive em `state.json/issues/<ID>/hermesNotified`
+  e o comentario remoto carrega o marcador `MeuPlantao-Hermes-Fp: <fingerprint>`
+  para correlacao no read-back crash-safe (funcoes distintas, JSON segue estrito).
+- Dedup somente apos entrega confirmada: o fingerprint e gravado depois que o
+  comentario e aceito; falha de entrega gera retry no proximo tick (sem perda
+  definitiva) e repeticao do mesmo fingerprint gera zero escritas.
+- Crash-safe no dipolo comentario/local: se o post for aceito mas o save local
+  falhar, o proximo tick faz read-back remoto do comentario
+  (`hermes_event_posted_remotely`) e reconcilia o fingerprint sem repostar.
+  O comentario carrega `MeuPlantao-Hermes-Fp: <fingerprint>` fora do bloco JSON;
+  o read-back exige o marcador do fingerprint corrente, de modo que comentario
+  antigo nunca suprime evento de novo SHA (exactly-once por fingerprint).
+- Contrato maquina: `hermes_payload()` emite exatamente `{issue, event}`;
+  `parse_hermes_payload()` rejeita qualquer chave extra (cobertura por teste real
+  com terceira chave); o comentario carrega o prompt + bloco ```json do payload.
+  `expected_hermes_ack()` deriva o ack do estado corrente (review: `reviewMarker`
+  atual; timeout: `dispatchId` atual; blocked: estatico), nunca de historico, e o
+  precheck lista `expectedAck` por evento pendente. Scrubber comum cobre segredo
+  em qualquer caixa (`Bearer`/`Authorization`), valores quoted com espaco e
+  userinfo em URLs/connection strings (`sanitize_for_linear` e `sanitize_for_log`).
+- Hermes faz verificacao rapida no GitHub, sem auditoria semantica automatica.
+- Fingerprints: review = `ISSUE:needs-review:<PR>:<SHA>` (novo SHA reseta);
+  blocked = `ISSUE:blocked`; timeout = `ISSUE:dispatch-timeout:<dispatchId>`.
+  Repeticao do mesmo fingerprint = zero escritas (outbox e Linear intactos).
+
+### Diagrama de estados
+
+    Todo + Orca Ready
+      |> claim: dispatchId estavel + status dispatching (claim persistido)
+      |> side effect minimo: criar/reutilizar worktree + 1 agente autorizado
+      |> sync: In Progress + remove Orca Ready (readback confirma)
+      |> dispatched: segundo tick com mesmo dispatchId = skip (sem duplicar)
+      |> PR aberta (base main): In Progress + Needs Review + Hermes needs-review 1x
+      |> Linear Blocked: status blocked + Hermes blocked 1x
+      |> dispatching alem do timeout sem In Progress: dispatch-timeout + Hermes 1x
+      |> falha ambigua no side effect: dispatching + erro sanitizado, sem retry
+      |> falha pre-side-effect: error + erro sanitizado, zero criacao
+
+### Testes (TDD, `ops/meuplantao-dispatcher/test_dispatcher_linear_bus.py`)
+
+- Caminho feliz com `dispatchId` persistido; segundo tick sem duplicar.
+- Erro reportado avanca pelo Linear sem consultar terminal Orca.
+- Timeout marca `dispatch-timeout`, notifica 1x e nao redispara.
+- Crash ambiguo sanitizado nao causa retry nem segundo agente.
+- Report Linear de entrega vira review sem descoberta pelo GitHub.
+- Report Linear de erro e registrado sanitizado, sem segredos publicados.
+- Timeout marca o Linear e notifica Hermes 1x.
+- Review notifica Hermes 1x por fingerprint; novo SHA reseta.
+- Blocked notifica Hermes 1x.
+- Falha de entrega Hermes nao perde o evento (retry proximo tick).
+- Evento Hermes contem estritamente issue + tipo.
+- Relatorio divergente: zero Needs Review em dois ciclos.
+- main() Linear-first: delivery/error/blocked via Linear com preflight invalido e sem terminal.
+- Monitor fail-closed preservado; ack/precheck com fail-closed de Linear fora.
+- Hermes: comentario ja postado nao reposta apos restart (read-back remoto).
+- Hermes: payload estrito issue+event rejeita chave extra (fingerprint/prompt/at).
+- Hermes: precheck inclui expectedAck por evento (review/blocked/timeout).
+- Sanitizador composto pega segredo fora de prefixo conhecido de chave.
+- Hermes: evento antigo nao suprime novo SHA (post por marcador de fingerprint).
+- Hermes: expectedAck do estado corrente com historico misto review/timeout.
+- Hermes: payload rejeita terceira chave por teste real.
+- Sanitizacao de formatos reais: Bearer/Authorization, quoted, userinfo em URL.
+- Timeout: falha de label/comentario no 1o ciclo retenta e finaliza so no 2o.
+- Logs capturados sem tokens/senhas/credenciais.
+- Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.
+- Objeto PR canonico ponta a ponta: state, attachment e comentario exigem a URL canonica exata.
+- Verificador adulterado (8 formas) nunca alcanca sinks; monitor rejeita branch PR com numero divergente.
+- `gh_pr_for_url` devolve objeto canonico validado (SHA normalizado; sujo falha fechado).
+- Matriz Unicode/JSON: escapes literais, par surrogate, JSON misto e combinacao com
+  percent-encoding normalizados ate fixpoint ou `[REDACTED]`; sentinelas nunca cruas
+  nos sinks.
+- Schema PR fechado: chaves/tipos exatos da saida, tipos ambiguos rejeitados e numero
+  zero sem promocao.
+- Fronteira de review: chamada direta com URL spoofada/SHA invalido falha fechado sem
+  sinks crus; SHA maiusculo normalizado e extras descartados em todos os sinks.
+- Checks sanitizados: `name`/`conclusion` (forma moderna e legada) com segredo
+  sintetico e escapes percent/Unicode/JSON redigidos antes do objeto canonico;
+  comentario Linear e demais sinks sem conteudo cru ou reversivel; limites de
+  tamanho verificados.
+- Canonicalizacao convergente com limites: nao-convergente/superlimite vira `[REDACTED]`; payload grande limitado.
+- Nenhuma chamada a modelo/LLM no polling e na coordenacao.
+- Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
+
+Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
+plus `git diff --check`. PR #39 contra `main` (integracao final; MAI-67/PR #37
+sao historico, nao dependencia ativa); sem merge/rollout pelo agente.
