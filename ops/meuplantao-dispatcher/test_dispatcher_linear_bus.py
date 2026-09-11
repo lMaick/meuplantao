@@ -1081,6 +1081,84 @@ class UnicodeEscapeMatrixTests(unittest.TestCase):
                     self.assertIn(state["issues"]["MAI-69"].get("status"), ("error", "blocked"))
 
 
+
+class ClosedPRSchemaTests(unittest.TestCase):
+    def _valid_pr(self, **over):
+        base = {"number": 44, "headRefOid": "abc1234",
+                "url": "https://github.com/example/repository/pull/44",
+                "statusCheckRollup": []}
+        base.update(over)
+        return base
+
+    def test_canonical_pr_builds_closed_allowlist_schema(self):
+        import copy
+        junk = self._valid_pr(
+            title="t", state="OPEN", baseRefName="main",
+            author={"login": "mallory"}, extra=[1, 2, 3],
+            statusCheckRollup=[{"name": "ci", "conclusion": "SUCCESS",
+                                "evil": 1, "nested": {"a": 1}}])
+        before = copy.deepcopy(junk)
+        pr = dispatcher.canonical_pr(junk)
+        self.assertEqual(set(pr.keys()),
+                         {"number", "headRefOid", "url", "statusCheckRollup"})
+        self.assertEqual(pr, {"number": 44, "headRefOid": "abc1234",
+                              "url": "https://github.com/example/repository/pull/44",
+                              "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}]})
+        self.assertIs(type(pr["number"]), int)
+        self.assertIs(type(pr["headRefOid"]), str)
+        self.assertIs(type(pr["url"]), str)
+        self.assertIs(type(pr["statusCheckRollup"]), list)
+        self.assertEqual(junk, before)
+        self.assertIsNot(pr["statusCheckRollup"], junk["statusCheckRollup"])
+        legacy = self._valid_pr(statusCheckRollup=[{"context": "ctx", "state": "ok",
+                                                    "extra": 1}])
+        pr2 = dispatcher.canonical_pr(legacy)
+        self.assertEqual(pr2["statusCheckRollup"], [{"name": "ctx", "conclusion": "ok"}])
+        self.assertEqual(set(pr2["statusCheckRollup"][0].keys()), {"name", "conclusion"})
+
+    def test_canonical_pr_rejects_ambiguous_types(self):
+        pull = "https://github.com/example/repository/pull/"
+        bad_numbers = [True, False, 44.5, 44.0, 0, -3, None, "4x", [44], {"n": 44}]
+        for bad in bad_numbers:
+            with self.subTest(number=bad):
+                with self.assertRaises(RuntimeError):
+                    dispatcher.canonical_pr(self._valid_pr(number=bad, url=pull + "44"))
+        with self.subTest(number="zero-url"):
+            with self.assertRaises(RuntimeError):
+                dispatcher.canonical_pr(self._valid_pr(number=0, url=pull + "0"))
+        for bad in [12345, None, "", "   ", ["abc1234"]]:
+            with self.subTest(head=bad):
+                with self.assertRaises(RuntimeError):
+                    dispatcher.canonical_pr(self._valid_pr(headRefOid=bad))
+        for bad in [123, None, ["x"]]:
+            with self.subTest(url=bad):
+                with self.assertRaises(RuntimeError):
+                    dispatcher.canonical_pr(self._valid_pr(url=bad))
+        for bad in [{"a": 1}, "x", [42], [{"name": "ci"}, "oops"]]:
+            with self.subTest(rollup=bad):
+                with self.assertRaises(RuntimeError):
+                    dispatcher.canonical_pr(self._valid_pr(statusCheckRollup=bad))
+        pr = dispatcher.canonical_pr(self._valid_pr(number="44"))
+        self.assertEqual(pr["number"], 44)
+        self.assertIs(type(pr["number"]), int)
+
+    def test_zero_number_never_promotes_e2e(self):
+        comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/0 sha=abc1234 tests=ok"]
+        zero = {"number": 0, "headRefOid": "abc1234",
+                "url": "https://github.com/example/repository/pull/0",
+                "statusCheckRollup": []}
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=zero):
+            dispatcher.sync_worker_reports(state)
+        local = state["issues"]["MAI-69"]
+        self.assertEqual(local.get("status"), "dispatched")
+        self.assertNotIn("workerReport", local)
+        self.assertNotIn("reviewMarker", local)
+
 class _NoopLock:
     def seek(self, *a):
         return None

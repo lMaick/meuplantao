@@ -768,6 +768,22 @@ _SECRET_VALUE_RE = r"\"[^\"]*\"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|\S+"
 _URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 
 
+_PR_CHECK_FIELD_LIMIT = 300
+_PR_SHA_LIMIT = 128
+
+
+def _normalize_pr_check(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        raise RuntimeError("PR verification failed for reported delivery")
+    name = raw.get("name") or raw.get("context") or ""
+    conclusion = (raw.get("conclusion") or raw.get("state")
+                  or raw.get("status") or "")
+    if not isinstance(name, str) or not isinstance(conclusion, str):
+        raise RuntimeError("PR verification failed for reported delivery")
+    return {"name": name.strip()[:_PR_CHECK_FIELD_LIMIT],
+            "conclusion": conclusion.strip()[:_PR_CHECK_FIELD_LIMIT]}
+
+
 def canonical_pr(raw: object) -> dict:
     """Validate verifier output into the single canonical PR object.
     MAI-73: report.pr is untrusted input used only for lookup; every sink
@@ -775,18 +791,36 @@ def canonical_pr(raw: object) -> dict:
     exclusively from this validated object. Rejects fail-closed anything that
     is not an HTTPS github.com URL for the configured repo in strict
     /<repo>/pull/<number> form with matching number, no userinfo, no port,
-    no query and no fragment. Returns a normalized copy; never mutates input.
+    no query and no fragment.
+    MAI-76: closed allowlist schema. The output is built field by field with
+    exactly the keys number/headRefOid/url/statusCheckRollup; no input key,
+    extra field or mutable structure survives, and the input is never mutated.
+    Ambiguous types (bool/float/non-decimal numbers, non-string SHA/URL,
+    non-list rollups, non-dict checks) fail closed.
     """
     if not isinstance(raw, dict):
         raise RuntimeError("PR verification failed for reported delivery")
-    try:
-        number = int(raw.get("number"))
-    except (TypeError, ValueError):
+    num_raw = raw.get("number")
+    if isinstance(num_raw, bool):
         raise RuntimeError("PR verification failed for reported delivery")
-    head = str(raw.get("headRefOid") or "").strip().lower()
-    if not head:
+    if isinstance(num_raw, int):
+        number = num_raw
+    elif isinstance(num_raw, str) and num_raw.strip().isdigit():
+        number = int(num_raw.strip())
+    else:
         raise RuntimeError("PR verification failed for reported delivery")
-    parts = urlsplit(str(raw.get("url") or "").strip())
+    if number <= 0:
+        raise RuntimeError("PR verification failed for reported delivery")
+    head_raw = raw.get("headRefOid")
+    if not isinstance(head_raw, str):
+        raise RuntimeError("PR verification failed for reported delivery")
+    head = head_raw.strip().lower()
+    if not head or len(head) > _PR_SHA_LIMIT:
+        raise RuntimeError("PR verification failed for reported delivery")
+    url_raw = raw.get("url")
+    if not isinstance(url_raw, str):
+        raise RuntimeError("PR URL is not canonical")
+    parts = urlsplit(url_raw.strip())
     if parts.scheme.lower() != "https":
         raise RuntimeError("PR URL is not canonical")
     if parts.username or parts.password:
@@ -806,11 +840,17 @@ def canonical_pr(raw: object) -> dict:
         raise RuntimeError("PR URL is not canonical")
     if parts.path != "/" + repo + "/pull/" + str(number):
         raise RuntimeError("PR URL is not canonical")
-    clean = dict(raw)
-    clean["number"] = number
-    clean["headRefOid"] = head
-    clean["url"] = "https://github.com/" + repo + "/pull/" + str(number)
-    return clean
+    checks_raw = raw.get("statusCheckRollup")
+    if checks_raw is None:
+        checks = []
+    elif not isinstance(checks_raw, list):
+        raise RuntimeError("PR verification failed for reported delivery")
+    else:
+        checks = [_normalize_pr_check(item) for item in checks_raw]
+    return {"number": number,
+            "headRefOid": head,
+            "url": "https://github.com/" + repo + "/pull/" + str(number),
+            "statusCheckRollup": checks}
 
 
 def canonical_pr_url(url: object) -> str:
