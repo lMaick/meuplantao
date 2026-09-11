@@ -780,8 +780,8 @@ def _normalize_pr_check(raw: object) -> dict:
                   or raw.get("status") or "")
     if not isinstance(name, str) or not isinstance(conclusion, str):
         raise RuntimeError("PR verification failed for reported delivery")
-    return {"name": name.strip()[:_PR_CHECK_FIELD_LIMIT],
-            "conclusion": conclusion.strip()[:_PR_CHECK_FIELD_LIMIT]}
+    return {"name": sanitize_for_linear(name, _PR_CHECK_FIELD_LIMIT),
+            "conclusion": sanitize_for_linear(conclusion, _PR_CHECK_FIELD_LIMIT)}
 
 
 def canonical_pr(raw: object) -> dict:

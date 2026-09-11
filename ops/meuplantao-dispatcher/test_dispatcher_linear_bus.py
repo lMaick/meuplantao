@@ -1262,6 +1262,77 @@ class MarkForReviewBoundaryTests(unittest.TestCase):
         self.assertNotIn("evil.test", " ".join(c.args[1] for c in comment_mock.call_args_list))
 
 
+class CheckFieldSanitizationTests(unittest.TestCase):
+    SECRET = "ghp_" + "B" * 32
+    BEARER = "Bearer TEST-SENTINEL-ABC123"
+
+    def _valid_pr(self, **over):
+        base = {"number": 44, "headRefOid": "abc1234",
+                "url": "https://github.com/example/repository/pull/44",
+                "statusCheckRollup": []}
+        base.update(over)
+        return base
+
+    def _sink_text(self, state, orca_mock, comment_mock):
+        snapshot = json.dumps(state.get("issues", {}).get("MAI-79", {}),
+                              sort_keys=True, default=str)
+        attach_urls = [args[4] for args in (c.args for c in orca_mock.call_args_list)
+                       if len(args) >= 5 and args[1] == "attach"]
+        bodies = [c.args[1] for c in comment_mock.call_args_list]
+        return snapshot, attach_urls, bodies
+
+    def test_canonical_pr_sanitizes_check_secrets(self):
+        modern = self._valid_pr(statusCheckRollup=[
+            {"name": "ci " + self.SECRET, "conclusion": "ok " + self.BEARER}])
+        pr = dispatcher.canonical_pr(modern)
+        blob = json.dumps(pr)
+        self.assertNotIn(self.SECRET, blob)
+        self.assertNotIn(self.BEARER, blob)
+        legacy = self._valid_pr(statusCheckRollup=[
+            {"context": "ctx " + self.SECRET, "state": self.BEARER, "extra": 1}])
+        pr2 = dispatcher.canonical_pr(legacy)
+        blob2 = json.dumps(pr2)
+        self.assertNotIn(self.SECRET, blob2)
+        self.assertNotIn(self.BEARER, blob2)
+        self.assertEqual(set(pr2["statusCheckRollup"][0].keys()), {"name", "conclusion"})
+        clean = dispatcher.canonical_pr(self._valid_pr(
+            statusCheckRollup=[{"name": "ci", "conclusion": "SUCCESS"}]))
+        self.assertEqual(clean["statusCheckRollup"], [{"name": "ci", "conclusion": "SUCCESS"}])
+
+    def test_canonical_pr_decodes_and_scrubs_encoded_check_secrets(self):
+        pct = _encode_layers(self.BEARER, 1)
+        self.assertNotEqual(pct, self.BEARER)
+        uni = "\\u0042earer TEST-SENTINEL-ABC123"
+        pr = dispatcher.canonical_pr(self._valid_pr(statusCheckRollup=[
+            {"name": "ci " + pct, "conclusion": "ok " + uni}]))
+        blob = json.dumps(pr)
+        for probe in (self.BEARER, pct, uni):
+            self.assertNotIn(probe, blob)
+
+    def test_mark_for_review_publishes_no_raw_or_reversible_check_content(self):
+        pct = _encode_layers(self.BEARER, 1)
+        uni = "\\u0067hp_" + "B" * 32
+        raw = self._valid_pr(statusCheckRollup=[
+            {"name": "ci " + self.SECRET, "conclusion": "ok " + pct},
+            {"context": "legacy " + uni, "status": "ok"}])
+        state = {"issues": {}}
+        with patch.object(dispatcher, "orca") as orca_mock, patch.object(dispatcher, "linear_comment") as comment_mock, patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-79", raw, state)
+        self.assertEqual(state["issues"]["MAI-79"]["status"], "needs-review")
+        snapshot, attach_urls, bodies = self._sink_text(state, orca_mock, comment_mock)
+        blob = snapshot + " ".join(bodies) + " ".join(attach_urls)
+        for probe in (self.SECRET, self.BEARER, pct, uni):
+            self.assertNotIn(probe, blob)
+
+    def test_check_field_size_limits(self):
+        pr = dispatcher.canonical_pr(self._valid_pr(statusCheckRollup=[
+            {"name": "n" * 500, "conclusion": "c" * 500}]))
+        self.assertEqual(len(pr["statusCheckRollup"][0]["name"]), 300)
+        self.assertEqual(len(pr["statusCheckRollup"][0]["conclusion"]), 300)
+        huge = dispatcher.canonical_pr(self._valid_pr(statusCheckRollup=[
+            {"name": "\\u0041" * 70000, "conclusion": "ok"}]))
+        self.assertEqual(huge["statusCheckRollup"][0]["name"], "[REDACTED]")
+
 class _NoopLock:
     def seek(self, *a):
         return None
