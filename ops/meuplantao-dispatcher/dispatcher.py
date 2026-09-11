@@ -692,10 +692,20 @@ def hermes_payload(issue_id: str, event_type: str) -> dict:
     return {"issue": str(issue_id).upper(), "event": str(event_type)}
 
 
-def hermes_prompt(issue_id: str, event_type: str) -> str:
+HERMES_FP_KIND = "MeuPlantao-Hermes-Fp:"
+
+
+def hermes_event_marker(fingerprint: str) -> str:
+    return HERMES_FP_KIND + " " + str(fingerprint).strip()
+
+
+def hermes_prompt(issue_id: str, event_type: str, fingerprint: str = "") -> str:
     payload = json.dumps(hermes_payload(issue_id, event_type), ensure_ascii=False)
-    return ("Leia a " + str(issue_id).upper() + " no Linear e processe conforme o fluxo padrao. (evento=" + str(event_type) + ")\n"
+    body = ("Leia a " + str(issue_id).upper() + " no Linear e processe conforme o fluxo padrao. (evento=" + str(event_type) + ")\n"
             "```json\n" + payload + "\n```")
+    if str(fingerprint or "").strip():
+        body += "\n" + hermes_event_marker(fingerprint)
+    return body
 
 
 def parse_hermes_payload(body: object) -> dict | None:
@@ -717,10 +727,13 @@ _REVIEW_COMMENT_RE = re.compile(r"PR\s*#(\d+).*?SHA\s*`([0-9a-fA-F]{7,64})`", re
 _TIMEOUT_NOTICE_RE = re.compile(r"dispatch\s*`([^`]+)`", re.IGNORECASE)
 
 
-def expected_hermes_ack(issue_id: str, event_type: str, bodies: list[str]) -> str | None:
+def expected_hermes_ack(issue_id: str, event_type: str, bodies: list[str], current_detail: str = "") -> str | None:
     ident = str(issue_id).upper()
     if event_type == "blocked":
         return hermes_fingerprint(issue_id, "blocked")
+    detail = str(current_detail or "").strip()
+    if detail:
+        return hermes_fingerprint(issue_id, event_type, detail)
     if event_type == "needs-review":
         for body in bodies:
             match = _REVIEW_COMMENT_RE.search(str(body))
@@ -750,26 +763,28 @@ _SECRET_PATTERNS = (
 _SENSITIVE_KEY_RE = r"password|passwd|pwd|secret|token|api[-_]?key|auth|authorization|service[-_]?role|private[-_]?key|client[-_]?secret"
 
 
-def sanitize_for_linear(text: object, limit: int = 900) -> str:
-    clean = re.sub(r"\s+", " ", str(text)).strip()
+_SECRET_VALUE_RE = r"\"[^\"]*\"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|\S+"
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+
+
+def _scrub_secret_material(clean: str) -> str:
     for pattern in _SECRET_PATTERNS:
-        clean = re.sub(pattern, "[redacted]", clean)
-    clean = re.sub(r"([A-Za-z0-9_]*?(?:" + _SENSITIVE_KEY_RE + r")[A-Za-z0-9_]*)\s*[:=]\s*\S+",
+        clean = re.sub(pattern, "[redacted]", clean, flags=re.IGNORECASE)
+    clean = _URL_USERINFO_RE.sub(r"\1[redacted]@", clean)
+    clean = re.sub(r"([A-Za-z0-9_]*?(?:" + _SENSITIVE_KEY_RE + r")[A-Za-z0-9_]*)\s*[:=]\s*(?:" + _SECRET_VALUE_RE + r")",
                    r"\1=[redacted]", clean, flags=re.IGNORECASE)
     clean = re.sub(r"['\"]([A-Z_]{3,}(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z_]*)['\"]\s*[:=]\s*['\"][^'\"]+['\"]",
                    r"'\1'='[redacted]'", clean)
-    return clean[:limit]
+    return clean
+
+
+def sanitize_for_linear(text: object, limit: int = 900) -> str:
+    clean = re.sub(r"\s+", " ", str(text)).strip()
+    return _scrub_secret_material(clean)[:limit]
 
 
 def sanitize_for_log(text: object, limit: int = 4000) -> str:
-    clean = str(text)
-    for pattern in _SECRET_PATTERNS:
-        clean = re.sub(pattern, "[redacted]", clean)
-    clean = re.sub(r"([A-Za-z0-9_]*?(?:" + _SENSITIVE_KEY_RE + r")[A-Za-z0-9_]*)\s*[:=]\s*\S+",
-                   r"\1=[redacted]", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"['\"]([A-Z_]{3,}(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z_]*)['\"]\s*[:=]\s*['\"][^'\"]+['\"]",
-                   r"'\1'='[redacted]'", clean)
-    return clean[:limit]
+    return _scrub_secret_material(str(text))[:limit]
 
 
 def log_exception_safe(message: str, *args) -> None:
@@ -805,7 +820,7 @@ def emit_hermes_event(issue_id: str, event_type: str, fingerprint: str, state: d
     notified = issue_state.setdefault("hermesNotified", {})
     if fingerprint in notified:
         return False
-    linear_comment(issue_id, hermes_prompt(issue_id, event_type))
+    linear_comment(issue_id, hermes_prompt(issue_id, event_type, fingerprint))
     notified[fingerprint] = {"at": utc_epoch(), "event": event_type}
     save_state(state)
     return True
@@ -822,13 +837,17 @@ def pending_hermes_event(issue_id: str, local: dict) -> tuple[str, str] | None:
     return None
 
 
-def hermes_event_posted_remotely(issue_id: str, event_type: str) -> bool | None:
+def hermes_event_posted_remotely(issue_id: str, event_type: str, fingerprint: str = "") -> bool | None:
     try:
         bodies = extract_comment_bodies(fetch_linear_issue_full(issue_id))
     except Exception:
         return None
-    body = hermes_prompt(issue_id, event_type)
     try:
+        if str(fingerprint or "").strip():
+            want = hermes_event_marker(fingerprint).strip().lower()
+            return any(want in [line.strip().lower() for line in str(entry).splitlines()]
+                       for entry in bodies)
+        body = hermes_prompt(issue_id, event_type)
         return any(str(entry).strip() == body for entry in bodies)
     except Exception:
         return None
@@ -851,7 +870,7 @@ def deliver_hermes_notifications(state: dict) -> int:
         if pending is None:
             continue
         event_type, fingerprint = pending
-        if hermes_event_posted_remotely(issue_id, event_type) is True:
+        if hermes_event_posted_remotely(issue_id, event_type, fingerprint) is True:
             try:
                 if reconcile_hermes_delivery(issue_id, event_type, fingerprint, state):
                     count += 1
@@ -1135,9 +1154,15 @@ def unacked_hermes_events(state: dict) -> list[dict]:
         bodies = extract_comment_bodies(current)
         if hermes_acknowledged(bodies, fingerprint):
             continue
+        if event_type == "needs-review":
+            detail = local.get("reviewMarker") or ""
+        elif event_type == "dispatch-timeout":
+            detail = local.get("dispatchId") or ""
+        else:
+            detail = ""
         pending_events.append({"issue": issue_id, "event": event_type,
                                "fingerprint": fingerprint, "linearReachable": True,
-                               "expectedAck": expected_hermes_ack(issue_id, event_type, bodies)})
+                               "expectedAck": expected_hermes_ack(issue_id, event_type, bodies, detail)})
     return pending_events
 
 

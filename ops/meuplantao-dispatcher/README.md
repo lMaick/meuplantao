@@ -78,11 +78,17 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    `state.json` somente apos o comentario confirmado; falha gera retry no proximo
    tick (sem perda); entrega reconcilia por leitura remota, de modo que queda entre
    aceite remoto e save local nunca duplica o evento (idempotente e crash-safe).
+   O comentario carrega ainda a linha `MeuPlantao-Hermes-Fp: <fingerprint>` (fora
+   do bloco JSON, que segue estrito); o read-back so reconcilia quando o marcador
+   do fingerprint corrente esta presente, de modo que comentario antigo nunca
+   suprime evento de novo SHA (exactly-once por fingerprint).
    (b) Gate de consumo: `run-dispatcher.cmd --hermes-precheck`
    (somente leitura, sem lock) lista eventos emitidos ainda sem
    `MeuPlantao-Ack: <fingerprint>` na issue (exit 0 = ha pendencias, exit 1 =
-   quieto), cada um com o `expectedAck` derivavel do Linear (review: PR + SHA do
-   comentario de entrega; timeout: dispatchId do aviso de timeout; blocked: estatico).
+   quieto), cada um com o `expectedAck` derivado do estado corrente
+   (review: reviewMarker atual; timeout: dispatchId atual; blocked: estatico),
+   nunca de comentario historico, para o consumidor nunca reconhecer ocorrencia
+   antiga e deixar a atual pendente.
    Linear inacessivel e fail-closed como pendente. O Hermes, ao consumir
    cada evento, posta `MeuPlantao-Ack: <fingerprint>`. (c) Atuador: automacao Orca
    do operador (contrato suportado: `orca automations create --trigger <cron>
@@ -90,7 +96,9 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    "<prompt Hermes com ack>" --provider <agent>`), NAO criada nesta PR (AppData e
    rollout sao do dono; criacao vedada pela auditoria). Nenhuma excecao com
    potencial sensivel e registrada sem sanitizacao (`sanitize_for_log` +
-   `log_exception_safe` cobrem Linear/estado/logs).
+   `log_exception_safe` cobrem Linear/estado/logs; o scrubber comum cobre
+   Bearer/Authorization em qualquer caixa, valores quoted com espaco e
+   userinfo em URLs/connection strings).
 
 Protocolo do worker (unica fonte de conclusao no fluxo normal): ao concluir ou
 travar, o worker registra na issue um comentario `MeuPlantao-Report: delivery
@@ -125,6 +133,8 @@ blocked via Linear sem terminal), monitor fail-closed, ack/precheck (incl.
 fail-closed com Linear fora), transporte com dedup/retry/crash-safe,
 crash pos-aceite remoto sem duplicar, reconciliacao remota sem post,
 sanitizacao de nomes compostos (OPENAI_API_KEY, SERVICE_ROLE_KEY, access_token),
-payload JSON estrito {issue,event}, ack derivavel do Linear (review/timeout) e
-expectedAck no precheck, sem policy/worker, sem LLM no polling, sem mutacao
-global de CONFIG).
+payload JSON estrito {issue,event} (extras rejeitados por teste real), ack derivavel
+do estado corrente (review/timeout, sem historico) e expectedAck no precheck,
+read-back por marcador de fingerprint (evento antigo nao suprime novo SHA),
+sanitizacao de formatos reais (Bearer/Authorization, quoted, userinfo em URL),
+sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG).

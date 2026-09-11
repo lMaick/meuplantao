@@ -313,14 +313,17 @@ o Orca inicia; nao e modelo do dispatcher.
 - Crash-safe no dipolo comentario/local: se o post for aceito mas o save local
   falhar, o proximo tick faz read-back remoto do comentario
   (`hermes_event_posted_remotely`) e reconcilia o fingerprint sem repostar.
+  O comentario carrega `MeuPlantao-Hermes-Fp: <fingerprint>` fora do bloco JSON;
+  o read-back exige o marcador do fingerprint corrente, de modo que comentario
+  antigo nunca suprime evento de novo SHA (exactly-once por fingerprint).
 - Contrato maquina: `hermes_payload()` emite exatamente `{issue, event}`;
-  `parse_hermes_payload()` rejeita qualquer chave extra; o comentario carrega o
-  prompt + bloco ```json do payload; `expected_hermes_ack()` deriva o ack
-  esperado do Linear (review: PR + SHA do comentario de entrega; timeout:
-  dispatch id do aviso; blocked: estatico) e o precheck lista `expectedAck`
-  por evento pendente. Sanitizador composto cobre `*_KEY/*_TOKEN/*_SECRET`,
-  `password/passwd/pwd`, `bearer` e `authorization` em qualquer posicao
-  (`sanitize_for_linear` e `sanitize_for_log`).
+  `parse_hermes_payload()` rejeita qualquer chave extra (cobertura por teste real
+  com terceira chave); o comentario carrega o prompt + bloco ```json do payload.
+  `expected_hermes_ack()` deriva o ack do estado corrente (review: `reviewMarker`
+  atual; timeout: `dispatchId` atual; blocked: estatico), nunca de historico, e o
+  precheck lista `expectedAck` por evento pendente. Scrubber comum cobre segredo
+  em qualquer caixa (`Bearer`/`Authorization`), valores quoted com espaco e
+  userinfo em URLs/connection strings (`sanitize_for_linear` e `sanitize_for_log`).
 - Hermes faz verificacao rapida no GitHub, sem auditoria semantica automatica.
 - Fingerprints: review = `ISSUE:needs-review:<PR>:<SHA>` (novo SHA reseta);
   blocked = `ISSUE:blocked`; timeout = `ISSUE:dispatch-timeout:<dispatchId>`.
@@ -359,6 +362,10 @@ o Orca inicia; nao e modelo do dispatcher.
 - Hermes: payload estrito issue+event rejeita chave extra (fingerprint/prompt/at).
 - Hermes: precheck inclui expectedAck por evento (review/blocked/timeout).
 - Sanitizador composto pega segredo fora de prefixo conhecido de chave.
+- Hermes: evento antigo nao suprime novo SHA (post por marcador de fingerprint).
+- Hermes: expectedAck do estado corrente com historico misto review/timeout.
+- Hermes: payload rejeita terceira chave por teste real.
+- Sanitizacao de formatos reais: Bearer/Authorization, quoted, userinfo em URL.
 - Timeout: falha de label/comentario no 1o ciclo retenta e finaliza so no 2o.
 - Logs capturados sem tokens/senhas/credenciais.
 - Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.

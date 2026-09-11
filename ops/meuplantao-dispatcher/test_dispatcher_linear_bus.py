@@ -145,7 +145,7 @@ class LinearBusTests(unittest.TestCase):
             self.assertTrue(dispatcher.emit_hermes_event("MAI-69", "needs-review", "MAI-69:needs-review:x", state))
         bodies = _hermes_bodies(comment)
         self.assertEqual(len(bodies), 1)
-        self.assertEqual(bodies[0], dispatcher.hermes_prompt("MAI-69", "needs-review"))
+        self.assertEqual(bodies[0], dispatcher.hermes_prompt("MAI-69", "needs-review", "MAI-69:needs-review:x"))
         with patch.object(dispatcher, "linear_comment") as retry, \
              patch.object(dispatcher, "save_state"):
             self.assertFalse(dispatcher.emit_hermes_event("MAI-69", "needs-review", "MAI-69:needs-review:x", state))
@@ -542,7 +542,7 @@ class LinearBusTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
     def test_remote_body_reconciles_without_post(self):
-        body = dispatcher.hermes_prompt("MAI-69", "blocked")
+        body = dispatcher.hermes_prompt("MAI-69", "blocked", dispatcher.hermes_fingerprint("MAI-69", "blocked"))
         fp = dispatcher.hermes_fingerprint("MAI-69", "blocked")
         state = {"issues": {"MAI-69": {"status": "blocked", "dispatchId": "d-1"}}}
         with patch.object(dispatcher, "orca", return_value=_linear_issue("Blocked", [], comments=[body])), \
@@ -607,6 +607,74 @@ class LinearBusTests(unittest.TestCase):
             events, code = dispatcher.hermes_precheck(state)
         self.assertEqual(code, 0)
         self.assertEqual(events[0]["expectedAck"], fp)
+
+    def test_new_sha_event_posts_despite_older_remote_comment(self):
+        old_fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "43:aaa1111")
+        new_fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "44:abc1234")
+        old_body = dispatcher.hermes_prompt("MAI-69", "needs-review", old_fp)
+        state = {"issues": {"MAI-69": {"status": "needs-review", "reviewMarker": "44:abc1234"}}}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=[old_body])), \
+             patch.object(dispatcher, "linear_comment") as posted, \
+             patch.object(dispatcher, "save_state"):
+            count = dispatcher.deliver_hermes_notifications(state)
+        self.assertEqual(posted.call_count, 1)
+        self.assertIn(new_fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        self.assertNotIn(old_fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        self.assertEqual(count, 1)
+
+    def test_same_fingerprint_marker_reconciles_without_repost(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "blocked")
+        body = dispatcher.hermes_prompt("MAI-69", "blocked", fp)
+        state = {"issues": {"MAI-69": {"status": "blocked", "dispatchId": "d-1"}}}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("Blocked", [], comments=[body])), \
+             patch.object(dispatcher, "linear_comment") as posted, \
+             patch.object(dispatcher, "save_state"):
+            count = dispatcher.deliver_hermes_notifications(state)
+        posted.assert_not_called()
+        self.assertIn(fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        self.assertEqual(count, 1)
+
+    def test_event_comment_marker_keeps_json_strict(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "44:abc1234")
+        prompt = dispatcher.hermes_prompt("MAI-69", "needs-review", fp)
+        self.assertEqual(dispatcher.parse_hermes_payload(prompt),
+                         {"issue": "MAI-69", "event": "needs-review"})
+
+    def test_expected_ack_prefers_current_review_over_history(self):
+        old = "Entrega detectada: PR #43 https://example.test/pr/43 no SHA `aaa1111`."
+        new = "Entrega detectada: PR #44 https://example.test/pr/44 no SHA `abc1234`."
+        derived = dispatcher.expected_hermes_ack("MAI-69", "needs-review", [old, new], "44:abc1234")
+        self.assertEqual(derived, "MAI-69:needs-review:44:abc1234")
+
+    def test_expected_ack_prefers_current_timeout_over_history(self):
+        bodies = ["Timeout dispatch `d-6` expirado.", "Timeout dispatch `d-7` expirado."]
+        derived = dispatcher.expected_hermes_ack("MAI-69", "dispatch-timeout", bodies, "d-7")
+        self.assertEqual(derived,
+                         dispatcher.hermes_fingerprint("MAI-69", "dispatch-timeout", "d-7"))
+
+    def test_sanitize_covers_real_credential_shapes(self):
+        evil = ("Authorization: Bearer tok-live-abc123 "
+                "authorization: bearer tok-live-def456 "
+                "AUTHORIZATION = \"Bearer tok with space\" "
+                "password=\"hunter 2\" passwd='x y' "
+                "postgres://deploy:s3cret@db.host:5432/app "
+                "https://user:p4ss@hooks.example.test/hook")
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = fn(evil)
+            for secret in ("tok-live-abc123", "tok-live-def456", "tok with space",
+                           "hunter 2", "x y", "s3cret", "p4ss",
+                           "deploy:s3cret", "user:p4ss"):
+                self.assertNotIn(secret, clean)
+            self.assertIn("[redacted]", clean)
+
+    def test_hermes_payload_rejects_extra_key(self):
+        head = "Leia a MAI-69 no Linear e processe conforme o fluxo padrao. (evento=needs-review)\n"
+        extra = head + "```json\n{\"issue\":\"MAI-69\",\"event\":\"needs-review\",\"fingerprint\":\"x\"}\n```"
+        self.assertIsNone(dispatcher.parse_hermes_payload(extra))
+        stamped = head + "```json\n{\"issue\":\"MAI-69\",\"event\":\"needs-review\",\"at\":123}\n```"
+        self.assertIsNone(dispatcher.parse_hermes_payload(stamped))
 
 
 class _NoopLock:
