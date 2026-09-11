@@ -12,9 +12,11 @@ import subprocess
 import shutil
 import sys
 import time
+import traceback
 import tomllib
 import unicodedata
 import uuid
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("MEUPLANTAO_DISPATCHER_CONFIG", ROOT / "config.toml"))
@@ -234,6 +236,10 @@ def worker_label(entry: dict) -> str:
 
 MAX_DISPATCH_PER_RUN = int(CONFIG.get("max_dispatch_per_run", 1))
 SCHEDULER_TASK_NAME = str(CONFIG.get("scheduler_task_name", "Hermes-MeuPlantao-Dispatcher") or "Hermes-MeuPlantao-Dispatcher")
+DISPATCH_TIMEOUT_SECONDS = int(CONFIG.get("dispatch_timeout_seconds", 900))
+TIMEOUT_LABEL = CONFIG.get("timeout_label", "Dispatch Timeout")
+HERMES_EVENT_TYPES = ("needs-review", "blocked", "dispatch-timeout")
+HERMES_FINAL_STATUSES = ("claiming", "dispatching", "dispatched", "needs-review", "dispatch-timeout", "blocked")
 
 
 def get_control_mode() -> str:
@@ -398,6 +404,8 @@ def agent_prompt(issue_id: str, worker: dict | None = None) -> str:
         f"{worker_label(active)} (comando `{active['command']}`). Não troque modelo, provider, comando ou reasoning. "
         "Execute testes/lint/TypeScript/build aplicáveis, faça commit e push, abra PR para main e vincule-a à issue. "
         "Nunca faça merge. Ao terminar, deixe a PR aberta para auditoria externa. "
+        "Ao concluir ou travar, registre na issue um comentario `MeuPlantao-Report: delivery pr=<PR-URL> sha=<SHA> tests=<resumo>` "
+        "ou `MeuPlantao-Report: error|blocked <texto>` sanitizado e sem segredos; o dispatcher so detecta conclusao pelo Linear."
         "Se a issue for de infraestrutura externa ao repositório MeuPlantao, não invente alteração de produto: "
         "investigue, registre evidência e só altere este repositório quando houver necessidade comprovada."
     )
@@ -439,7 +447,7 @@ def linear_comment(issue_id: str, body: str, write_key: str = "") -> None:
 
 
 def record_error(issue_id: str, state: dict, message: str) -> None:
-    clean = re.sub(r"\s+", " ", message).strip()[:900]
+    clean = sanitize_for_linear(message)
     fingerprint = str(uuid.uuid5(uuid.NAMESPACE_URL, clean))
     issue_state = state["issues"].setdefault(issue_id, {})
     issue_state.update({"status": "error", "lastError": clean, "lastErrorAt": utc_epoch()})
@@ -456,7 +464,7 @@ def record_error(issue_id: str, state: dict, message: str) -> None:
             f"error:{fingerprint}",
         )
     except Exception as comment_error:
-        LOG.error("Could not report %s failure to Linear: %s", issue_id, comment_error)
+        LOG.error("Could not report %s failure to Linear: %s", issue_id, sanitize_for_log(comment_error))
 
 
 def sync_started(issue_id: str) -> None:
@@ -539,8 +547,13 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         LOG.info("DRY RUN eligible=%s existing_workspace=%s", issue_id, existing.get("path") if existing else None)
         return False
     issue_state = state["issues"].setdefault(issue_id, {})
-    issue_state.update({"status": "claiming", "claimedAt": utc_epoch(), "attempts": issue_state.get("attempts", 0) + 1})
+    if issue_state.get("dispatchId") and issue_state.get("status") in HERMES_FINAL_STATUSES:
+        LOG.info("Skipping %s: dispatch %s already in %s; second tick never duplicates worktree/agent", issue_id, issue_state.get("dispatchId"), issue_state.get("status"))
+        return False
+    dispatch_id = ensure_dispatch_claim(issue_id, state)
+    issue_state.update({"status": "dispatching", "claimedAt": utc_epoch(), "attempts": issue_state.get("attempts", 0) + 1})
     save_state(state)
+    side_effect_started = False
     try:
         matched_worker = preflight_model()
         if isinstance(matched_worker, dict):
@@ -548,6 +561,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
             dispatch_label = worker_label(matched_worker)
         else:
             dispatch_label = "authorized worker"
+        side_effect_started = True
         if existing:
             worktree = existing
             handle = recover_existing(issue, existing)
@@ -558,6 +572,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         sync_started(issue_id)
         issue_state.update({
             "status": "dispatched",
+            "dispatchId": dispatch_id,
             "dispatchedAt": utc_epoch(),
             "workspacePath": worktree["path"],
             "workspaceName": worktree.get("displayName"),
@@ -574,14 +589,24 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
         except Exception as comment_error:
             # The dispatch transaction is already confirmed. A reporting failure must not
             # roll it back or make a retry create another workspace/agent.
-            issue_state["reportingError"] = str(comment_error)[:900]
+            issue_state["reportingError"] = sanitize_for_linear(str(comment_error))
             save_state(state)
-            LOG.error("Dispatch succeeded but Linear comment failed for %s: %s", issue_id, comment_error)
+            LOG.error("Dispatch succeeded but Linear comment failed for %s: %s", issue_id, sanitize_for_log(comment_error))
         LOG.info("Dispatched %s to %s terminal=%s created=%s", issue_id, worktree["path"], handle, created)
         return True
     except Exception as exc:
+        if side_effect_started:
+            clean = sanitize_for_linear(str(exc))
+            issue_state.update({"status": "dispatching", "ambiguousError": clean, "ambiguousAt": utc_epoch()})
+            save_state(state)
+            try:
+                linear_comment(issue_id, "Dispatch encontrou falha ambigua apos iniciar o side effect; nenhum retry automatico sera feito e nenhum segundo agente foi criado. Aguarde o timeout e a recuperacao manual. Erro: `" + clean + "`.")
+            except Exception as comment_error:
+                LOG.error("Could not report ambiguous failure for %s: %s", issue_id, sanitize_for_log(comment_error))
+            log_exception_safe("Ambiguous dispatch failure for %s (no auto-retry)", issue_id)
+            return False
         record_error(issue_id, state, str(exc))
-        LOG.exception("Dispatch failed for %s", issue_id)
+        log_exception_safe("Dispatch failed for %s", issue_id)
         return False
 
 
@@ -640,10 +665,673 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
                     f"reconciled:{worktree.get('id') or path}",
                 )
             except Exception as comment_error:
-                LOG.error("Reconciliation comment failed for %s: %s", issue_id, comment_error)
+                LOG.error("Reconciliation comment failed for %s: %s", issue_id, sanitize_for_log(comment_error))
             LOG.info("Reconciled confirmed dispatch for %s without creating resources", issue_id)
         except Exception:
-            LOG.exception("Dispatch reconciliation failed for %s", issue_id)
+            log_exception_safe("Dispatch reconciliation failed for %s", issue_id)
+
+
+def stable_dispatch_id(issue_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "dispatch:" + str(issue_id).upper()))
+
+
+def ensure_dispatch_claim(issue_id: str, state: dict) -> str:
+    issue_state = state["issues"].setdefault(issue_id, {})
+    dispatch_id = issue_state.get("dispatchId") or stable_dispatch_id(issue_id)
+    issue_state["dispatchId"] = dispatch_id
+    return dispatch_id
+
+
+def hermes_fingerprint(issue_id: str, event_type: str, detail: str = "") -> str:
+    base = str(issue_id).upper() + ":" + str(event_type)
+    if detail:
+        base += ":" + str(detail)
+    return base
+
+
+def hermes_payload(issue_id: str, event_type: str) -> dict:
+    return {"issue": str(issue_id).upper(), "event": str(event_type)}
+
+
+HERMES_FP_KIND = "MeuPlantao-Hermes-Fp:"
+
+
+def hermes_event_marker(fingerprint: str) -> str:
+    return HERMES_FP_KIND + " " + str(fingerprint).strip()
+
+
+def hermes_prompt(issue_id: str, event_type: str, fingerprint: str = "") -> str:
+    payload = json.dumps(hermes_payload(issue_id, event_type), ensure_ascii=False)
+    body = ("Leia a " + str(issue_id).upper() + " no Linear e processe conforme o fluxo padrao. (evento=" + str(event_type) + ")\n"
+            "```json\n" + payload + "\n```")
+    if str(fingerprint or "").strip():
+        body += "\n" + hermes_event_marker(fingerprint)
+    return body
+
+
+def parse_hermes_payload(body: object) -> dict | None:
+    match = re.search(r"```json\s*(\{.*?\})\s*```", str(body), re.DOTALL)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or set(payload.keys()) != {"issue", "event"}:
+        return None
+    if not payload["issue"] or not payload["event"]:
+        return None
+    return payload
+
+
+_REVIEW_COMMENT_RE = re.compile(r"PR\s*#(\d+).*?SHA\s*`([0-9a-fA-F]{7,64})`", re.IGNORECASE | re.DOTALL)
+_TIMEOUT_NOTICE_RE = re.compile(r"dispatch\s*`([^`]+)`", re.IGNORECASE)
+
+
+def expected_hermes_ack(issue_id: str, event_type: str, bodies: list[str], current_detail: str = "") -> str | None:
+    ident = str(issue_id).upper()
+    if event_type == "blocked":
+        return hermes_fingerprint(issue_id, "blocked")
+    detail = str(current_detail or "").strip()
+    if detail:
+        return hermes_fingerprint(issue_id, event_type, detail)
+    if event_type == "needs-review":
+        for body in bodies:
+            match = _REVIEW_COMMENT_RE.search(str(body))
+            if match:
+                return ident + ":needs-review:" + match.group(1) + ":" + match.group(2).lower()
+        return None
+    if event_type == "dispatch-timeout":
+        for body in bodies:
+            match = _TIMEOUT_NOTICE_RE.search(str(body))
+            if match:
+                return hermes_fingerprint(issue_id, "dispatch-timeout", match.group(1).strip())
+        return None
+    return None
+
+
+_SECRET_PATTERNS = (
+    r"gh[pousr]_[A-Za-z0-9_]+",
+    r"github_pat_[A-Za-z0-9_]+",
+    r"sk-ant-[A-Za-z0-9\-_]+",
+    r"sk-[A-Za-z0-9]{8,}",
+    r"xox[bpas]-[A-Za-z0-9\-]+",
+    r"AKIA[0-9A-Z]{16}",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+    r"Bearer\s+[A-Za-z0-9\-._~+/=]+",
+    r"Basic\s+[A-Za-z0-9+/=]{8,}",
+)
+_SENSITIVE_KEY_RE = r"password|passwd|pwd|secret|token|api[-_]?key|auth|authorization|service[-_]?role|private[-_]?key|client[-_]?secret"
+
+
+_SECRET_VALUE_RE = r"\"[^\"]*\"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|\S+"
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+
+
+_PR_CHECK_FIELD_LIMIT = 300
+_PR_SHA_LIMIT = 128
+
+
+def _normalize_pr_check(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        raise RuntimeError("PR verification failed for reported delivery")
+    name = raw.get("name") or raw.get("context") or ""
+    conclusion = (raw.get("conclusion") or raw.get("state")
+                  or raw.get("status") or "")
+    if not isinstance(name, str) or not isinstance(conclusion, str):
+        raise RuntimeError("PR verification failed for reported delivery")
+    return {"name": sanitize_for_linear(name, _PR_CHECK_FIELD_LIMIT),
+            "conclusion": sanitize_for_linear(conclusion, _PR_CHECK_FIELD_LIMIT)}
+
+
+def canonical_pr(raw: object) -> dict:
+    """Validate verifier output into the single canonical PR object.
+    MAI-73: report.pr is untrusted input used only for lookup; every sink
+    (workerReport.pr, issue.pr, attachment, comment, reviewMarker) must derive
+    exclusively from this validated object. Rejects fail-closed anything that
+    is not an HTTPS github.com URL for the configured repo in strict
+    /<repo>/pull/<number> form with matching number, no userinfo, no port,
+    no query and no fragment.
+    MAI-76: closed allowlist schema. The output is built field by field with
+    exactly the keys number/headRefOid/url/statusCheckRollup; no input key,
+    extra field or mutable structure survives, and the input is never mutated.
+    Ambiguous types (bool/float/non-decimal numbers, non-string SHA/URL,
+    non-list rollups, non-dict checks) fail closed.
+    """
+    if not isinstance(raw, dict):
+        raise RuntimeError("PR verification failed for reported delivery")
+    num_raw = raw.get("number")
+    if isinstance(num_raw, bool):
+        raise RuntimeError("PR verification failed for reported delivery")
+    if isinstance(num_raw, int):
+        number = num_raw
+    elif isinstance(num_raw, str) and num_raw.strip().isdigit():
+        number = int(num_raw.strip())
+    else:
+        raise RuntimeError("PR verification failed for reported delivery")
+    if number <= 0:
+        raise RuntimeError("PR verification failed for reported delivery")
+    head_raw = raw.get("headRefOid")
+    if not isinstance(head_raw, str):
+        raise RuntimeError("PR verification failed for reported delivery")
+    head = head_raw.strip().lower()
+    if not head or len(head) > _PR_SHA_LIMIT:
+        raise RuntimeError("PR verification failed for reported delivery")
+    url_raw = raw.get("url")
+    if not isinstance(url_raw, str):
+        raise RuntimeError("PR URL is not canonical")
+    parts = urlsplit(url_raw.strip())
+    if parts.scheme.lower() != "https":
+        raise RuntimeError("PR URL is not canonical")
+    if parts.username or parts.password:
+        raise RuntimeError("PR URL is not canonical")
+    if parts.query or parts.fragment:
+        raise RuntimeError("PR URL is not canonical")
+    try:
+        port = parts.port
+    except ValueError:
+        raise RuntimeError("PR URL is not canonical")
+    if port:
+        raise RuntimeError("PR URL is not canonical")
+    if (parts.hostname or "").lower() != "github.com":
+        raise RuntimeError("PR URL is not canonical")
+    repo = str(CONFIG.get("github_repo") or "").strip().strip("/")
+    if not repo:
+        raise RuntimeError("PR URL is not canonical")
+    if parts.path != "/" + repo + "/pull/" + str(number):
+        raise RuntimeError("PR URL is not canonical")
+    checks_raw = raw.get("statusCheckRollup")
+    if checks_raw is None:
+        checks = []
+    elif not isinstance(checks_raw, list):
+        raise RuntimeError("PR verification failed for reported delivery")
+    else:
+        checks = [_normalize_pr_check(item) for item in checks_raw]
+    return {"number": number,
+            "headRefOid": head,
+            "url": "https://github.com/" + repo + "/pull/" + str(number),
+            "statusCheckRollup": checks}
+
+
+def canonical_pr_url(url: object) -> str:
+    parts = urlsplit(str(url or "").strip())
+    host = (parts.hostname or "").strip().lower()
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        raise RuntimeError("PR URL is not canonical")
+    netloc = host
+    try:
+        port = parts.port
+    except ValueError:
+        raise RuntimeError("PR URL is not canonical")
+    if port:
+        netloc += ":" + str(port)
+    return urlunsplit((parts.scheme.lower(), netloc, parts.path or "", "", ""))
+
+
+_UNICODE_PAIR_RE = re.compile(r"\\u([dD][89a-fA-F][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})")
+_UNICODE_UNIT_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_SIMPLE_ESCAPE_RE = re.compile(r"\\([\"\\/bfnrt])")
+_SIMPLE_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
+                   "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _decode_unicode_escapes(text: str) -> str:
+    if "\\" not in text:
+        return text
+
+    def _pair(match):
+        high = int(match.group(1), 16)
+        low = int(match.group(2), 16)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+    text = _UNICODE_PAIR_RE.sub(_pair, text)
+    text = _SIMPLE_ESCAPE_RE.sub(lambda match: _SIMPLE_ESCAPES[match.group(1)], text)
+
+    def _unit(match):
+        unit = int(match.group(1), 16)
+        if 0xD800 <= unit <= 0xDFFF:
+            return match.group(0)
+        return chr(unit)
+
+    return _UNICODE_UNIT_RE.sub(_unit, text)
+
+
+_CANON_MAX_ROUNDS = 25
+_CANON_MAX_CHARS = 200000
+
+
+def canonicalize_untrusted_text(text: object) -> str:
+    current = str(text)
+    if len(current) > _CANON_MAX_CHARS:
+        return "[REDACTED]"
+    for _ in range(_CANON_MAX_ROUNDS):
+        decoded = _decode_unicode_escapes(unquote(current))
+        if decoded == current:
+            return _scrub_secret_material(decoded)
+        current = decoded
+        if len(current) > _CANON_MAX_CHARS:
+            return "[REDACTED]"
+    return "[REDACTED]"
+
+
+def _scrub_secret_material(clean: str) -> str:
+    for pattern in _SECRET_PATTERNS:
+        clean = re.sub(pattern, "[redacted]", clean, flags=re.IGNORECASE)
+    clean = _URL_USERINFO_RE.sub(r"\1[redacted]@", clean)
+    clean = re.sub(r"([A-Za-z0-9_]*?(?:" + _SENSITIVE_KEY_RE + r")[A-Za-z0-9_]*)\s*[:=]\s*(?:" + _SECRET_VALUE_RE + r")",
+                   r"\1=[redacted]", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"['\"]([A-Z_]{3,}(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z_]*)['\"]\s*[:=]\s*['\"][^'\"]+['\"]",
+                   r"'\1'='[redacted]'", clean)
+    return clean
+
+
+def sanitize_for_linear(text: object, limit: int = 900) -> str:
+    clean = canonicalize_untrusted_text(text)
+    return re.sub(r"\s+", " ", clean).strip()[:limit]
+
+
+def sanitize_for_log(text: object, limit: int = 4000) -> str:
+    return canonicalize_untrusted_text(text)[:limit]
+
+
+def log_exception_safe(message: str, *args) -> None:
+    try:
+        current = traceback.format_exc()
+    except Exception:
+        current = ""
+    if current.strip() in ("", "NoneType: None"):
+        LOG.error(message, *args)
+    else:
+        LOG.error(message + " | traceback=%s", *args, sanitize_for_log(current))
+
+
+def emit_hermes_event(issue_id: str, event_type: str, fingerprint: str, state: dict) -> bool:
+    """Deliver the minimal Hermes prompt as a Linear comment.
+
+    Contract (MAI-69): Hermes reads the issue and comments directly in Linear,
+    so the Linear comment is the durable, deduplicated persistence of the event; no Orca hermes/notify
+    command exists and no side transport is used. The body carries strictly the
+    issue identifier and the event type. The fingerprint is recorded locally
+    only after the comment succeeds; a failed post raises (no record), so the
+    next tick retries instead of losing the event. Activation of Hermes itself (something
+    waking it on a new comment) is out of dispatcher scope: no Orca automation or webhook
+    exists (see docs); the dispatcher only guarantees the event is persisted exactly once
+    per fingerprint. Consumption is tracked via `MeuPlantao-Ack: <fingerprint>` comments;
+    `hermes_precheck()` lists unacked events as the gate for the operator-owned Orca
+    automation (see docs). Returns True when delivered and recorded, False when the
+    fingerprint was already notified.
+    """
+    if event_type not in HERMES_EVENT_TYPES:
+        raise ValueError("unknown hermes event: " + str(event_type))
+    issue_state = state["issues"].setdefault(issue_id, {})
+    notified = issue_state.setdefault("hermesNotified", {})
+    if fingerprint in notified:
+        return False
+    linear_comment(issue_id, hermes_prompt(issue_id, event_type, fingerprint))
+    notified[fingerprint] = {"at": utc_epoch(), "event": event_type}
+    save_state(state)
+    return True
+
+
+def pending_hermes_event(issue_id: str, local: dict) -> tuple[str, str] | None:
+    status = local.get("status")
+    if status == "needs-review" and local.get("reviewMarker"):
+        return ("needs-review", hermes_fingerprint(issue_id, "needs-review", local["reviewMarker"]))
+    if status == "blocked":
+        return ("blocked", hermes_fingerprint(issue_id, "blocked"))
+    if status == "dispatch-timeout" and local.get("dispatchId"):
+        return ("dispatch-timeout", hermes_fingerprint(issue_id, "dispatch-timeout", local["dispatchId"]))
+    return None
+
+
+def hermes_event_posted_remotely(issue_id: str, event_type: str, fingerprint: str = "") -> bool | None:
+    try:
+        bodies = extract_comment_bodies(fetch_linear_issue_full(issue_id))
+    except Exception:
+        return None
+    try:
+        if str(fingerprint or "").strip():
+            want = hermes_event_marker(fingerprint).strip().lower()
+            return any(want in [line.strip().lower() for line in str(entry).splitlines()]
+                       for entry in bodies)
+        body = hermes_prompt(issue_id, event_type)
+        return any(str(entry).strip() == body for entry in bodies)
+    except Exception:
+        return None
+
+
+def reconcile_hermes_delivery(issue_id: str, event_type: str, fingerprint: str, state: dict) -> bool:
+    issue_state = state["issues"].setdefault(issue_id, {})
+    notified = issue_state.setdefault("hermesNotified", {})
+    if fingerprint in notified:
+        return False
+    notified[fingerprint] = {"at": utc_epoch(), "event": event_type}
+    save_state(state)
+    return True
+
+
+def deliver_hermes_notifications(state: dict) -> int:
+    count = 0
+    for issue_id in list(state.get("issues", {}).keys()):
+        pending = pending_hermes_event(issue_id, state["issues"][issue_id])
+        if pending is None:
+            continue
+        event_type, fingerprint = pending
+        if hermes_event_posted_remotely(issue_id, event_type, fingerprint) is True:
+            try:
+                if reconcile_hermes_delivery(issue_id, event_type, fingerprint, state):
+                    count += 1
+            except Exception:
+                log_exception_safe("Hermes reconcile failed for %s; will retry next tick", issue_id)
+            continue
+        try:
+            if emit_hermes_event(issue_id, event_type, fingerprint, state):
+                count += 1
+        except Exception:
+            log_exception_safe("Hermes delivery failed for %s; will retry next tick", issue_id)
+    return count
+
+
+_WORKER_DELIVERY_RE = re.compile(
+    r"MeuPlantao-Report:\s*delivery\s+pr=(\S+)\s+sha=([0-9a-fA-F]{7,64})(?:\s+tests=(.*))?",
+    re.IGNORECASE)
+_WORKER_ERROR_RE = re.compile(r"MeuPlantao-Report:\s*error\s+(.*)", re.IGNORECASE | re.DOTALL)
+_WORKER_BLOCKED_RE = re.compile(r"MeuPlantao-Report:\s*blocked\s+(.*)", re.IGNORECASE | re.DOTALL)
+
+
+def fetch_linear_issue_full(issue_id: str) -> dict:
+    return orca("linear", "issue", issue_id, "--comments",
+                "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+
+
+def extract_comment_bodies(issue: dict) -> list[str]:
+    bodies: list[str] = []
+    comments = issue.get("comments", []) or []
+    if isinstance(comments, dict):
+        comments = comments.get("nodes", []) or comments.get("items", []) or []
+    for entry in comments:
+        if isinstance(entry, dict):
+            text = entry.get("body") or entry.get("text") or entry.get("content") or ""
+        else:
+            text = str(entry)
+        if text.strip():
+            bodies.append(text)
+    return bodies
+
+
+def parse_worker_report(bodies: list[str]) -> dict | None:
+    found: dict | None = None
+    for body in bodies:
+        delivery = _WORKER_DELIVERY_RE.search(body)
+        if delivery:
+            tests = (delivery.group(3) or "").strip()[:300]
+            found = {"kind": "delivery", "pr": delivery.group(1).strip(),
+                     "sha": delivery.group(2).strip().lower(), "tests": tests}
+            continue
+        blocked = _WORKER_BLOCKED_RE.search(body)
+        if blocked:
+            found = {"kind": "blocked", "text": blocked.group(1).strip()[:900]}
+            continue
+        error = _WORKER_ERROR_RE.search(body)
+        if error:
+            found = {"kind": "error", "text": error.group(1).strip()[:900]}
+    return found
+
+
+def gh_pr_for_url(url: str) -> dict:
+    output = run([
+        GH_EXECUTABLE, "pr", "view", url,
+        "--json", "number,url,headRefOid,title,state,baseRefName",
+    ], timeout=120)
+    pr = json.loads(output)
+    if isinstance(pr, list):
+        pr = pr[0] if pr else {}
+    if not isinstance(pr, dict) or not pr.get("number") or not pr.get("headRefOid"):
+        raise RuntimeError("PR verification failed for reported delivery")
+    if str(pr.get("state") or "").upper() != "OPEN":
+        raise RuntimeError("reported PR is not open")
+    if pr.get("baseRefName") != "main":
+        raise RuntimeError("reported PR base branch is not main")
+    return canonical_pr(pr)
+
+
+def record_worker_report(issue_id: str, kind: str, text: str, state: dict) -> bool:
+    clean = sanitize_for_linear(text)
+    fingerprint = str(uuid.uuid5(uuid.NAMESPACE_URL, kind + ":" + clean))
+    issue_state = state["issues"].setdefault(issue_id, {})
+    if issue_state.get("workerReportFingerprint") == fingerprint:
+        return False
+    issue_state["workerReportFingerprint"] = fingerprint
+    if kind == "blocked":
+        issue_state.update({"status": "blocked", "workerReport": clean,
+                            "workerReportAt": utc_epoch()})
+    else:
+        issue_state.update({"status": "error", "workerError": clean,
+                            "workerErrorAt": utc_epoch()})
+    save_state(state)
+    linear_comment(
+        issue_id,
+        "Worker reportou `" + kind + "` em " + issue_id.upper() + " (sanitizado): `" + clean + "`. "
+        "Dispatch mantido para recuperacao manual; nenhum retry automatico.",
+    )
+    return True
+
+
+def sync_worker_reports(state: dict) -> int:
+    applied = 0
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state["issues"][issue_id]
+        if local.get("status") not in ("dispatching", "dispatched", "needs-review"):
+            continue
+        try:
+            current = fetch_linear_issue_full(issue_id)
+        except Exception:
+            log_exception_safe("Worker report fetch failed for %s", issue_id)
+            continue
+        if not linear_scope_ok(current):
+            continue
+        report = parse_worker_report(extract_comment_bodies(current))
+        if report is None:
+            continue
+        try:
+            if report["kind"] == "delivery":
+                pr = canonical_pr(gh_pr_for_url(report["pr"]))
+                if str(pr.get("headRefOid") or "").lower() != report["sha"]:
+                    LOG.error("Reported SHA does not match PR head for %s; waiting for fresh report", issue_id)
+                    continue
+                local["workerReport"] = {"kind": "delivery",
+                                         "pr": pr["url"],
+                                         "sha": report["sha"],
+                                         "tests": sanitize_for_linear(report.get("tests", ""), 300),
+                                         "number": pr.get("number"),
+                                         "head": str(pr.get("headRefOid") or "").lower()}
+                save_state(state)
+                mark_for_review(issue_id, pr, state)
+                applied += 1
+            else:
+                if record_worker_report(issue_id, report["kind"], report.get("text", ""), state):
+                    applied += 1
+        except Exception:
+            log_exception_safe("Worker report handling failed for %s", issue_id)
+    return applied
+
+
+def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) -> bool:
+    moment = now if now is not None else utc_epoch()
+    issue_state = state["issues"].setdefault(issue_id, {})
+    stages = issue_state.setdefault("timeoutStages", {})
+    dispatch_id = issue_state.get("dispatchId") or stable_dispatch_id(issue_id)
+    if issue_state.get("status") == "dispatch-timeout" and stages.get("labelDone") and stages.get("commentDone"):
+        return False
+    if not stages.get("labelDone"):
+        try:
+            orca("linear", "label", "add", issue_id, "--label", TIMEOUT_LABEL,
+                 "--workspace", LINEAR_WORKSPACE_ID)
+        except Exception as exc:
+            stages["labelError"] = sanitize_for_linear(str(exc), 500)
+            save_state(state)
+            raise
+        stages["labelDone"] = True
+        stages.pop("labelError", None)
+        stages.pop("labelAttempted", None)
+        save_state(state)
+    if not stages.get("commentDone"):
+        try:
+            linear_comment(
+                issue_id,
+                "Dispatch de " + issue_id.upper() + " atingiu timeout sem confirmacao no Linear; "
+                "marcado como `" + TIMEOUT_LABEL + "`. Sem redispatch automatico; aguardando recuperacao manual. "
+                "dispatch `" + dispatch_id + "`.",
+            )
+        except Exception as exc:
+            stages["commentError"] = sanitize_for_linear(str(exc), 500)
+            save_state(state)
+            raise
+        stages["commentDone"] = True
+        stages.pop("commentError", None)
+        stages.pop("commentAttempted", None)
+        save_state(state)
+    issue_state.update({"status": "dispatch-timeout", "dispatchId": dispatch_id,
+                        "timeoutAt": moment})
+    save_state(state)
+    LOG.info("Marked %s as dispatch timeout", issue_id)
+    return True
+
+
+def linear_scope_ok(current: dict) -> bool:
+    return current.get("team", {}).get("name") == TEAM and current.get("project", {}).get("name") == PROJECT
+
+
+def is_blocked_issue(current: dict) -> bool:
+    state_name = str((current.get("state") or {}).get("name") or "").strip().lower()
+    if state_name == "blocked":
+        return True
+    for label in current.get("labels", []) or []:
+        if str((label or {}).get("name") or "").strip().lower() == "blocked":
+            return True
+    return False
+
+
+def check_blocked_via_linear(state: dict) -> int:
+    count = 0
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state["issues"][issue_id]
+        if local.get("status") not in ("dispatched", "dispatching", "needs-review"):
+            continue
+        try:
+            current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+        except Exception:
+            log_exception_safe("Blocked check failed for %s", issue_id)
+            continue
+        if not linear_scope_ok(current):
+            continue
+        if not is_blocked_issue(current):
+            continue
+        local["status"] = "blocked"
+        save_state(state)
+        count += 1
+    return count
+
+
+def check_dispatch_timeouts(state: dict, now: int | None = None) -> int:
+    moment = now if now is not None else utc_epoch()
+    count = 0
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state.get("issues", {}).get(issue_id, {})
+        if local.get("status") not in ("claiming", "dispatching"):
+            continue
+        claimed = local.get("claimedAt")
+        if claimed is None:
+            claimed = local.get("dispatchedAt")
+        if claimed is None:
+            claimed = moment
+        try:
+            claimed_int = int(claimed)
+        except (TypeError, ValueError):
+            claimed_int = moment
+        if moment - claimed_int < DISPATCH_TIMEOUT_SECONDS:
+            continue
+        try:
+            current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+        except Exception:
+            log_exception_safe("Timeout check failed for %s", issue_id)
+            continue
+        if not linear_scope_ok(current):
+            continue
+        if str((current.get("state") or {}).get("name") or "") == "In Progress":
+            local.update({"status": "dispatched", "confirmedLateAt": moment})
+            save_state(state)
+            continue
+        try:
+            if mark_dispatch_timeout(issue_id, state, now=moment):
+                count += 1
+        except Exception:
+            log_exception_safe("Timeout marking failed for %s", issue_id)
+    return count
+
+
+HERMES_ACK_KIND = "meuplantao-ack:"
+
+
+def hermes_acknowledged(bodies: list[str], fingerprint: str) -> bool:
+    want = HERMES_ACK_KIND + " " + str(fingerprint).strip().lower()
+    for body in bodies:
+        for line in str(body).splitlines():
+            if line.strip().lower() == want:
+                return True
+    return False
+
+
+def unacked_hermes_events(state: dict) -> list[dict]:
+    pending_events: list[dict] = []
+    for issue_id in list(state.get("issues", {}).keys()):
+        local = state.get("issues", {}).get(issue_id, {})
+        pending = pending_hermes_event(issue_id, local)
+        if pending is None:
+            continue
+        event_type, fingerprint = pending
+        try:
+            current = fetch_linear_issue_full(issue_id)
+        except Exception:
+            log_exception_safe("Hermes precheck fetch failed for %s", issue_id)
+            pending_events.append({"issue": issue_id, "event": event_type,
+                                   "fingerprint": fingerprint, "linearReachable": False,
+                                   "expectedAck": None})
+            continue
+        if not linear_scope_ok(current):
+            continue
+        bodies = extract_comment_bodies(current)
+        if hermes_acknowledged(bodies, fingerprint):
+            continue
+        if event_type == "needs-review":
+            detail = local.get("reviewMarker") or ""
+        elif event_type == "dispatch-timeout":
+            detail = local.get("dispatchId") or ""
+        else:
+            detail = ""
+        pending_events.append({"issue": issue_id, "event": event_type,
+                               "fingerprint": fingerprint, "linearReachable": True,
+                               "expectedAck": expected_hermes_ack(issue_id, event_type, bodies, detail)})
+    return pending_events
+
+
+def hermes_precheck(state: dict) -> tuple[list[dict], int]:
+    events = unacked_hermes_events(state)
+    return events, (0 if events else 1)
+
+
+def hermes_precheck_main() -> int:
+    state = load_state()
+    events, code = hermes_precheck(state)
+    print(json.dumps({"events": events}, ensure_ascii=False))
+    return code
+
+
+def poll_linear_outcomes(state: dict, now: int | None = None) -> None:
+    sync_worker_reports(state)
+    check_dispatch_timeouts(state, now=now)
+    check_blocked_via_linear(state)
+    deliver_hermes_notifications(state)
 
 
 def gh_pr_for_branch(branch_ref: str) -> dict | None:
@@ -664,8 +1352,7 @@ def gh_pr_for_branch(branch_ref: str) -> dict | None:
 
 
 def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
-    if not pr.get("number") or not pr.get("headRefOid"):
-        raise ValueError("PR identity incomplete; refusing review transition")
+    pr = canonical_pr(pr)
     issue_state = state["issues"].setdefault(issue_id, {})
     marker = f"{pr['number']}:{pr['headRefOid']}"
     if issue_state.get("reviewMarker") == marker:
@@ -679,7 +1366,7 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
         try:
             orca("linear", "attach", issue_id, "--url", pr["url"], "--title", f"PR #{pr['number']} — aguardando auditoria", "--workspace", LINEAR_WORKSPACE_ID)
         except Exception as exc:
-            stages["attachmentError"] = str(exc)[:500]; save_state(state); raise
+            stages["attachmentError"] = sanitize_for_linear(str(exc), 500); save_state(state); raise
         stages["attachmentDone"] = True; save_state(state)
     if not stages.get("review_label"):
         orca("linear", "label", "add", issue_id, "--label", REVIEW_LABEL, "--workspace", LINEAR_WORKSPACE_ID); stages["review_label"] = True; save_state(state)
@@ -694,7 +1381,7 @@ def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
         try:
             linear_comment(issue_id, f"Entrega detectada automaticamente: PR #{pr['number']} {pr['url']} no SHA `{pr['headRefOid']}`. Status mantido em `In Progress` com label `{REVIEW_LABEL}` para auditoria externa; não foi marcado `Done` e nenhum merge foi executado. Checks: {summary}.", f"review:{marker}")
         except Exception as exc:
-            stages["commentError"] = str(exc)[:500]; save_state(state); raise
+            stages["commentError"] = sanitize_for_linear(str(exc), 500); save_state(state); raise
         stages["commentDone"] = True; save_state(state)
     issue_state.update({"status": "needs-review", "reviewMarker": marker, "pr": pr["url"], "headSha": pr["headRefOid"], "reviewAt": utc_epoch()}); save_state(state)
     LOG.info("Marked %s for review from PR #%s", issue_id, pr["number"])
@@ -719,11 +1406,21 @@ def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
             issue_state = state["issues"][issue_id]
             if current.get("team", {}).get("name") != TEAM or current.get("project", {}).get("name") != PROJECT:
                 continue
+            pending = state.get("issues", {}).get(issue_id, {})
+            report = pending.get("workerReport") or {}
+            if not isinstance(report, dict) or report.get("kind") != "delivery" or not report.get("pr") or not report.get("sha"):
+                continue
             pr = gh_pr_for_branch(branch)
-            if pr:
-                mark_for_review(issue_id, pr, state)
+            if not pr:
+                continue
+            pr = canonical_pr(pr)
+            if str(pr.get("url") or "") != report["pr"]:
+                continue
+            if str(pr.get("headRefOid") or "").lower() != report["sha"]:
+                continue
+            mark_for_review(issue_id, pr, state)
         except Exception:
-            LOG.exception("Delivery monitor failed for %s", issue_id)
+            log_exception_safe("Delivery monitor failed for %s", issue_id)
 
 
 def acquire_lock():
@@ -747,7 +1444,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--issue", help="Restrict a run to one Linear identifier")
     parser.add_argument("--manual-once", action="store_true", help="Single manual iteration ignoring PAUSED in this process only")
+    parser.add_argument("--hermes-precheck", action="store_true", help="Read-only gate: list unacknowledged Hermes events as JSON (exit 0 when pending, 1 when quiet)")
     args = parser.parse_args()
+    if args.hermes_precheck:
+        return hermes_precheck_main()
 
     lock = acquire_lock()
     if lock is None:
@@ -759,6 +1459,8 @@ def main() -> int:
         manual_once = bool(args.manual_once)
         paused = (mode == "PAUSED" and not manual_once)
         max_per_run = 1 if manual_once else MAX_DISPATCH_PER_RUN
+        if not args.dry_run:
+            poll_linear_outcomes(state)
         status = orca("status")
         if not status.get("runtime", {}).get("reachable"):
             raise RuntimeError("Orca runtime is not reachable")
@@ -766,10 +1468,12 @@ def main() -> int:
         if not args.dry_run:
             reconcile_dispatches(state, worktrees)
             monitor_deliveries(state, worktrees)
+            poll_linear_outcomes(state)
         if paused and not args.dry_run:
             record_runtime(state, mode, 0, "paused for new tasks; reconcile and monitor continued", manual_once)
             save_state(state)
             monitor_deliveries(state, worktrees)
+            poll_linear_outcomes(state)
             LOG.info("Control mode PAUSED: skipped discovery and dispatch; reconcile and monitor continued")
             return 0
         issues = list_eligible_issues()
@@ -787,12 +1491,13 @@ def main() -> int:
                 worktrees = list_worktrees()
         if not args.dry_run:
             monitor_deliveries(state, worktrees)
+            poll_linear_outcomes(state)
             record_runtime(state, mode, dispatched, f"eligible={len(issues)} dispatched={dispatched} manual_once={manual_once}", manual_once)
             save_state(state)
         LOG.info("Run complete eligible=%d dispatched=%d dry_run=%s mode=%s manual_once=%s", len(issues), dispatched, args.dry_run, mode, manual_once)
         return 0
     except Exception as exc:
-        LOG.exception("Dispatcher run failed: %s", exc)
+        log_exception_safe("Dispatcher run failed: %s", exc)
         return 1
     finally:
         try:
