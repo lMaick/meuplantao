@@ -310,6 +310,17 @@ o Orca inicia; nao e modelo do dispatcher.
 - Dedup somente apos entrega confirmada: o fingerprint e gravado depois que o
   comentario e aceito; falha de entrega gera retry no proximo tick (sem perda
   definitiva) e repeticao do mesmo fingerprint gera zero escritas.
+- Crash-safe no dipolo comentario/local: se o post for aceito mas o save local
+  falhar, o proximo tick faz read-back remoto do comentario
+  (`hermes_event_posted_remotely`) e reconcilia o fingerprint sem repostar.
+- Contrato maquina: `hermes_payload()` emite exatamente `{issue, event}`;
+  `parse_hermes_payload()` rejeita qualquer chave extra; o comentario carrega o
+  prompt + bloco ```json do payload; `expected_hermes_ack()` deriva o ack
+  esperado do Linear (review: PR + SHA do comentario de entrega; timeout:
+  dispatch id do aviso; blocked: estatico) e o precheck lista `expectedAck`
+  por evento pendente. Sanitizador composto cobre `*_KEY/*_TOKEN/*_SECRET`,
+  `password/passwd/pwd`, `bearer` e `authorization` em qualquer posicao
+  (`sanitize_for_linear` e `sanitize_for_log`).
 - Hermes faz verificacao rapida no GitHub, sem auditoria semantica automatica.
 - Fingerprints: review = `ISSUE:needs-review:<PR>:<SHA>` (novo SHA reseta);
   blocked = `ISSUE:blocked`; timeout = `ISSUE:dispatch-timeout:<dispatchId>`.
@@ -344,6 +355,10 @@ o Orca inicia; nao e modelo do dispatcher.
 - Relatorio divergente: zero Needs Review em dois ciclos.
 - main() Linear-first: delivery/error/blocked via Linear com preflight invalido e sem terminal.
 - Monitor fail-closed preservado; ack/precheck com fail-closed de Linear fora.
+- Hermes: comentario ja postado nao reposta apos restart (read-back remoto).
+- Hermes: payload estrito issue+event rejeita chave extra (fingerprint/prompt/at).
+- Hermes: precheck inclui expectedAck por evento (review/blocked/timeout).
+- Sanitizador composto pega segredo fora de prefixo conhecido de chave.
 - Timeout: falha de label/comentario no 1o ciclo retenta e finaliza so no 2o.
 - Logs capturados sem tokens/senhas/credenciais.
 - Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.

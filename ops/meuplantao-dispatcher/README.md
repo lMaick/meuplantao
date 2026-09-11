@@ -73,14 +73,17 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    `monitor_deliveries` continua fail-closed no preflight (sem worker valido:
    zero mutacao no Linear).
 6. Acionamento Hermes em duas partes, sem LLM no dispatcher. (a) Evento duravel:
-   comentario Linear minimo (`Leia a MAI-N no Linear e processe conforme o fluxo
-   padrao. (evento=<tipo>)`), somente issue + tipo; fingerprint gravado em
+   comentario Linear com instrucao minima mais bloco JSON estrito de exatamente
+   `{issue, event}` (validavel por `parse_hermes_payload`); fingerprint gravado em
    `state.json` somente apos o comentario confirmado; falha gera retry no proximo
-   tick (sem perda); repeticao do mesmo fingerprint gera zero escritas (idempotente
-   e crash-safe). (b) Gate de consumo: `run-dispatcher.cmd --hermes-precheck`
+   tick (sem perda); entrega reconcilia por leitura remota, de modo que queda entre
+   aceite remoto e save local nunca duplica o evento (idempotente e crash-safe).
+   (b) Gate de consumo: `run-dispatcher.cmd --hermes-precheck`
    (somente leitura, sem lock) lista eventos emitidos ainda sem
    `MeuPlantao-Ack: <fingerprint>` na issue (exit 0 = ha pendencias, exit 1 =
-   quieto); Linear inacessivel e fail-closed como pendente. O Hermes, ao consumir
+   quieto), cada um com o `expectedAck` derivavel do Linear (review: PR + SHA do
+   comentario de entrega; timeout: dispatchId do aviso de timeout; blocked: estatico).
+   Linear inacessivel e fail-closed como pendente. O Hermes, ao consumir
    cada evento, posta `MeuPlantao-Ack: <fingerprint>`. (c) Atuador: automacao Orca
    do operador (contrato suportado: `orca automations create --trigger <cron>
    --precheck "<DISPATCHER_DIR>\run-dispatcher.cmd --hermes-precheck" --prompt
@@ -120,4 +123,8 @@ timeout com label/comentario retryaveis (falha-nao-finaliza), logs sem segredos
 (captura de logs), main() Linear-first com preflight invalido (delivery/error/
 blocked via Linear sem terminal), monitor fail-closed, ack/precheck (incl.
 fail-closed com Linear fora), transporte com dedup/retry/crash-safe,
-sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG).
+crash pos-aceite remoto sem duplicar, reconciliacao remota sem post,
+sanitizacao de nomes compostos (OPENAI_API_KEY, SERVICE_ROLE_KEY, access_token),
+payload JSON estrito {issue,event}, ack derivavel do Linear (review/timeout) e
+expectedAck no precheck, sem policy/worker, sem LLM no polling, sem mutacao
+global de CONFIG).

@@ -688,8 +688,52 @@ def hermes_fingerprint(issue_id: str, event_type: str, detail: str = "") -> str:
     return base
 
 
+def hermes_payload(issue_id: str, event_type: str) -> dict:
+    return {"issue": str(issue_id).upper(), "event": str(event_type)}
+
+
 def hermes_prompt(issue_id: str, event_type: str) -> str:
-    return "Leia a " + str(issue_id).upper() + " no Linear e processe conforme o fluxo padrao. (evento=" + str(event_type) + ")"
+    payload = json.dumps(hermes_payload(issue_id, event_type), ensure_ascii=False)
+    return ("Leia a " + str(issue_id).upper() + " no Linear e processe conforme o fluxo padrao. (evento=" + str(event_type) + ")\n"
+            "```json\n" + payload + "\n```")
+
+
+def parse_hermes_payload(body: object) -> dict | None:
+    match = re.search(r"```json\s*(\{.*?\})\s*```", str(body), re.DOTALL)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or set(payload.keys()) != {"issue", "event"}:
+        return None
+    if not payload["issue"] or not payload["event"]:
+        return None
+    return payload
+
+
+_REVIEW_COMMENT_RE = re.compile(r"PR\s*#(\d+).*?SHA\s*`([0-9a-fA-F]{7,64})`", re.IGNORECASE | re.DOTALL)
+_TIMEOUT_NOTICE_RE = re.compile(r"dispatch\s*`([^`]+)`", re.IGNORECASE)
+
+
+def expected_hermes_ack(issue_id: str, event_type: str, bodies: list[str]) -> str | None:
+    ident = str(issue_id).upper()
+    if event_type == "blocked":
+        return hermes_fingerprint(issue_id, "blocked")
+    if event_type == "needs-review":
+        for body in bodies:
+            match = _REVIEW_COMMENT_RE.search(str(body))
+            if match:
+                return ident + ":needs-review:" + match.group(1) + ":" + match.group(2).lower()
+        return None
+    if event_type == "dispatch-timeout":
+        for body in bodies:
+            match = _TIMEOUT_NOTICE_RE.search(str(body))
+            if match:
+                return hermes_fingerprint(issue_id, "dispatch-timeout", match.group(1).strip())
+        return None
+    return None
 
 
 _SECRET_PATTERNS = (
@@ -710,7 +754,7 @@ def sanitize_for_linear(text: object, limit: int = 900) -> str:
     clean = re.sub(r"\s+", " ", str(text)).strip()
     for pattern in _SECRET_PATTERNS:
         clean = re.sub(pattern, "[redacted]", clean)
-    clean = re.sub(r"\b(" + _SENSITIVE_KEY_RE + r")\b\s*[:=]\s*\S+",
+    clean = re.sub(r"([A-Za-z0-9_]*?(?:" + _SENSITIVE_KEY_RE + r")[A-Za-z0-9_]*)\s*[:=]\s*\S+",
                    r"\1=[redacted]", clean, flags=re.IGNORECASE)
     clean = re.sub(r"['\"]([A-Z_]{3,}(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z_]*)['\"]\s*[:=]\s*['\"][^'\"]+['\"]",
                    r"'\1'='[redacted]'", clean)
@@ -721,7 +765,7 @@ def sanitize_for_log(text: object, limit: int = 4000) -> str:
     clean = str(text)
     for pattern in _SECRET_PATTERNS:
         clean = re.sub(pattern, "[redacted]", clean)
-    clean = re.sub(r"\b(" + _SENSITIVE_KEY_RE + r")\b\s*[:=]\s*\S+",
+    clean = re.sub(r"([A-Za-z0-9_]*?(?:" + _SENSITIVE_KEY_RE + r")[A-Za-z0-9_]*)\s*[:=]\s*\S+",
                    r"\1=[redacted]", clean, flags=re.IGNORECASE)
     clean = re.sub(r"['\"]([A-Z_]{3,}(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z_]*)['\"]\s*[:=]\s*['\"][^'\"]+['\"]",
                    r"'\1'='[redacted]'", clean)
@@ -778,6 +822,28 @@ def pending_hermes_event(issue_id: str, local: dict) -> tuple[str, str] | None:
     return None
 
 
+def hermes_event_posted_remotely(issue_id: str, event_type: str) -> bool | None:
+    try:
+        bodies = extract_comment_bodies(fetch_linear_issue_full(issue_id))
+    except Exception:
+        return None
+    body = hermes_prompt(issue_id, event_type)
+    try:
+        return any(str(entry).strip() == body for entry in bodies)
+    except Exception:
+        return None
+
+
+def reconcile_hermes_delivery(issue_id: str, event_type: str, fingerprint: str, state: dict) -> bool:
+    issue_state = state["issues"].setdefault(issue_id, {})
+    notified = issue_state.setdefault("hermesNotified", {})
+    if fingerprint in notified:
+        return False
+    notified[fingerprint] = {"at": utc_epoch(), "event": event_type}
+    save_state(state)
+    return True
+
+
 def deliver_hermes_notifications(state: dict) -> int:
     count = 0
     for issue_id in list(state.get("issues", {}).keys()):
@@ -785,6 +851,13 @@ def deliver_hermes_notifications(state: dict) -> int:
         if pending is None:
             continue
         event_type, fingerprint = pending
+        if hermes_event_posted_remotely(issue_id, event_type) is True:
+            try:
+                if reconcile_hermes_delivery(issue_id, event_type, fingerprint, state):
+                    count += 1
+            except Exception:
+                log_exception_safe("Hermes reconcile failed for %s; will retry next tick", issue_id)
+            continue
         try:
             if emit_hermes_event(issue_id, event_type, fingerprint, state):
                 count += 1
@@ -919,6 +992,7 @@ def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) ->
     moment = now if now is not None else utc_epoch()
     issue_state = state["issues"].setdefault(issue_id, {})
     stages = issue_state.setdefault("timeoutStages", {})
+    dispatch_id = issue_state.get("dispatchId") or stable_dispatch_id(issue_id)
     if issue_state.get("status") == "dispatch-timeout" and stages.get("labelDone") and stages.get("commentDone"):
         return False
     if not stages.get("labelDone"):
@@ -938,7 +1012,8 @@ def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) ->
             linear_comment(
                 issue_id,
                 "Dispatch de " + issue_id.upper() + " atingiu timeout sem confirmacao no Linear; "
-                "marcado como `" + TIMEOUT_LABEL + "`. Sem redispatch automatico; aguardando recuperacao manual.",
+                "marcado como `" + TIMEOUT_LABEL + "`. Sem redispatch automatico; aguardando recuperacao manual. "
+                "dispatch `" + dispatch_id + "`.",
             )
         except Exception as exc:
             stages["commentError"] = sanitize_for_linear(str(exc), 500)
@@ -948,7 +1023,6 @@ def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) ->
         stages.pop("commentError", None)
         stages.pop("commentAttempted", None)
         save_state(state)
-    dispatch_id = issue_state.get("dispatchId") or stable_dispatch_id(issue_id)
     issue_state.update({"status": "dispatch-timeout", "dispatchId": dispatch_id,
                         "timeoutAt": moment})
     save_state(state)
@@ -1053,14 +1127,17 @@ def unacked_hermes_events(state: dict) -> list[dict]:
         except Exception:
             log_exception_safe("Hermes precheck fetch failed for %s", issue_id)
             pending_events.append({"issue": issue_id, "event": event_type,
-                                   "fingerprint": fingerprint, "linearReachable": False})
+                                   "fingerprint": fingerprint, "linearReachable": False,
+                                   "expectedAck": None})
             continue
         if not linear_scope_ok(current):
             continue
-        if hermes_acknowledged(extract_comment_bodies(current), fingerprint):
+        bodies = extract_comment_bodies(current)
+        if hermes_acknowledged(bodies, fingerprint):
             continue
         pending_events.append({"issue": issue_id, "event": event_type,
-                               "fingerprint": fingerprint, "linearReachable": True})
+                               "fingerprint": fingerprint, "linearReachable": True,
+                               "expectedAck": expected_hermes_ack(issue_id, event_type, bodies)})
     return pending_events
 
 

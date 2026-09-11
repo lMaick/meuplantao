@@ -507,6 +507,108 @@ class LinearBusTests(unittest.TestCase):
                        "def hermes_acknowledged", "MeuPlantao-Ack:", "--hermes-precheck"):
             self.assertIn(symbol, source)
 
+    def test_crash_between_post_and_save_does_not_duplicate(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "44:abc1234")
+        state = {"issues": {"MAI-69": {"status": "needs-review", "reviewMarker": "44:abc1234"}}}
+        remote = []
+
+        def fake_orca(*args, **kwargs):
+            if len(args) >= 2 and args[0] == "linear" and args[1] == "issue":
+                return _linear_issue("In Progress", [], comments=list(remote))
+            return {}
+
+        def post(issue_id, body, *a, **k):
+            remote.append(body)
+
+        saves = {"n": 0}
+
+        def save_crash_once(s):
+            saves["n"] += 1
+            if saves["n"] == 1:
+                raise RuntimeError("disk down after remote accept")
+
+        with patch.object(dispatcher, "orca", side_effect=fake_orca), \
+             patch.object(dispatcher, "linear_comment", side_effect=post), \
+             patch.object(dispatcher, "save_state", side_effect=save_crash_once):
+            dispatcher.deliver_hermes_notifications(state)
+        state["issues"]["MAI-69"].pop("hermesNotified", None)
+        self.assertNotIn(fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        with patch.object(dispatcher, "orca", side_effect=fake_orca), \
+             patch.object(dispatcher, "linear_comment", side_effect=post) as posted, \
+             patch.object(dispatcher, "save_state"):
+            count = dispatcher.deliver_hermes_notifications(state)
+        self.assertEqual(posted.call_count, 0)
+        self.assertIn(fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        self.assertEqual(count, 1)
+
+    def test_remote_body_reconciles_without_post(self):
+        body = dispatcher.hermes_prompt("MAI-69", "blocked")
+        fp = dispatcher.hermes_fingerprint("MAI-69", "blocked")
+        state = {"issues": {"MAI-69": {"status": "blocked", "dispatchId": "d-1"}}}
+        with patch.object(dispatcher, "orca", return_value=_linear_issue("Blocked", [], comments=[body])), \
+             patch.object(dispatcher, "linear_comment") as posted, \
+             patch.object(dispatcher, "save_state"):
+            count = dispatcher.deliver_hermes_notifications(state)
+        posted.assert_not_called()
+        self.assertIn(fp, state["issues"]["MAI-69"].get("hermesNotified", {}))
+        self.assertEqual(count, 1)
+
+    def test_sanitize_covers_compound_env_names(self):
+        evil = ("ctx OPENAI_API_KEY=sk-synth-0123456789abcdef "
+                "SUPABASE_SERVICE_ROLE_KEY=eyJzdXBlcmZha2U access_token=tok-synth-abc")
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = fn(evil)
+            for secret in ("sk-synth-0123456789abcdef", "eyJzdXBlcmZha2U", "tok-synth-abc",
+                           "OPENAI_API_KEY=sk", "SERVICE_ROLE_KEY=eyJ", "access_token=tok"):
+                self.assertNotIn(secret, clean)
+            self.assertIn("[redacted]", clean)
+
+    def test_hermes_payload_is_strict_json_issue_event(self):
+        prompt = dispatcher.hermes_prompt("MAI-69", "needs-review")
+        payload = dispatcher.parse_hermes_payload(prompt)
+        self.assertIsNotNone(payload)
+        self.assertEqual(set(payload.keys()), {"issue", "event"})
+        self.assertEqual(payload, {"issue": "MAI-69", "event": "needs-review"})
+        self.assertIsNone(dispatcher.parse_hermes_payload("sem bloco json aqui"))
+        self.assertIsNone(dispatcher.parse_hermes_payload("```json\n{\"issue\":\"MAI-69\"}\n```"))
+
+    def test_timeout_ack_derivable_from_linear_notice(self):
+        state = {"issues": {"MAI-69": {"status": "dispatching", "dispatchId": "d-7",
+                                       "claimedAt": 1000}}}
+        with patch.object(dispatcher, "orca", return_value={}), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "DISPATCH_TIMEOUT_SECONDS", 60):
+            dispatcher.mark_dispatch_timeout("MAI-69", state, now=2000)
+        notice = comment.call_args.args[1]
+        derived = dispatcher.expected_hermes_ack("MAI-69", "dispatch-timeout", [notice])
+        fp = dispatcher.hermes_fingerprint("MAI-69", "dispatch-timeout", "d-7")
+        self.assertEqual(derived, fp)
+        self.assertTrue(dispatcher.hermes_acknowledged(["MeuPlantao-Ack: " + derived], fp))
+
+    def test_review_ack_derivable_from_linear_review_comment(self):
+        state = {"issues": {}}
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+              "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca", return_value={}), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-69", pr, state)
+        bodies = [c.args[1] for c in comment.call_args_list]
+        derived = dispatcher.expected_hermes_ack("MAI-69", "needs-review", bodies)
+        self.assertEqual(derived, "MAI-69:needs-review:44:abc1234")
+
+    def test_precheck_reports_expected_ack(self):
+        fp = dispatcher.hermes_fingerprint("MAI-69", "needs-review", "44:abc1234")
+        state = {"issues": {"MAI-69": {"status": "needs-review", "reviewMarker": "44:abc1234"}}}
+        review = "Entrega detectada automaticamente: PR #44 https://example.test/pr/44 no SHA `abc1234`."
+        with patch.object(dispatcher, "preflight_model", side_effect=RuntimeError("preflight: gone")), \
+             patch.object(dispatcher, "orca", side_effect=_main_orca(_linear_issue("In Progress", [], comments=[review]))):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual(code, 0)
+        self.assertEqual(events[0]["expectedAck"], fp)
+
+
 class _NoopLock:
     def seek(self, *a):
         return None
