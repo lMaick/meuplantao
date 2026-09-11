@@ -12,6 +12,7 @@ import subprocess
 import shutil
 import sys
 import time
+import traceback
 import tomllib
 import unicodedata
 import uuid
@@ -462,7 +463,7 @@ def record_error(issue_id: str, state: dict, message: str) -> None:
             f"error:{fingerprint}",
         )
     except Exception as comment_error:
-        LOG.error("Could not report %s failure to Linear: %s", issue_id, comment_error)
+        LOG.error("Could not report %s failure to Linear: %s", issue_id, sanitize_for_log(comment_error))
 
 
 def sync_started(issue_id: str) -> None:
@@ -589,7 +590,7 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
             # roll it back or make a retry create another workspace/agent.
             issue_state["reportingError"] = sanitize_for_linear(str(comment_error))
             save_state(state)
-            LOG.error("Dispatch succeeded but Linear comment failed for %s: %s", issue_id, comment_error)
+            LOG.error("Dispatch succeeded but Linear comment failed for %s: %s", issue_id, sanitize_for_log(comment_error))
         LOG.info("Dispatched %s to %s terminal=%s created=%s", issue_id, worktree["path"], handle, created)
         return True
     except Exception as exc:
@@ -600,11 +601,11 @@ def dispatch_issue(issue: dict, state: dict, worktrees: list[dict], dry_run: boo
             try:
                 linear_comment(issue_id, "Dispatch encontrou falha ambigua apos iniciar o side effect; nenhum retry automatico sera feito e nenhum segundo agente foi criado. Aguarde o timeout e a recuperacao manual. Erro: `" + clean + "`.")
             except Exception as comment_error:
-                LOG.error("Could not report ambiguous failure for %s: %s", issue_id, comment_error)
-            LOG.exception("Ambiguous dispatch failure for %s (no auto-retry)", issue_id)
+                LOG.error("Could not report ambiguous failure for %s: %s", issue_id, sanitize_for_log(comment_error))
+            log_exception_safe("Ambiguous dispatch failure for %s (no auto-retry)", issue_id)
             return False
         record_error(issue_id, state, str(exc))
-        LOG.exception("Dispatch failed for %s", issue_id)
+        log_exception_safe("Dispatch failed for %s", issue_id)
         return False
 
 
@@ -663,10 +664,10 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
                     f"reconciled:{worktree.get('id') or path}",
                 )
             except Exception as comment_error:
-                LOG.error("Reconciliation comment failed for %s: %s", issue_id, comment_error)
+                LOG.error("Reconciliation comment failed for %s: %s", issue_id, sanitize_for_log(comment_error))
             LOG.info("Reconciled confirmed dispatch for %s without creating resources", issue_id)
         except Exception:
-            LOG.exception("Dispatch reconciliation failed for %s", issue_id)
+            log_exception_safe("Dispatch reconciliation failed for %s", issue_id)
 
 
 def stable_dispatch_id(issue_id: str) -> str:
@@ -716,16 +717,41 @@ def sanitize_for_linear(text: object, limit: int = 900) -> str:
     return clean[:limit]
 
 
+def sanitize_for_log(text: object, limit: int = 4000) -> str:
+    clean = str(text)
+    for pattern in _SECRET_PATTERNS:
+        clean = re.sub(pattern, "[redacted]", clean)
+    clean = re.sub(r"\b(" + _SENSITIVE_KEY_RE + r")\b\s*[:=]\s*\S+",
+                   r"\1=[redacted]", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"['\"]([A-Z_]{3,}(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z_]*)['\"]\s*[:=]\s*['\"][^'\"]+['\"]",
+                   r"'\1'='[redacted]'", clean)
+    return clean[:limit]
+
+
+def log_exception_safe(message: str, *args) -> None:
+    try:
+        current = traceback.format_exc()
+    except Exception:
+        current = ""
+    if current.strip() in ("", "NoneType: None"):
+        LOG.error(message, *args)
+    else:
+        LOG.error(message + " | traceback=%s", *args, sanitize_for_log(current))
+
+
 def emit_hermes_event(issue_id: str, event_type: str, fingerprint: str, state: dict) -> bool:
     """Deliver the minimal Hermes prompt as a Linear comment.
 
     Contract (MAI-69): Hermes reads the issue and comments directly in Linear,
-    so the Linear comment itself is the delivery channel; no Orca hermes/notify
+    so the Linear comment is the durable, deduplicated persistence of the event; no Orca hermes/notify
     command exists and no side transport is used. The body carries strictly the
     issue identifier and the event type. The fingerprint is recorded locally
     only after the comment succeeds; a failed post raises (no record), so the
-    next tick retries instead of losing the event. Returns True when delivered
-    and recorded, False when the fingerprint was already notified.
+    next tick retries instead of losing the event. Activation of Hermes itself (something
+    waking it on a new comment) is out of dispatcher scope: no Orca automation or webhook
+    exists (see docs); the dispatcher only guarantees the event is persisted exactly once
+    per fingerprint. Returns True when delivered and recorded, False when the fingerprint
+    was already notified.
     """
     if event_type not in HERMES_EVENT_TYPES:
         raise ValueError("unknown hermes event: " + str(event_type))
@@ -761,7 +787,7 @@ def deliver_hermes_notifications(state: dict) -> int:
             if emit_hermes_event(issue_id, event_type, fingerprint, state):
                 count += 1
         except Exception:
-            LOG.exception("Hermes delivery failed for %s; will retry next tick", issue_id)
+            log_exception_safe("Hermes delivery failed for %s; will retry next tick", issue_id)
     return count
 
 
@@ -859,7 +885,7 @@ def sync_worker_reports(state: dict) -> int:
         try:
             current = fetch_linear_issue_full(issue_id)
         except Exception:
-            LOG.exception("Worker report fetch failed for %s", issue_id)
+            log_exception_safe("Worker report fetch failed for %s", issue_id)
             continue
         if not linear_scope_ok(current):
             continue
@@ -868,20 +894,22 @@ def sync_worker_reports(state: dict) -> int:
             continue
         try:
             if report["kind"] == "delivery":
-                local["workerReport"] = {"kind": "delivery", "pr": report["pr"],
-                                         "sha": report["sha"], "tests": report.get("tests", "")}
-                save_state(state)
                 pr = gh_pr_for_url(report["pr"])
                 if str(pr.get("headRefOid") or "").lower() != report["sha"]:
                     LOG.error("Reported SHA does not match PR head for %s; waiting for fresh report", issue_id)
                     continue
+                local["workerReport"] = {"kind": "delivery", "pr": report["pr"],
+                                         "sha": report["sha"], "tests": report.get("tests", ""),
+                                         "number": pr.get("number"),
+                                         "head": str(pr.get("headRefOid") or "").lower()}
+                save_state(state)
                 mark_for_review(issue_id, pr, state)
                 applied += 1
             else:
                 if record_worker_report(issue_id, report["kind"], report.get("text", ""), state):
                     applied += 1
         except Exception:
-            LOG.exception("Worker report handling failed for %s", issue_id)
+            log_exception_safe("Worker report handling failed for %s", issue_id)
     return applied
 
 
@@ -891,9 +919,7 @@ def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) ->
     stages = issue_state.setdefault("timeoutStages", {})
     if issue_state.get("status") == "dispatch-timeout" and stages.get("labelDone") and stages.get("commentDone"):
         return False
-    if not stages.get("labelDone") and not stages.get("labelAttempted"):
-        stages["labelAttempted"] = True
-        save_state(state)
+    if not stages.get("labelDone"):
         try:
             orca("linear", "label", "add", issue_id, "--label", TIMEOUT_LABEL,
                  "--workspace", LINEAR_WORKSPACE_ID)
@@ -902,10 +928,10 @@ def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) ->
             save_state(state)
             raise
         stages["labelDone"] = True
+        stages.pop("labelError", None)
+        stages.pop("labelAttempted", None)
         save_state(state)
-    if not stages.get("commentDone") and not stages.get("commentAttempted"):
-        stages["commentAttempted"] = True
-        save_state(state)
+    if not stages.get("commentDone"):
         try:
             linear_comment(
                 issue_id,
@@ -917,6 +943,8 @@ def mark_dispatch_timeout(issue_id: str, state: dict, now: int | None = None) ->
             save_state(state)
             raise
         stages["commentDone"] = True
+        stages.pop("commentError", None)
+        stages.pop("commentAttempted", None)
         save_state(state)
     dispatch_id = issue_state.get("dispatchId") or stable_dispatch_id(issue_id)
     issue_state.update({"status": "dispatch-timeout", "dispatchId": dispatch_id,
@@ -949,7 +977,7 @@ def check_blocked_via_linear(state: dict) -> int:
         try:
             current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
         except Exception:
-            LOG.exception("Blocked check failed for %s", issue_id)
+            log_exception_safe("Blocked check failed for %s", issue_id)
             continue
         if not linear_scope_ok(current):
             continue
@@ -982,7 +1010,7 @@ def check_dispatch_timeouts(state: dict, now: int | None = None) -> int:
         try:
             current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
         except Exception:
-            LOG.exception("Timeout check failed for %s", issue_id)
+            log_exception_safe("Timeout check failed for %s", issue_id)
             continue
         if not linear_scope_ok(current):
             continue
@@ -994,7 +1022,7 @@ def check_dispatch_timeouts(state: dict, now: int | None = None) -> int:
             if mark_dispatch_timeout(issue_id, state, now=moment):
                 count += 1
         except Exception:
-            LOG.exception("Timeout marking failed for %s", issue_id)
+            log_exception_safe("Timeout marking failed for %s", issue_id)
     return count
 
 
@@ -1083,10 +1111,15 @@ def monitor_deliveries(state: dict, worktrees: list[dict]) -> None:
             if not isinstance(report, dict) or report.get("kind") != "delivery" or not report.get("pr") or not report.get("sha"):
                 continue
             pr = gh_pr_for_branch(branch)
-            if pr:
-                mark_for_review(issue_id, pr, state)
+            if not pr:
+                continue
+            if str(pr.get("url") or "") != report["pr"]:
+                continue
+            if str(pr.get("headRefOid") or "").lower() != report["sha"]:
+                continue
+            mark_for_review(issue_id, pr, state)
         except Exception:
-            LOG.exception("Delivery monitor failed for %s", issue_id)
+            log_exception_safe("Delivery monitor failed for %s", issue_id)
 
 
 def acquire_lock():
@@ -1158,7 +1191,7 @@ def main() -> int:
         LOG.info("Run complete eligible=%d dispatched=%d dry_run=%s mode=%s manual_once=%s", len(issues), dispatched, args.dry_run, mode, manual_once)
         return 0
     except Exception as exc:
-        LOG.exception("Dispatcher run failed: %s", exc)
+        log_exception_safe("Dispatcher run failed: %s", exc)
         return 1
     finally:
         try:

@@ -48,9 +48,12 @@ dispatch_timeout_seconds = 900
 timeout_label = "Dispatch Timeout"
 # MAI-69 Linear bus: the dispatcher is mechanical Python with no LLM calls for
 # polling, claim, lock, dedup, timeout or notify. worker_id only selects which
-# worker Orca starts. Hermes is notified with a minimal issue+event prompt
+# worker Orca starts. The Hermes event is persisted as a minimal issue+event prompt
 # posted as a Linear comment (Hermes reads issues/comments directly in Linear;
-# no Orca hermes/notify command exists and no side transport is used). The
+# no Orca hermes/notify command exists and no side transport is used). Comment
+# persistence is not activation: no Orca automation or webhook wakes Hermes on a
+# new comment (verified 2026-09-11, `orca automations list` empty); the activation
+# path is an out-of-scope operational decision. The
 # labels Orca Ready, Needs Review and Dispatch Timeout must exist in Linear.
 # The worker reports conclusion/error via a `MeuPlantao-Report:` Linear comment;
 # review discovery is exclusively Linear, gh only verifies a reported PR.

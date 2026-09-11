@@ -270,15 +270,28 @@ o Orca inicia; nao e modelo do dispatcher.
 - Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge;
   auditorias e correcoes vivem em comentarios no Linear.
 
-### Hermes: eventos minimos e deduplicados
+### Hermes: eventos minimos e deduplicados (persistencia; acionamento pendente)
 
-- Acionado apenas nos estados configurados (`needs-review`, `blocked`,
+- Persistido apenas nos estados configurados (`needs-review`, `blocked`,
   `dispatch-timeout`), nunca para polling periodico.
 - Transporte: comentario Linear com o prompt minimo
   `Leia a MAI-N no Linear e processe conforme o fluxo padrao. (evento=<tipo>)`.
   Contrato verificado: Hermes le issue/comentarios diretamente no Linear
   (evidencia MAI-59); nao existe comando Hermes/notify no Orca CLI e nenhum
-  transporte lateral e usado.
+  transporte lateral e usado. O comentario e persistencia duravel do evento,
+  nao acionamento: em 2026-09-11, `orca automations list` retornou vazio e
+  nenhum webhook/assinatura foi localizado no escopo do repositorio; a MAI-59
+  comprova capacidade de leitura, nao ativacao por comentario. O caminho
+  evento -> acionamento do Hermes e um bloqueio registrado aguardando decisao
+  do operador (exigiria AppData/Task Scheduler/config operacional, fora do
+  escopo desta PR); o criterio de acionamento real NAO esta declarado atendido.
+- Entrega reportada so e persistida/promovida apos validacao exata de PR + SHA;
+  relatorio divergente tem zero promocoes em dois ciclos (sem fallback por branch).
+- Timeout retryavel de verdade: label e comentario so marcam `Done` apos escrita
+  confirmada; falha mantem a etapa pendente, sem finalizar o timeout nem notificar
+  antes de ambas confirmadas.
+- Segredos nunca em canal persistente: Linear/estado sanitizados e logs via
+  `sanitize_for_log` + `log_exception_safe` (cobertura por captura de logs).
 - Cada evento contem estritamente identificador da issue e tipo do evento; o
   fingerprint vive so no `state.json/issues/<ID>/hermesNotified` para dedup.
 - Dedup somente apos entrega confirmada: o fingerprint e gravado depois que o
@@ -315,6 +328,9 @@ o Orca inicia; nao e modelo do dispatcher.
 - Blocked notifica Hermes 1x.
 - Falha de entrega Hermes nao perde o evento (retry proximo tick).
 - Evento Hermes contem estritamente issue + tipo.
+- Relatorio divergente: zero Needs Review em dois ciclos.
+- Timeout: falha de label/comentario no 1o ciclo retenta e finaliza so no 2o.
+- Logs capturados sem tokens/senhas/credenciais.
 - Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.
 - Nenhuma chamada a modelo/LLM no polling e na coordenacao.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.

@@ -299,5 +299,85 @@ class LinearBusTests(unittest.TestCase):
             self.assertNotIn("token", body.lower())
 
 
+    def test_divergent_report_never_promotes_across_two_cycles(self):
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=deadbeef tests=ok"]
+        reported = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+                    "statusCheckRollup": []}
+        branch_pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+                     "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca", return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=reported), \
+             patch.object(dispatcher, "gh_pr_for_branch", return_value=branch_pr):
+            dispatcher.poll_linear_outcomes(state)
+            self.assertEqual(state["issues"]["MAI-69"].get("status"), "dispatched")
+            self.assertNotIn("reviewMarker", state["issues"]["MAI-69"])
+            stored = state["issues"]["MAI-69"].get("workerReport") or {}
+            self.assertNotEqual(stored.get("sha"), "deadbeef")
+            wt = dict(WORKTREE, branch="lMaick/MAI-69-x")
+            with patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)):
+                dispatcher.monitor_deliveries(state, [wt])
+            self.assertEqual(state["issues"]["MAI-69"].get("status"), "dispatched")
+            self.assertNotIn("reviewMarker", state["issues"]["MAI-69"])
+
+    def test_timeout_label_failure_retries_and_finalizes_only_after_confirm(self):
+        state = {"issues": {"MAI-69": {"status": "dispatching", "dispatchId": "d-1",
+                                       "claimedAt": 1000}}}
+        calls = {"label": 0}
+
+        def fake_orca(*args, **kwargs):
+            if len(args) >= 2 and args[0] == "linear" and args[1] == "label":
+                calls["label"] += 1
+                if calls["label"] == 1:
+                    raise RuntimeError("label boom password=hunter2")
+                return {}
+            if len(args) >= 2 and args[0] == "linear" and args[1] == "issue":
+                return _linear_issue("Todo", ["Orca Ready"])
+            return {}
+
+        with patch.object(dispatcher, "orca", side_effect=fake_orca), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"):
+            with self.assertRaises(RuntimeError):
+                dispatcher.mark_dispatch_timeout("MAI-69", state, now=2000)
+            self.assertNotEqual(state["issues"]["MAI-69"].get("status"), "dispatch-timeout")
+            stages = state["issues"]["MAI-69"].get("timeoutStages", {})
+            self.assertNotIn("hunter2", json.dumps(stages))
+            self.assertTrue(dispatcher.mark_dispatch_timeout("MAI-69", state, now=2000))
+            self.assertEqual(state["issues"]["MAI-69"].get("status"), "dispatch-timeout")
+        self.assertEqual(calls["label"], 2)
+
+    def test_timeout_comment_failure_retries_and_finalizes_only_after_confirm(self):
+        state = {"issues": {"MAI-69": {"status": "dispatching", "dispatchId": "d-1",
+                                       "claimedAt": 1000}}}
+        with patch.object(dispatcher, "orca", return_value={}), \
+             patch.object(dispatcher, "linear_comment",
+                          side_effect=[RuntimeError("comment down token=ghp_0123456789abcdef0123456789abcdef0123"), None]) as comment, \
+             patch.object(dispatcher, "save_state"):
+            with self.assertRaises(RuntimeError):
+                dispatcher.mark_dispatch_timeout("MAI-69", state, now=2000)
+            self.assertNotEqual(state["issues"]["MAI-69"].get("status"), "dispatch-timeout")
+            bodies = json.dumps(state["issues"]["MAI-69"])
+            self.assertNotIn("ghp_0123456789abcdef0123456789abcdef0123", bodies)
+            self.assertTrue(dispatcher.mark_dispatch_timeout("MAI-69", state, now=2000))
+            self.assertEqual(state["issues"]["MAI-69"].get("status"), "dispatch-timeout")
+            self.assertEqual(comment.call_count, 2)
+
+    def test_sensitive_exceptions_never_reach_persistent_logs(self):
+        evil = "boom ghp_0123456789abcdef0123456789abcdef0123 password=hunter2"
+        state = {"issues": {}}
+        with patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)), \
+             patch.object(dispatcher, "create_workspace", side_effect=RuntimeError(evil)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"):
+            with self.assertLogs(dispatcher.LOG, level="INFO") as captured:
+                self.assertFalse(dispatcher.dispatch_issue(ISSUE, state, [], False))
+        blob = "\n".join(captured.output)
+        self.assertNotIn("ghp_0123456789abcdef0123456789abcdef0123", blob)
+        self.assertNotIn("hunter2", blob)
+
+
 if __name__ == "__main__":
     unittest.main()
