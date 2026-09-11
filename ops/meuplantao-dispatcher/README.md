@@ -155,6 +155,92 @@ Diagrama de estados (Linear + estado local):
 Entrega fica em `In Progress + Needs Review`; nunca `Done` antes do merge confirmado.
 Lock, filtros, maximo por tick, review gate e proibicao de auto-merge preservados.
 
+## MAI-81: preflight contra a rota efetiva do wrapper Codex
+
+Rota operacional aprovada: agente/comando/identidade `codex`, modelo
+`muse-spark-1.3-contributor`, provider `opencode-go`, reasoning `high`, aplicada
+pelo wrapper Orca `settings.agentCmdOverrides.codex`. O `~/.codex/config.toml`
+descreve outra superficie (`gpt-5.6-sol low`) e nao a rota efetiva do processo
+iniciado pelo Orca, por isso o preflight nao confia nele para este worker.
+
+Contrato real confirmado no Orca 1.4.198 instalado (fonte + `--help`, sem
+sintaxe inventada):
+
+- `terminal create --command <texto>` repassa o comando literalmente ao runtime
+(`cli/handlers/terminal.js`): NAO aplica `agentCmdOverrides`. A rota
+agent-aware e `worktree create --agent <id>` (so ids TUI conhecidos via
+`isTuiAgent`, sem flags de modelo) com o comando de lancamento resolvido por
+`resolveAgentLaunchCommand`: `settings.agentCmdOverrides.<agent>` (string que
+substitui o lancamento padrao) + args/eventuais opcoes de sessao.
+- Schema real: `agentCmdOverrides` e objeto `{<agente>: <comando string>}`
+(default `{}` em `shared/default-global-settings.js`); formas dict/lista nao
+sao executadas pelo Orca e sao rejeitadas. `agentCmdOverrides` top-level nao
+existe no schema real e e rejeitado como nao confiavel.
+- Fonte autoritativa (auditoria `2fabec4b`): o perfil ativo e resolvido por
+`orca-profile-index.json` e o estado fica em
+`profiles/<activeProfileId>/orca-data.json` (fallback legado `orca-data.json`),
+forma persistida `state.settings.agentCmdOverrides`
+(`cli/handlers/agent-hooks.js`: `getDataPath`/`readHookSettingsFromDisk`;
+`cli/runtime/metadata.js`: `getDefaultUserDataPath`, honra `ORCA_USER_DATA_PATH`;
+`orca agent hooks status --json` expoe `settingsPath` sem precisar do runtime).
+Com runtime alcancavel o Orca prefere `settings.get` via RPC; sem runtime, o
+arquivo do perfil ativo e o que o startup carrega. O preflight replica
+`getDataPath()` deterministicamente e le SOMENTE
+`state.settings.agentCmdOverrides.codex` desse arquivo.
+- Rota completa: o Orca anexa `settings.agentDefaultArgs.codex` ao comando
+efetivamente executado (`shared/tui-agent-launch-command.js`:
+`resolveAgentLaunchCommand` soma `agentArgs`; `shared/tui-agent-startup.js`
+propaga `agentEnv` ao ambiente; defaults em
+`shared/tui-agent-launch-defaults.js`, default embutido do codex
+`--dangerously-bypass-approvals-and-sandbox` em
+`shared/tui-agent-permissions.js`). Para o worker `codex-spark` o contrato
+operacional nao preve args extras: o preflight exige
+`settings.agentDefaultArgs.codex` presente e vazio (ausente herdaria o default
+yolo do Orca) e `settings.agentDefaultEnv.codex` ausente/vazio (qualquer valor
+capaz de alterar rota/modelo/provider falha fechado; sem allowlist por ora).
+Workers `codex` nativos seguem inalterados.
+- Por isso o dispatcher cria via `worktree create --agent codex` (usa o
+override) e a recuperacao em worktree existente falha fechado para workers de
+wrapper: nao existe rota agent-aware via CLI para relancar agente em worktree
+existente, e relancar `codex` literal executaria a superficie errada.
+
+Regras (`dispatcher.py`, antes de qualquer workspace/agente ou mutacao Linear):
+
+- Worker `agent = "codex"` com `provider` declarado e rota de wrapper: a
+evidencia efetiva vem do settings do Orca (`settings.agentCmdOverrides.codex`,
+somente string, nas formas `settings.agentCmdOverrides` ou raiz
+`agentCmdOverrides`), nunca so do `~/.codex/config.toml`.
+- A politica exige `wrapper_executable` (nome base, ex. `opencode`): o primeiro
+token do override precisa ser exatamente esse executavel; executavel
+arbitrario com flags corretas e rejeitado (`command not resolved`). Entrada sem
+`wrapper_executable` ou com formato invalido falha na validacao da politica.
+- Caminho do settings: descoberta autoritativa do `orca-data.json` do perfil
+ativo (raiz: `ORCA_USER_DATA_PATH` ou padrao da plataforma); pin opcional
+`MEUPLANTAO_ORCA_SETTINGS` > `orca_settings_path` RAIZ da config (top-level,
+antes de `[[allowed_workers]]`) que PRECISA coincidir com o arquivo
+autoritativo, senao falha fechado (`not authoritative`). Arquivo ausente ou
+ilegivel falha fechado. Worker `codex` nativo (sem `provider`) mantem o
+comportamento anterior e ignora o wrapper.
+- Exige modelo, provider e reasoning exatos da politica e auth local presente
+com `auth_mode` exato. A criacao usa a rota agent-aware (`worktree create
+--agent codex`, que consome o override); a recuperacao de worker de wrapper
+falha fechado em vez de criar terminal literal.
+- Fail-closed: wrapper ausente, fonte nao autoritativa, comando nao resolvido,
+quoting/override ambiguo (aspas nao fechadas, flags duplicadas,
+`agentCmdOverrides` top-level ou duplo aninhamento divergente), campo ausente,
+modelo/provider/reasoning divergente, token/operador de shell ou flag
+desconhecida, conteudo malformado e auth ausente/divergente, tudo antes de
+qualquer side effect.
+- Segredos: erros carregam so `worker_id`; args/env/tokens/conteudo de arquivos
+nunca entram em logs, estado ou Linear. Payload Hermes segue estrito
+`{issue, event}`.
+
+Operacao: ver `config.example.toml` (`codex-spark` + `orca_settings_path` raiz)
+e `docs/operations/maick-dispatcher-control.md` (secao MAI-81). Testes:
+`test_dispatcher_codex_wrapper.py` (RED da divergencia e da auditoria, GREEN da
+rota efetiva e fail-closed) + suite completa
+`python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`.
+
 Testes: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 (caminho feliz, erro reportado via Linear sem GitHub, timeout com marca no Linear,
 crash ambiguo sanitizado sem retry, entrega Hermes duravel (falha nao perde evento),
