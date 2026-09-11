@@ -68,6 +68,8 @@ WRAPPER_MODEL_FLAGS = ("--model",)
 WRAPPER_PROVIDER_FLAGS = ("--provider",)
 WRAPPER_REASONING_FLAGS = ("--reasoning", "--effort", "--reasoning-effort", "--reasoning_effort")
 WRAPPER_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
+WRAPPER_SHELL_OPERATORS = frozenset({"&", "&&", "|", "||", ";", ">", ">>", "<", "<<", "(", ")", "`"})
+WRAPPER_TOKEN_METACHARS = frozenset(list(";&|><$`'\"\\(){}[]*?!~#") + ["\n", "\r", "\x00"])
 
 
 def _pick(mapping: dict, *names: str) -> str:
@@ -289,27 +291,40 @@ def _parse_wrapper_flags(tokens: list, worker_id: str) -> dict:
     model_vals: list = []
     provider_vals: list = []
     reasoning_vals: list = []
+    consumed: set = set()
     index = 0
     while index < len(tokens):
         token = tokens[index]
+        if not isinstance(token, str) or not token:
+            raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+        if token in WRAPPER_SHELL_OPERATORS or any(ch in WRAPPER_TOKEN_METACHARS for ch in token):
+            raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
         name = None
         value = None
-        if isinstance(token, str) and token.startswith("--") and "=" in token:
+        if token.startswith("--") and "=" in token:
             name, value = token.split("=", 1)
-        elif isinstance(token, str) and token.lower() in (
-            *WRAPPER_MODEL_FLAGS, *WRAPPER_PROVIDER_FLAGS, *WRAPPER_REASONING_FLAGS
-        ):
+            lowered = name.lower()
+            if lowered not in (*WRAPPER_MODEL_FLAGS, *WRAPPER_PROVIDER_FLAGS, *WRAPPER_REASONING_FLAGS):
+                raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
+            consumed.add(index)
+        elif token.lower() in (*WRAPPER_MODEL_FLAGS, *WRAPPER_PROVIDER_FLAGS, *WRAPPER_REASONING_FLAGS):
             name = token
+            lowered = token.lower()
             if index + 1 >= len(tokens):
                 raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
             value = tokens[index + 1]
+            consumed.add(index)
+            consumed.add(index + 1)
             index += 1
+        elif token.startswith("-"):
+            raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
         else:
             index += 1
             continue
-        lowered = str(name).lower()
         if not isinstance(value, str):
             raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+        if any(ch in WRAPPER_TOKEN_METACHARS for ch in value):
+            raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
         cleaned = value.strip()
         if lowered in WRAPPER_MODEL_FLAGS:
             model_vals.append(cleaned)
@@ -318,6 +333,9 @@ def _parse_wrapper_flags(tokens: list, worker_id: str) -> dict:
         elif lowered in WRAPPER_REASONING_FLAGS:
             reasoning_vals.append(cleaned)
         index += 1
+    for pos in range(1, len(tokens)):
+        if pos not in consumed:
+            raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
     if len(model_vals) > 1 or len(provider_vals) > 1 or len(reasoning_vals) > 1:
         raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
     if not model_vals or not provider_vals or not reasoning_vals:

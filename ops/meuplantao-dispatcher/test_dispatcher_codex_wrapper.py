@@ -479,3 +479,40 @@ class CodexWrapperAuditRedTests(unittest.TestCase):
         self.assertIn("--agent", create_calls[0])
         self.assertEqual(create_calls[0][create_calls[0].index("--agent") + 1], "codex")
         self.assertFalse(any(c[:2] == ["terminal", "create"] for c in seen))
+
+class CodexWrapperStrictRouteTests(unittest.TestCase):
+    def _check_override(self, override, pattern):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(override))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with self.assertRaisesRegex(RuntimeError, pattern):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_chained_command_rejected(self):
+        self._check_override(GOOD_OVERRIDE + " && outro-comando", "wrapper unauthorized")
+
+    def test_red_shell_operators_rejected(self):
+        for op in (";", "|", "||", "&", ">", ">>", "<"):
+            with self.subTest(op=op):
+                self._check_override(GOOD_OVERRIDE + " " + op + " x", "wrapper unauthorized")
+
+    def test_red_unknown_flag_rejected(self):
+        self._check_override(GOOD_OVERRIDE + " --flag-desconhecida x", "wrapper unauthorized")
+        self._check_override(GOOD_OVERRIDE + " --extra=1", "wrapper unauthorized")
+
+    def test_red_trailing_positional_rejected(self):
+        self._check_override(GOOD_OVERRIDE + " extra", "wrapper unauthorized")
+
+    def test_exact_operational_route_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    matched = dispatcher.preflight_model(home=home)
+        self.assertEqual(matched["id"], "codex-spark")
+        self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+        self.assertEqual(matched["provider"], "opencode-go")
+        self.assertEqual(matched["reasoning"], "high")
