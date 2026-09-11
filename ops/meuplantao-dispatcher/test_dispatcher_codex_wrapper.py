@@ -102,6 +102,10 @@ def _orca_state(tmp, payload, profile="profile-a"):
         json.dumps({"activeProfileId": profile, "profiles": [{"id": profile}]}),
         encoding="utf-8",
     )
+    (root / "orca-runtime.json").write_text(
+        json.dumps({"pid": 12345}),
+        encoding="utf-8",
+    )
     data_path = profdir / "orca-data.json"
     data_path.write_text(json.dumps(payload), encoding="utf-8")
     return data_path
@@ -113,6 +117,10 @@ def _orca_state_raw(tmp, text, profile="profile-a"):
     profdir.mkdir(parents=True, exist_ok=True)
     (root / "orca-profile-index.json").write_text(
         json.dumps({"activeProfileId": profile, "profiles": [{"id": profile}]}),
+        encoding="utf-8",
+    )
+    (root / "orca-runtime.json").write_text(
+        json.dumps({"pid": 12345}),
         encoding="utf-8",
     )
     data_path = profdir / "orca-data.json"
@@ -759,6 +767,19 @@ SANITY_SCRIPT_WRAPPER_CONTENT = (
 
 
 class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self._proc_env_patcher = patch.object(
+            dispatcher,
+            "read_process_env_block",
+            return_value={"OPENCODE_API_KEY": "dummy-runtime-key"},
+        )
+        self._proc_env_patcher.start()
+
+    def tearDown(self):
+        self._proc_env_patcher.stop()
+        super().tearDown()
+
     def _create_script(self, d, content=SANITY_SCRIPT_WRAPPER_CONTENT, name="codex.cmd"):
         script_path = Path(d) / name
         data = content.encode("utf-8")
@@ -789,7 +810,6 @@ class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
             "wrapper_mode": "script_wrapper",
             "wrapper_path": str(script_path),
             "wrapper_sha256": digest,
-            "runtime_env_source": {"OPENCODE_API_KEY": "dummy-runtime-key"},
         }
         entry.update(overrides)
         return entry
@@ -1235,30 +1255,61 @@ class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "unauthorized token"):
                             dispatcher.preflight_model(home=home)
 
-    def test_red_runtime_env_missing_while_dispatcher_has_key_fails_closed(self):
+    def test_red_runtime_env_missing_while_dispatcher_and_registry_have_key_fails_closed(self):
         with tempfile.TemporaryDirectory() as d:
             home = _home_with_diverging_codex(d)
             script_path, digest = self._create_script(d)
             settings = _settings_path(d, self._good_script_payload(script_path))
-            # Dispatcher process sees OPENCODE_API_KEY, but authoritative runtime source does NOT have it
-            entry = self._script_entry(script_path, digest, runtime_env_source={})
-            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
-                with _orca_env(d):
-                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-dispatcher-key"}):
-                        with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
-                            dispatcher.preflight_model(home=home)
+            entry = self._script_entry(script_path, digest)
 
-    def test_green_runtime_env_file_source_accepted(self):
+            # 1. Dispatcher has OPENCODE_API_KEY in os.environ
+            # 2. Auxiliary file has OPENCODE_API_KEY
+            aux_env_file = Path(d) / "auxiliary.env"
+            aux_env_file.write_text("OPENCODE_API_KEY=auxiliary-secret\n", encoding="utf-8")
+            # 3. Registry has OPENCODE_API_KEY (simulated / ignored)
+            # 4. BUT Orca effective route (process env block) does NOT receive it
+            with patch.object(dispatcher, "read_process_env_block", return_value={}):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-secret"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_green_auth_evidence_strictly_from_effective_route_at_launch(self):
         with tempfile.TemporaryDirectory() as d:
             home = _home_with_diverging_codex(d)
             script_path, digest = self._create_script(d)
             settings = _settings_path(d, self._good_script_payload(script_path))
-            env_file = Path(d) / "orca-runtime.env"
-            env_file.write_text("OPENCODE_API_KEY=runtime-secret\nOTHER_VAR=1\n", encoding="utf-8")
-            entry = self._script_entry(script_path, digest, runtime_env_source=None, runtime_env_file=str(env_file))
-            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
-                with _orca_env(d):
-                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-dispatcher-key"}):
-                        matched = dispatcher.preflight_model(home=home)
+            entry = self._script_entry(script_path, digest)
+
+            # Auth evidence comes strictly from the active Orca runtime process environment block inherited by the terminal
+            with patch.object(
+                dispatcher,
+                "read_process_env_block",
+                return_value={"OPENCODE_API_KEY": "active-orca-runtime-key"},
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            matched = dispatcher.preflight_model(home=home)
             self.assertEqual(matched["id"], "codex-spark")
             self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+            self.assertEqual(matched["provider"], "opencode-go")
+            self.assertEqual(matched["reasoning"], "high")
+            self.assertEqual(matched["command"], "codex")
+
+    def test_discover_active_orca_pid_and_read_authoritative_runtime_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            user_data = Path(d) / "orca-user"
+            user_data.mkdir(parents=True, exist_ok=True)
+            (user_data / "orca-runtime.json").write_text(json.dumps({"pid": 4242}), encoding="utf-8")
+            pid = dispatcher.discover_active_orca_pid("codex-spark", user_data=user_data)
+            self.assertEqual(pid, 4242)
+
+            with patch.object(dispatcher, "read_process_env_block", return_value={"OPENCODE_API_KEY": "live-key"}):
+                has_key = dispatcher.read_authoritative_runtime_env("OPENCODE_API_KEY", "codex-spark", user_data=user_data)
+                self.assertTrue(has_key)
+
+            with patch.object(dispatcher, "read_process_env_block", return_value={}):
+                has_key = dispatcher.read_authoritative_runtime_env("OPENCODE_API_KEY", "codex-spark", user_data=user_data)
+                self.assertFalse(has_key)

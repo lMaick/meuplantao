@@ -723,76 +723,145 @@ def parse_wrapper_script_config(text: str, worker_id: str, expected_provider: st
     }
 
 
+def discover_active_orca_pid(worker_id: str, user_data: Path | None = None) -> int | None:
+    candidates = []
+    if user_data is not None:
+        candidates.append(user_data / "orca-runtime.json")
+    default_base = orca_user_data_dir(worker_id)
+    if user_data is None or user_data != default_base:
+        candidates.append(default_base / "orca-runtime.json")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+                pid = data.get("pid")
+                if isinstance(pid, int) and pid > 0:
+                    return pid
+            except Exception:
+                continue
+    return None
+
+
+def read_process_env_block(pid: int) -> dict[str, str] | None:
+    """
+    Reads the environment block of an active process by PID.
+    On Windows, inspects the process PEB using NtQueryInformationProcess and ReadProcessMemory.
+    On Linux, inspects /proc/<pid>/environ.
+    Returns a dict of environment variables or None if unavailable.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_INFORMATION = 0x0400
+            PROCESS_VM_READ = 0x0010
+
+            class PROCESS_BASIC_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("Reserved1", ctypes.c_void_p),
+                    ("PebBaseAddress", ctypes.c_void_p),
+                    ("Reserved2", ctypes.c_void_p * 2),
+                    ("UniqueProcessId", ctypes.c_void_p),
+                    ("Reserved3", ctypes.c_void_p),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+
+            hProcess = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+            if not hProcess:
+                return None
+
+            try:
+                pbi = PROCESS_BASIC_INFORMATION()
+                ret_len = wintypes.ULONG()
+                status = ntdll.NtQueryInformationProcess(
+                    hProcess, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(ret_len)
+                )
+                if status != 0 or not pbi.PebBaseAddress:
+                    return None
+
+                proc_params_addr = ctypes.c_void_p()
+                read_bytes = ctypes.c_size_t()
+                if not kernel32.ReadProcessMemory(
+                    hProcess, ctypes.c_void_p(pbi.PebBaseAddress + 0x20), ctypes.byref(proc_params_addr), 8, ctypes.byref(read_bytes)
+                ) or not proc_params_addr.value:
+                    return None
+
+                env_addr = ctypes.c_void_p()
+                if not kernel32.ReadProcessMemory(
+                    hProcess, ctypes.c_void_p(proc_params_addr.value + 0x80), ctypes.byref(env_addr), 8, ctypes.byref(read_bytes)
+                ) or not env_addr.value:
+                    return None
+
+                buffer_size = 65536
+                buf = ctypes.create_string_buffer(buffer_size)
+                if not kernel32.ReadProcessMemory(
+                    hProcess, env_addr, buf, buffer_size, ctypes.byref(read_bytes)
+                ) or read_bytes.value == 0:
+                    return None
+
+                raw = buf.raw[:read_bytes.value]
+                text = raw.decode("utf-16-le", errors="ignore")
+                env_dict = {}
+                for line in text.split("\x00"):
+                    if not line:
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        if k:
+                            env_dict[k] = v
+                return env_dict
+            finally:
+                kernel32.CloseHandle(hProcess)
+        except Exception:
+            return None
+
+    if sys.platform.startswith("linux"):
+        try:
+            environ_path = Path(f"/proc/{pid}/environ")
+            if environ_path.is_file():
+                raw = environ_path.read_bytes()
+                text = raw.decode("utf-8", errors="replace")
+                env_dict = {}
+                for line in text.split("\x00"):
+                    if not line:
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        if k:
+                            env_dict[k] = v
+                return env_dict
+        except Exception:
+            return None
+
+    return None
+
+
 def read_authoritative_runtime_env(
     env_key: str,
-    entry: dict,
-    runtime_env_source: Any = None,
+    worker_id: str,
+    user_data: Path | None = None,
 ) -> bool:
     """
     Determines whether the specified environment variable is authoritatively
-    present in the Orca runtime execution environment without recording, logging,
-    or publishing the secret value.
+    present in the active Orca runtime process environment block without recording,
+    logging, or publishing the secret value.
     """
     if not env_key:
         return False
 
-    source = runtime_env_source
-    if source is None:
-        source = entry.get("runtime_env_source")
-    if source is None and entry.get("runtime_env_file"):
-        source = entry.get("runtime_env_file")
-
-    if source is not None:
-        if callable(source):
-            return bool(source(env_key))
-        if isinstance(source, dict):
-            val = source.get(env_key)
+    pid = discover_active_orca_pid(worker_id, user_data=user_data)
+    if pid is not None:
+        env_block = read_process_env_block(pid)
+        if env_block is not None:
+            val = env_block.get(env_key)
             return bool(val and str(val).strip())
-        if isinstance(source, (str, Path)):
-            source_path = Path(source)
-            if source_path.is_file():
-                try:
-                    for line in source_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                        stripped = line.strip()
-                        if stripped.startswith("#") or not stripped or "=" not in stripped:
-                            continue
-                        k, v = stripped.split("=", 1)
-                        if k.strip() == env_key:
-                            val_clean = v.strip().strip('"').strip("'")
-                            return bool(val_clean)
-                except Exception:
-                    return False
-            return False
-
-    if sys.platform == "win32":
-        try:
-            import winreg
-
-            try:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
-                    val, _ = winreg.QueryValueEx(key, env_key)
-                    if val and str(val).strip():
-                        return True
-            except (FileNotFoundError, OSError):
-                pass
-
-            try:
-                with winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-                ) as key:
-                    val, _ = winreg.QueryValueEx(key, env_key)
-                    if val and str(val).strip():
-                        return True
-            except (FileNotFoundError, OSError):
-                pass
-        except Exception:
-            pass
-        return False
-
-    if entry.get("allow_process_env_fallback"):
-        val = os.environ.get(env_key)
-        return bool(val and str(val).strip())
 
     return False
 
@@ -801,7 +870,6 @@ def read_codex_script_wrapper_route(
     entry: dict,
     home: Path | None = None,
     settings_path: Path | str | None = None,
-    runtime_env_source: Any = None,
 ) -> dict:
     worker_id = str(entry.get("id", "") or "")
     if entry.get("command") != CODEX_WRAPPER_KEY or entry.get("identity") != CODEX_WRAPPER_KEY:
@@ -859,10 +927,16 @@ def read_codex_script_wrapper_route(
 
     require_empty_wrapper_default_env(settings_data, worker_id)
 
+    res_path = Path(resolved)
+    if "profiles" in res_path.parts:
+        user_data_path = res_path.parent.parent
+    else:
+        user_data_path = res_path.parent
+
     env_key = route.get("env_key")
     dispatcher_has_key = bool(env_key and os.environ.get(env_key))
     runtime_has_key = bool(
-        env_key and read_authoritative_runtime_env(env_key, entry, runtime_env_source=runtime_env_source)
+        env_key and read_authoritative_runtime_env(env_key, worker_id, user_data=user_data_path)
     )
 
     if not dispatcher_has_key or not runtime_has_key:
@@ -888,13 +962,10 @@ def worker_evidence(
     entry: dict,
     home: Path | None = None,
     settings_path: Path | str | None = None,
-    runtime_env_source: Any = None,
 ) -> dict | None:
     if is_wrapper_codex_worker(entry):
         if entry.get("wrapper_mode") == WRAPPER_MODE_SCRIPT_WRAPPER:
-            return read_codex_script_wrapper_route(
-                entry, home=home, settings_path=settings_path, runtime_env_source=runtime_env_source
-            )
+            return read_codex_script_wrapper_route(entry, home=home, settings_path=settings_path)
         return read_codex_wrapper_route(entry, home=home, settings_path=settings_path)
     if is_codex_worker(entry):
         return read_codex_state(home)
@@ -1047,13 +1118,9 @@ def slugify(identifier: str, title: str) -> str:
     return f"{identifier.upper()}-{slug}"
 
 
-def preflight_model(
-    home: Path | None = None,
-    settings_path: Path | str | None = None,
-    runtime_env_source: Any = None,
-) -> dict:
+def preflight_model(home: Path | None = None, settings_path: Path | str | None = None) -> dict:
     entry = selected_worker()
-    evidence = worker_evidence(entry, home, settings_path, runtime_env_source=runtime_env_source)
+    evidence = worker_evidence(entry, home, settings_path)
     return validate_worker(entry, evidence)
 
 
