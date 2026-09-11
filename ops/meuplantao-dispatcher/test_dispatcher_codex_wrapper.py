@@ -5,7 +5,7 @@ import os
 import tempfile
 import contextlib
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 _fixture = Path(tempfile.gettempdir()) / "mai81-wrapper-policy-config.toml"
 _fixture.write_text(
@@ -102,6 +102,10 @@ def _orca_state(tmp, payload, profile="profile-a"):
         json.dumps({"activeProfileId": profile, "profiles": [{"id": profile}]}),
         encoding="utf-8",
     )
+    (root / "orca-runtime.json").write_text(
+        json.dumps({"pid": 12345}),
+        encoding="utf-8",
+    )
     data_path = profdir / "orca-data.json"
     data_path.write_text(json.dumps(payload), encoding="utf-8")
     return data_path
@@ -113,6 +117,10 @@ def _orca_state_raw(tmp, text, profile="profile-a"):
     profdir.mkdir(parents=True, exist_ok=True)
     (root / "orca-profile-index.json").write_text(
         json.dumps({"activeProfileId": profile, "profiles": [{"id": profile}]}),
+        encoding="utf-8",
+    )
+    (root / "orca-runtime.json").write_text(
+        json.dumps({"pid": 12345}),
         encoding="utf-8",
     )
     data_path = profdir / "orca-data.json"
@@ -736,3 +744,799 @@ class CodexWrapperStrictRouteTests(unittest.TestCase):
         self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
         self.assertEqual(matched["provider"], "opencode-go")
         self.assertEqual(matched["reasoning"], "high")
+
+
+SANITY_SCRIPT_WRAPPER_CONTENT = (
+    "@echo off\n"
+    "call \"C:\\fake\\npm\\codex.cmd\" ^\n"
+    "  -c \"model='muse-spark-1.3-contributor'\" ^\n"
+    "  -c \"model_provider='opencode-go'\" ^\n"
+    "  -c \"model_reasoning_effort='high'\" ^\n"
+    "  -c \"check_for_update_on_startup=false\" ^\n"
+    "  -c \"model_providers.opencode-go.name='OpenCode Go'\" ^\n"
+    "  -c \"model_providers.opencode-go.base_url='https://opencode.ai/zen/go/v1'\" ^\n"
+    "  -c \"model_providers.opencode-go.env_key='OPENCODE_API_KEY'\" ^\n"
+    "  -c \"model_providers.opencode-go.wire_api='responses'\" ^\n"
+    "  -c \"features.apps=false\" ^\n"
+    "  -c \"features.plugins=false\" ^\n"
+    "  -c \"features.browser_use=false\" ^\n"
+    "  -c \"features.computer_use=false\" ^\n"
+    "  -c \"mcp_servers.node_repl.enabled=false\" ^\n"
+    "  %*\n"
+)
+
+
+class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self._proc_env_patcher = patch.object(
+            dispatcher,
+            "read_process_env_block",
+            return_value={"OPENCODE_API_KEY": "dummy-runtime-key"},
+        )
+        self._proc_env_patcher.start()
+
+    def tearDown(self):
+        self._proc_env_patcher.stop()
+        super().tearDown()
+
+    def _create_script(self, d, content=SANITY_SCRIPT_WRAPPER_CONTENT, name="codex.cmd"):
+        script_path = Path(d) / name
+        data = content.encode("utf-8")
+        script_path.write_bytes(data)
+        import hashlib
+        digest = hashlib.sha256(data).hexdigest().lower()
+        return script_path, digest
+
+    def _good_script_payload(self, script_path, default_args="--dangerously-bypass-approvals-and-sandbox", default_env=None):
+        settings = {
+            "agentCmdOverrides": {"codex": str(script_path)},
+            "agentDefaultArgs": {"codex": default_args} if default_args is not None else {},
+        }
+        if default_env is not None:
+            settings["agentDefaultEnv"] = {"codex": default_env}
+        return {"settings": settings}
+
+    def _script_entry(self, script_path, digest, **overrides):
+        entry = {
+            "id": "codex-spark",
+            "agent": "codex",
+            "model": "muse-spark-1.3-contributor",
+            "provider": "opencode-go",
+            "reasoning": "high",
+            "command": "codex",
+            "identity": "codex",
+            "auth_mode": "opencode",
+            "wrapper_mode": "script_wrapper",
+            "wrapper_path": str(script_path),
+            "wrapper_sha256": digest,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_operational_script_wrapper_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        matched = dispatcher.preflight_model(home=home)
+            self.assertEqual(matched["id"], "codex-spark")
+            self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+            self.assertEqual(matched["provider"], "opencode-go")
+            self.assertEqual(matched["reasoning"], "high")
+
+    def test_red_wrapper_path_mismatch_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, name="actual.cmd")
+            other_path = Path(d) / "configured.cmd"
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(other_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper path mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_hash_mismatch_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            tampered_digest = "0" * 64
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, tampered_digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper hash mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_missing_file_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path = Path(d) / "nonexistent.cmd"
+            digest = "a" * 64
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper missing"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_unauthorized_extension_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, name="codex.exe")
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper unauthorized extension"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_resolves_diverging_model_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("muse-spark-1.3-contributor", "gpt-5.6-sol")
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "worker model mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_resolves_diverging_provider_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("opencode-go", "other-provider")
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "worker provider mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_resolves_diverging_reasoning_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("model_reasoning_effort='high'", "model_reasoning_effort='low'")
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "worker reasoning mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_missing_field_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  -c \"model='muse-spark-1.3-contributor'\" ^\n", "")
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper field missing"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_unauthorized_default_args_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path, default_args="--override-model bad"))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "unauthorized default args"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_unauthorized_default_env_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path, default_env={"MODEL": "other"}))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "unauthorized default env"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_missing_auth_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d, with_opencode_auth=False)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    env_clean = dict(os.environ)
+                    env_clean.pop("OPENCODE_API_KEY", None)
+                    with patch.dict(os.environ, env_clean, clear=True):
+                        with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_policy_invalid_wrapper_mode_rejected(self):
+        entry = dict(SPARK_CODEX_ENTRY)
+        entry["wrapper_mode"] = "invalid_mode"
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with self.assertRaisesRegex(RuntimeError, "invalid wrapper_mode"):
+                    dispatcher.preflight_model(home=home)
+
+    def test_red_policy_script_wrapper_missing_path_rejected(self):
+        entry = dict(SPARK_CODEX_ENTRY)
+        entry["wrapper_mode"] = "script_wrapper"
+        entry["wrapper_sha256"] = "a" * 64
+        entry.pop("wrapper_path", None)
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with self.assertRaisesRegex(RuntimeError, "missing wrapper_path"):
+                    dispatcher.preflight_model(home=home)
+
+    def test_red_policy_script_wrapper_missing_sha256_rejected(self):
+        entry = dict(SPARK_CODEX_ENTRY)
+        entry["wrapper_mode"] = "script_wrapper"
+        entry["wrapper_path"] = "C:/fake/codex.cmd"
+        entry.pop("wrapper_sha256", None)
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with self.assertRaisesRegex(RuntimeError, "missing or invalid wrapper_sha256"):
+                    dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_flags_only_in_comments_rejected(self):
+        content = (
+            "@echo off\n"
+            "rem -c \"model='muse-spark-1.3-contributor'\" ^\n"
+            "rem -c \"model_provider='opencode-go'\" ^\n"
+            "rem -c \"model_reasoning_effort='high'\" ^\n"
+            "rem -c \"model_providers.opencode-go.base_url='https://opencode.ai/zen/go/v1'\" ^\n"
+            "rem -c \"model_providers.opencode-go.env_key='OPENCODE_API_KEY'\" ^\n"
+            "rem -c \"model_providers.opencode-go.wire_api='responses'\"\n"
+            "call \"C:\\fake\\npm\\codex.cmd\" %*\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper field missing"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_flags_only_in_echo_rejected(self):
+        content = (
+            "@echo off\n"
+            "echo -c \"model='muse-spark-1.3-contributor'\" -c \"model_provider='opencode-go'\" -c \"model_reasoning_effort='high'\"\n"
+            "call \"C:\\fake\\npm\\codex.cmd\" %*\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wrapper field missing"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_multiple_commands_rejected(self):
+        content = (
+            "@echo off\n"
+            "call \"C:\\fake\\npm\\setup.cmd\"\n"
+            + SANITY_SCRIPT_WRAPPER_CONTENT.replace("@echo off\n", "")
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_branching_rejected(self):
+        content = (
+            "@echo off\n"
+            "if \"%1\"==\"special\" call \"C:\\fake\\npm\\codex.cmd\" -c \"model='bad'\"\n"
+            + SANITY_SCRIPT_WRAPPER_CONTENT.replace("@echo off\n", "")
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_chained_operators_rejected(self):
+        content = (
+            "@echo off\n"
+            "set FOO=1 && " + SANITY_SCRIPT_WRAPPER_CONTENT.replace("@echo off\n", "")
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_base_url_mismatch_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace(
+            "model_providers.opencode-go.base_url='https://opencode.ai/zen/go/v1'",
+            "model_providers.opencode-go.base_url='https://evil.com/v1'"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "base_url mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_env_key_mismatch_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace(
+            "model_providers.opencode-go.env_key='OPENCODE_API_KEY'",
+            "model_providers.opencode-go.env_key='OTHER_KEY'"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key", "OTHER_KEY": "x"}):
+                        with self.assertRaisesRegex(RuntimeError, "env_key mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_env_key_duplicate_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace(
+            "  -c \"model_providers.opencode-go.env_key='OPENCODE_API_KEY'\" ^\n",
+            "  -c \"model_providers.opencode-go.env_key='OPENCODE_API_KEY'\" ^\n  -c \"model_providers.opencode-go.env_key='OPENCODE_API_KEY'\" ^\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "duplicate field"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_wire_api_mismatch_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace(
+            "model_providers.opencode-go.wire_api='responses'",
+            "model_providers.opencode-go.wire_api='chat'"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "wire_api mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_missing_env_var_rejected_even_with_local_auth_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d, with_opencode_auth=True)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    env_clean = dict(os.environ)
+                    env_clean.pop("OPENCODE_API_KEY", None)
+                    with patch.dict(os.environ, env_clean, clear=True):
+                        with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_policy_unauthorized_allowed_default_args_rejected(self):
+        entry = dict(SPARK_CODEX_ENTRY)
+        entry["wrapper_mode"] = "script_wrapper"
+        entry["wrapper_path"] = "C:/fake/codex.cmd"
+        entry["wrapper_sha256"] = "a" * 64
+        entry["allowed_default_args"] = ["--model", "spark"]
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with self.assertRaisesRegex(RuntimeError, "unauthorized allowed_default_args"):
+                    dispatcher.preflight_model(home=home)
+
+    def test_fixture_byte_for_byte_real_wrapper_accepted(self):
+        fixture_path = Path(__file__).resolve().parent / "fixtures" / "orca-codex" / "codex.cmd"
+        self.assertTrue(fixture_path.is_file(), f"missing fixture {fixture_path}")
+        fixture_bytes = fixture_path.read_bytes()
+        import hashlib
+        digest = hashlib.sha256(fixture_bytes).hexdigest().lower()
+        self.assertEqual(digest, "1bac76c48ea73a80de92cc4ee470f485d99585d43d94dc11ba7857df4895f7b1")
+
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, self._good_script_payload(fixture_path))
+            entry = self._script_entry(fixture_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        matched = dispatcher.preflight_model(home=home)
+            self.assertEqual(matched["id"], "codex-spark")
+            self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+            self.assertEqual(matched["provider"], "opencode-go")
+            self.assertEqual(matched["reasoning"], "high")
+
+    def test_red_wrapper_trailing_control_operators_rejected(self):
+        for evil_op in ("&&evil", "&evil", "|evil"):
+            bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  %*\n", f"  %*{evil_op}\n")
+            with tempfile.TemporaryDirectory() as d:
+                home = _home_with_diverging_codex(d)
+                script_path, digest = self._create_script(d, content=bad_content)
+                settings = _settings_path(d, self._good_script_payload(script_path))
+                entry = self._script_entry(script_path, digest)
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_redirections_without_spaces_rejected(self):
+        for evil_redir in (">evil", "<evil", ">>evil"):
+            bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  %*\n", f"  %*{evil_redir}\n")
+            with tempfile.TemporaryDirectory() as d:
+                home = _home_with_diverging_codex(d)
+                script_path, digest = self._create_script(d, content=bad_content)
+                settings = _settings_path(d, self._good_script_payload(script_path))
+                entry = self._script_entry(script_path, digest)
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_second_line_remote_command_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT + "\nremote.exe something\n"
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_extra_unaccounted_tokens_after_invocation_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  %*\n", "  %* evil\n")
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "unauthorized token"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_runtime_env_missing_while_dispatcher_and_registry_have_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+
+            # 1. Dispatcher has OPENCODE_API_KEY in os.environ
+            # 2. Auxiliary file has OPENCODE_API_KEY
+            aux_env_file = Path(d) / "auxiliary.env"
+            aux_env_file.write_text("OPENCODE_API_KEY=auxiliary-secret\n", encoding="utf-8")
+            # 3. Registry has OPENCODE_API_KEY (simulated / ignored)
+            # 4. BUT Orca effective route (process env block) does NOT receive it
+            with patch.object(dispatcher, "read_process_env_block", return_value={}):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-secret"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_green_auth_evidence_strictly_from_effective_route_at_launch(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+
+            # Auth evidence comes strictly from the active Orca runtime process environment block inherited by the terminal
+            with patch.object(
+                dispatcher,
+                "read_process_env_block",
+                return_value={"OPENCODE_API_KEY": "active-orca-runtime-key"},
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            matched = dispatcher.preflight_model(home=home)
+            self.assertEqual(matched["id"], "codex-spark")
+            self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+            self.assertEqual(matched["provider"], "opencode-go")
+            self.assertEqual(matched["reasoning"], "high")
+            self.assertEqual(matched["command"], "codex")
+
+    def test_discover_active_orca_pid_and_read_authoritative_runtime_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            user_data = Path(d) / "orca-user"
+            user_data.mkdir(parents=True, exist_ok=True)
+            (user_data / "orca-runtime.json").write_text(json.dumps({"pid": 4242}), encoding="utf-8")
+            pid = dispatcher.discover_active_orca_pid("codex-spark", user_data=user_data)
+            self.assertEqual(pid, 4242)
+
+            with patch.object(dispatcher, "read_process_env_block", return_value={"OPENCODE_API_KEY": "live-key"}):
+                has_key = dispatcher.read_authoritative_runtime_env("OPENCODE_API_KEY", "codex-spark", user_data=user_data)
+                self.assertTrue(has_key)
+
+            with patch.object(dispatcher, "read_process_env_block", return_value={}):
+                has_key = dispatcher.read_authoritative_runtime_env("OPENCODE_API_KEY", "codex-spark", user_data=user_data)
+                self.assertFalse(has_key)
+
+
+class WindowsProcessArchitectureSafetyTests(unittest.TestCase):
+    def test_inspect_process_architecture_windows_x64(self):
+        fake_kernel32 = MagicMock()
+
+        def mock_wow64_2(hProcess, pProc, pNative):
+            pProc._obj.value = 0x0000  # IMAGE_FILE_MACHINE_UNKNOWN
+            pNative._obj.value = 0x8664  # IMAGE_FILE_MACHINE_AMD64
+            return 1
+
+        fake_kernel32.IsWow64Process2.side_effect = mock_wow64_2
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "x64")
+
+    def test_inspect_process_architecture_wow64_32bit(self):
+        fake_kernel32 = MagicMock()
+
+        def mock_wow64_2(hProcess, pProc, pNative):
+            pProc._obj.value = 0x014C  # IMAGE_FILE_MACHINE_I386
+            pNative._obj.value = 0x8664  # IMAGE_FILE_MACHINE_AMD64
+            return 1
+
+        fake_kernel32.IsWow64Process2.side_effect = mock_wow64_2
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "wow64")
+
+    def test_inspect_process_architecture_fallback_iswow64(self):
+        fake_kernel32 = MagicMock(spec=["IsWow64Process"])
+
+        def mock_wow64(hProcess, p_is_wow64):
+            p_is_wow64._obj.value = 1
+            return 1
+
+        fake_kernel32.IsWow64Process.side_effect = mock_wow64
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "wow64")
+
+    def test_inspect_process_architecture_undetermined(self):
+        fake_kernel32 = MagicMock()
+        fake_kernel32.IsWow64Process2.return_value = 0
+        fake_kernel32.IsWow64Process.return_value = 0
+        arch = dispatcher.inspect_process_architecture(fake_kernel32, 100)
+        self.assertEqual(arch, "undetermined")
+
+    def test_red_caller_not_64bit_rejected_fail_closed(self):
+        with patch("ctypes.sizeof", return_value=4):
+            env, status = dispatcher.probe_process_env_block(12345)
+            self.assertIsNone(env)
+            self.assertEqual(status, "unsupported_architecture")
+
+    def test_red_target_wow64_32bit_rejected_fail_closed_before_reading_peb_offsets(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 555
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="wow64"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertIsNone(env)
+                self.assertEqual(status, "unsupported_architecture")
+                fake_kernel32.CloseHandle.assert_called_once_with(555)
+                fake_ntdll.NtQueryInformationProcess.assert_not_called()
+                fake_kernel32.ReadProcessMemory.assert_not_called()
+
+    def test_red_target_undetermined_architecture_rejected_fail_closed_before_reading_peb_offsets(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 666
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="undetermined"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertIsNone(env)
+                self.assertEqual(status, "undetermined_architecture")
+                fake_kernel32.CloseHandle.assert_called_once_with(666)
+                fake_ntdll.NtQueryInformationProcess.assert_not_called()
+                fake_kernel32.ReadProcessMemory.assert_not_called()
+
+    def test_green_target_windows_x64_supported_reads_peb_environment_block(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 777
+
+        def fake_nt_query(hProcess, info_class, p_pbi, size, p_ret):
+            p_pbi._obj.PebBaseAddress = 0x10000
+            return 0
+
+        fake_ntdll.NtQueryInformationProcess.side_effect = fake_nt_query
+
+        def fake_read_mem(hProcess, addr, buf, size, p_read):
+            p_read._obj.value = size
+            if addr.value == 0x10020:
+                buf._obj.value = 0x20000
+                return 1
+            if addr.value == 0x20080:
+                buf._obj.value = 0x30000
+                return 1
+            if addr.value == 0x30000:
+                raw_env = "OPENCODE_API_KEY=test-auth-secret\x00SOME_VAR=hello\x00\x00".encode("utf-16-le")
+                import ctypes
+                ctypes.memmove(buf, raw_env, len(raw_env))
+                p_read._obj.value = len(raw_env)
+                return 1
+            return 0
+
+        fake_kernel32.ReadProcessMemory.side_effect = fake_read_mem
+
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="x64"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertEqual(status, "present")
+                self.assertIsNotNone(env)
+                self.assertEqual(env.get("OPENCODE_API_KEY"), "test-auth-secret")
+                self.assertEqual(env.get("SOME_VAR"), "hello")
+                fake_kernel32.CloseHandle.assert_called_once_with(777)
+                fake_ntdll.NtQueryInformationProcess.assert_called_once()
+                self.assertEqual(fake_kernel32.ReadProcessMemory.call_count, 3)
+
+    def test_close_handle_preserved_on_read_failure(self):
+        fake_kernel32 = MagicMock()
+        fake_ntdll = MagicMock()
+        fake_kernel32.OpenProcess.return_value = 888
+        fake_ntdll.NtQueryInformationProcess.return_value = -1
+        with patch.object(dispatcher, "_win32_dlls", return_value=(fake_kernel32, fake_ntdll)):
+            with patch.object(dispatcher, "inspect_process_architecture", return_value="x64"):
+                env, status = dispatcher.probe_process_env_block(12345)
+                self.assertIsNone(env)
+                self.assertEqual(status, "unavailable")
+                fake_kernel32.CloseHandle.assert_called_once_with(888)
+
+    def _create_script(self, d, content=SANITY_SCRIPT_WRAPPER_CONTENT, name="codex.cmd"):
+        script_path = Path(d) / name
+        script_path.write_text(content, encoding="utf-8")
+        import hashlib
+        digest = hashlib.sha256(script_path.read_bytes()).hexdigest().lower()
+        return script_path, digest
+
+    def _good_script_payload(self, script_path):
+        return {"settings": {"agentCmdOverrides": {"codex": str(script_path)},
+                             "agentDefaultArgs": {"codex": ""}}}
+
+    def _script_entry(self, script_path, digest, **overrides):
+        entry = {
+            "id": "codex-spark",
+            "agent": "codex",
+            "model": "muse-spark-1.3-contributor",
+            "reasoning": "high",
+            "provider": "opencode-go",
+            "command": "codex",
+            "identity": "codex",
+            "auth_mode": "opencode",
+            "wrapper_mode": "script_wrapper",
+            "wrapper_path": str(script_path),
+            "wrapper_sha256": digest,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_green_x64_environment_block_with_key_succeeds_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=({"OPENCODE_API_KEY": "active-orca-runtime-key"}, "present"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            matched = dispatcher.preflight_model(home=home)
+            self.assertEqual(matched["id"], "codex-spark")
+            self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
+            self.assertEqual(matched["provider"], "opencode-go")
+            self.assertEqual(matched["reasoning"], "high")
+
+    def test_red_x64_environment_block_without_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=({"OTHER_VAR": "value"}, "present"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_target_wow64_architecture_fails_closed_in_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=(None, "unsupported_architecture"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_target_undetermined_architecture_fails_closed_in_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(
+                dispatcher,
+                "probe_process_env_block",
+                return_value=(None, "undetermined_architecture"),
+            ):
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dispatcher-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                                dispatcher.preflight_model(home=home)
