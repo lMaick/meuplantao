@@ -79,7 +79,12 @@ WRAPPER_MODE_SCRIPT_WRAPPER = "script_wrapper"
 SUPPORTED_WRAPPER_MODES = (WRAPPER_MODE_COMMAND_FLAGS, WRAPPER_MODE_SCRIPT_WRAPPER)
 SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 ALLOWED_SCRIPT_WRAPPER_EXTENSIONS = (".cmd", ".bat")
-DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS = ("--dangerously-bypass-approvals-and-sandbox", "")
+AUDITED_DEFAULT_ARGS_ALLOWLIST = frozenset({"", "--dangerously-bypass-approvals-and-sandbox"})
+DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS = ("", "--dangerously-bypass-approvals-and-sandbox")
+EXPECTED_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+EXPECTED_OPENCODE_GO_ENV_KEY = "OPENCODE_API_KEY"
+EXPECTED_OPENCODE_GO_WIRE_API = "responses"
+CODEX_CALL_NAMES = frozenset({"codex.cmd", "codex.bat", "codex.exe", "codex"})
 
 
 def _pick(mapping: dict, *names: str) -> str:
@@ -147,10 +152,18 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
         forbid_tuple = tuple(str(item).lower() for item in forbid) if isinstance(forbid, (list, tuple)) else ()
 
         allowed_args_raw = entry.get("allowed_default_args", None)
-        if allowed_args_raw is not None:
-            allowed_args = tuple(str(x) for x in allowed_args_raw) if isinstance(allowed_args_raw, (list, tuple)) else (str(allowed_args_raw),)
-        elif wrapper_mode == WRAPPER_MODE_SCRIPT_WRAPPER:
-            allowed_args = DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS
+        if wrapper_mode == WRAPPER_MODE_SCRIPT_WRAPPER:
+            if allowed_args_raw is not None:
+                parsed_args = tuple(str(x) for x in allowed_args_raw) if isinstance(allowed_args_raw, (list, tuple)) else (str(allowed_args_raw),)
+                for arg in parsed_args:
+                    if arg not in AUDITED_DEFAULT_ARGS_ALLOWLIST:
+                        raise RuntimeError(
+                            f"preflight: worker policy entry {index} unauthorized allowed_default_args"
+                            f" (cannot expand beyond audited allowlist: {sorted(AUDITED_DEFAULT_ARGS_ALLOWLIST)})"
+                        )
+                allowed_args = parsed_args
+            else:
+                allowed_args = DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS
         else:
             allowed_args = ("",)
 
@@ -504,13 +517,88 @@ def read_codex_wrapper_route(
     }
 
 
-def parse_wrapper_script_config(text: str, worker_id: str) -> dict:
-    models = []
-    providers = []
-    reasonings = []
-    env_keys = []
-    pattern = re.compile(r"""-c\s+["']?([A-Za-z0-9_.]+)=['"]?([^'"\r\n\^]+?)['"]?["']?(?:\s|\^|$)""")
-    for match in pattern.finditer(text):
+def resolve_cmd_logical_lines(text: str) -> list[str]:
+    raw_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    logical_lines: list[str] = []
+    current_parts: list[str] = []
+
+    for line in raw_lines:
+        trimmed_right = line.rstrip()
+        if trimmed_right.endswith("^"):
+            current_parts.append(trimmed_right[:-1].strip())
+        else:
+            current_parts.append(line.strip())
+            joined = " ".join(part for part in current_parts if part).strip()
+            if joined:
+                logical_lines.append(joined)
+            current_parts = []
+
+    if current_parts:
+        joined = " ".join(part for part in current_parts if part).strip()
+        if joined:
+            logical_lines.append(joined)
+
+    return logical_lines
+
+
+def extract_effective_codex_command(text: str, worker_id: str) -> str:
+    lines = resolve_cmd_logical_lines(text)
+    executable_statements: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith("rem") or lowered.startswith("::"):
+            continue
+        if lowered == "@echo off" or lowered == "echo off" or lowered.startswith("@echo ") or lowered.startswith("echo "):
+            continue
+
+        if any(op in stripped for op in (" && ", " & ", " || ", " | ", ";")):
+            raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+        first_word = lowered.split(None, 1)[0]
+        if first_word in ("if", "goto", "for", "while", "do"):
+            raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+        executable_statements.append(stripped)
+
+    if len(executable_statements) == 0:
+        raise RuntimeError(f"preflight: codex wrapper missing execution route (worker_id={worker_id})")
+    if len(executable_statements) > 1:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+    exec_line = executable_statements[0]
+    tokens = shlex.split(exec_line, posix=False)
+    if not tokens:
+        raise RuntimeError(f"preflight: codex wrapper missing execution route (worker_id={worker_id})")
+
+    cmd_idx = 0
+    if tokens[0].lower() == "call":
+        cmd_idx = 1
+    if cmd_idx >= len(tokens):
+        raise RuntimeError(f"preflight: codex wrapper unauthorized command (worker_id={worker_id})")
+
+    target_cmd = tokens[cmd_idx].strip('"').strip("'")
+    base_name = Path(target_cmd).name.lower()
+    if base_name not in CODEX_CALL_NAMES:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized command (worker_id={worker_id})")
+
+    return exec_line
+
+
+def parse_wrapper_script_config(text: str, worker_id: str, expected_provider: str = "opencode-go") -> dict:
+    exec_line = extract_effective_codex_command(text, worker_id)
+
+    models: list[str] = []
+    providers: list[str] = []
+    reasonings: list[str] = []
+    base_urls: list[str] = []
+    env_keys: list[str] = []
+    wire_apis: list[str] = []
+
+    pattern = re.compile(r"""-c\s+["']?([A-Za-z0-9_.-]+)=['"]?([^'"\r\n\^]+?)['"]?["']?(?:\s|$)""")
+    for match in pattern.finditer(exec_line):
         key = match.group(1).strip().lower()
         val = match.group(2).strip()
         if key == "model":
@@ -519,18 +607,46 @@ def parse_wrapper_script_config(text: str, worker_id: str) -> dict:
             providers.append(val)
         elif key in ("model_reasoning_effort", "reasoning"):
             reasonings.append(val)
+        elif key.endswith(".base_url") or key == "base_url":
+            base_urls.append(val)
         elif key.endswith(".env_key") or key == "env_key":
             env_keys.append(val)
+        elif key.endswith(".wire_api") or key == "wire_api":
+            wire_apis.append(val)
 
-    if len(set(models)) > 1 or len(set(providers)) > 1 or len(set(reasonings)) > 1:
+    if len(models) > 1 or len(providers) > 1 or len(reasonings) > 1:
         raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
+    if len(base_urls) > 1 or len(env_keys) > 1 or len(wire_apis) > 1:
+        raise RuntimeError(f"preflight: codex wrapper duplicate field (worker_id={worker_id})")
+
     if not models or not providers or not reasonings:
         raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
+
+    model_val = models[0]
+    provider_val = providers[0]
+    reasoning_val = reasonings[0]
+
+    base_url_val = base_urls[0] if base_urls else ""
+    env_key_val = env_keys[0] if env_keys else ""
+    wire_api_val = wire_apis[0] if wire_apis else ""
+
+    if provider_val.lower() == "opencode-go" or expected_provider.lower() == "opencode-go":
+        if not base_urls or not env_keys or not wire_apis:
+            raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
+        if base_url_val != EXPECTED_OPENCODE_GO_BASE_URL:
+            raise RuntimeError(f"preflight: codex wrapper base_url mismatch (worker_id={worker_id})")
+        if env_key_val != EXPECTED_OPENCODE_GO_ENV_KEY:
+            raise RuntimeError(f"preflight: codex wrapper env_key mismatch (worker_id={worker_id})")
+        if wire_api_val != EXPECTED_OPENCODE_GO_WIRE_API:
+            raise RuntimeError(f"preflight: codex wrapper wire_api mismatch (worker_id={worker_id})")
+
     return {
-        "model": models[0],
-        "provider": providers[0],
-        "reasoning": reasonings[0],
-        "env_key": env_keys[0] if env_keys else "",
+        "model": model_val,
+        "provider": provider_val,
+        "reasoning": reasoning_val,
+        "base_url": base_url_val,
+        "env_key": env_key_val,
+        "wire_api": wire_api_val,
     }
 
 
@@ -577,7 +693,8 @@ def read_codex_script_wrapper_route(
     except UnicodeDecodeError:
         content_text = content_bytes.decode("latin1", errors="replace")
 
-    route = parse_wrapper_script_config(content_text, worker_id)
+    expected_prov = str(entry.get("provider", "") or "")
+    route = parse_wrapper_script_config(content_text, worker_id, expected_provider=expected_prov)
 
     nested = settings_data.get("settings")
     args_record = nested.get("agentDefaultArgs") if isinstance(nested, dict) else None
@@ -587,25 +704,18 @@ def read_codex_script_wrapper_route(
     if not isinstance(default_args_val, str):
         raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
     allowed_args = entry.get("allowed_default_args", DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS)
-    if default_args_val not in allowed_args:
+    if default_args_val not in allowed_args or default_args_val not in AUDITED_DEFAULT_ARGS_ALLOWLIST:
         raise RuntimeError(f"preflight: codex wrapper unauthorized default args (worker_id={worker_id})")
 
     require_empty_wrapper_default_env(settings_data, worker_id)
 
-    auth_present = False
-    auth_mode = ""
     env_key = route.get("env_key")
-    if env_key and os.environ.get(env_key):
+    if not env_key or not os.environ.get(env_key):
+        auth_present = False
+        auth_mode = ""
+    else:
         auth_present = True
         auth_mode = entry.get("auth_mode", "opencode")
-    else:
-        base = home or Path.home()
-        for rel in OPENCODE_REL_AUTHS:
-            candidate = _read_toml_or_json(base / rel)
-            if candidate is not None and not candidate.get("__unparseable__"):
-                auth_present = True
-                auth_mode = _pick(candidate, "auth_mode", "mode", "provider") or entry.get("auth_mode", "opencode")
-                break
 
     return {
         "present": True,
