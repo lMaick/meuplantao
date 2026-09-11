@@ -64,9 +64,20 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    o fingerprint). Entrega reportada so e persistida/promovida apos validacao exata
    de PR + SHA; relatorio divergente nunca avanca, nem via fallback por branch.
    O `workerReport` e construido em ponto unico na ingestao (MAI-70): apenas a
-   URL canonica verificada (sem userinfo/query/fragmento) e o resumo `tests`
-   sanitizado e limitado; campos crus do comentario nunca entram no estado;
-   o scrubber comum decodifica percent-encoding antes de redigir.
+   URL canonica verificada e o resumo `tests` sanitizado e limitado; campos crus
+   do comentario nunca entram no estado. Canonicalizacao convergente fail-closed
+   (MAI-72): `canonicalize_untrusted_text` aplica unquote ate fixpoint com limite
+   de 25 rodadas e 200000 caracteres; entrada que nao converge ou estoura o limite
+   vira `[REDACTED]`; o scrub de segredos roda so apos a convergencia.
+   Objeto PR canonico unico (MAI-73): `report.pr` e entrada nao confiavel usada so
+   como lookup; `workerReport.pr`, campo superior `issue.pr`, attachment, comentario
+   e `reviewMarker` derivam exclusivamente do objeto validado por `canonical_pr`
+   (HTTPS, host `github.com`, path `/<github_repo>/pull/<number>` com numero
+   conferido, sem userinfo/porta/query/fragmento; copia normalizada com numero int,
+   SHA em minusculas e URL reconstruida; desvio falha fechado sem persistencia
+   parcial). Gates na ingestao: `gh_pr_for_url` retorna objeto canonico,
+   `sync_worker_reports` re-valida e `monitor_deliveries` valida a saida de
+   `gh_pr_for_branch` antes de comparar/promover.
    Etapas de marcacao de timeout so concluem apos escrita confirmada no Linear;
    falha mantem a etapa pendente para retry no proximo tick, sem finalizar o
    timeout nem notificar antes de label e comentario confirmados.
@@ -141,7 +152,11 @@ payload JSON estrito {issue,event} (extras rejeitados por teste real), ack deriv
 do estado corrente (review/timeout, sem historico) e expectedAck no precheck,
 read-back por marcador de fingerprint (evento antigo nao suprime novo SHA),
 sanitizacao de formatos reais (Bearer/Authorization, quoted, userinfo em URL),
-sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG).
+sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG, objeto PR canonico ponta a ponta (state/attachment/
+   comentario com URL canonica exata), verificador adulterado sem sinks (8 formas),
+   monitor rejeitando branch PR com numero divergente, `gh_pr_for_url` com objeto
+   validado, canonicalizacao convergente com limites (nao-convergente/superlimite
+   vira [REDACTED]) e payload grande limitado).
 
 Entrega na PR #39 contra `main` (integracao final; MAI-67/PR #37 sao historico,
 nao dependencia ativa); sem merge/rollout pelo agente.

@@ -301,10 +301,20 @@ o Orca inicia; nao e modelo do dispatcher.
 - Entrega reportada so e persistida/promovida apos validacao exata de PR + SHA;
   relatorio divergente tem zero promocoes em dois ciclos (sem fallback por branch).
 - Fronteira de normalizacao do WorkerReport (MAI-70): `sync_worker_reports` constroi
-  o `workerReport` em ponto unico, persistindo apenas a URL canonica verificada
-  (`canonical_pr_url`: sem userinfo/query/fragmento) e o resumo `tests` sanitizado
-  e limitado; campos crus do comentario nunca entram no estado; o scrubber comum
-  decodifica percent-encoding antes de redigir.
+  o `workerReport` em ponto unico, persistindo apenas a URL canonica verificada e o
+  resumo `tests` sanitizado e limitado; campos crus do comentario nunca entram no
+  estado. Canonicalizacao convergente fail-closed (MAI-72): `canonicalize_untrusted_text`
+  aplica unquote ate fixpoint com limite de 25 rodadas e 200000 caracteres; entrada que
+  nao converge ou estoura o limite vira `[REDACTED]`; o scrub de segredos roda so apos
+  a convergencia.
+- Objeto PR canonico unico (MAI-73): `report.pr` e entrada nao confiavel usada so como
+  lookup; `workerReport.pr`, campo superior `issue.pr`, attachment, comentario e
+  `reviewMarker` derivam exclusivamente do objeto validado por `canonical_pr` (HTTPS,
+  host `github.com`, path `/<github_repo>/pull/<number>` com numero conferido, sem
+  userinfo/porta/query/fragmento; copia normalizada com numero int, SHA em minusculas e
+  URL reconstruida; desvio falha fechado sem persistencia parcial). Gates na ingestao:
+  `gh_pr_for_url` retorna objeto canonico, `sync_worker_reports` re-valida e
+  `monitor_deliveries` valida a saida de `gh_pr_for_branch` antes de comparar/promover.
 - Timeout retryavel de verdade: label e comentario so marcam `Done` apos escrita
   confirmada; falha mantem a etapa pendente, sem finalizar o timeout nem notificar
   antes de ambas confirmadas.
@@ -376,6 +386,10 @@ o Orca inicia; nao e modelo do dispatcher.
 - Timeout: falha de label/comentario no 1o ciclo retenta e finaliza so no 2o.
 - Logs capturados sem tokens/senhas/credenciais.
 - Sanitizacao de segredos efetiva; sem mutacao global de CONFIG nos testes.
+- Objeto PR canonico ponta a ponta: state, attachment e comentario exigem a URL canonica exata.
+- Verificador adulterado (8 formas) nunca alcanca sinks; monitor rejeita branch PR com numero divergente.
+- `gh_pr_for_url` devolve objeto canonico validado (SHA normalizado; sujo falha fechado).
+- Canonicalizacao convergente com limites: nao-convergente/superlimite vira `[REDACTED]`; payload grande limitado.
 - Nenhuma chamada a modelo/LLM no polling e na coordenacao.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
 
