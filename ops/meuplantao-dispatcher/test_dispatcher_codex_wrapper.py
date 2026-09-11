@@ -789,6 +789,7 @@ class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
             "wrapper_mode": "script_wrapper",
             "wrapper_path": str(script_path),
             "wrapper_sha256": digest,
+            "runtime_env_source": {"OPENCODE_API_KEY": "dummy-runtime-key"},
         }
         entry.update(overrides)
         return entry
@@ -1179,3 +1180,85 @@ class CodexScriptWrapperOperationalRouteTests(unittest.TestCase):
             self.assertEqual(matched["model"], "muse-spark-1.3-contributor")
             self.assertEqual(matched["provider"], "opencode-go")
             self.assertEqual(matched["reasoning"], "high")
+
+    def test_red_wrapper_trailing_control_operators_rejected(self):
+        for evil_op in ("&&evil", "&evil", "|evil"):
+            bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  %*\n", f"  %*{evil_op}\n")
+            with tempfile.TemporaryDirectory() as d:
+                home = _home_with_diverging_codex(d)
+                script_path, digest = self._create_script(d, content=bad_content)
+                settings = _settings_path(d, self._good_script_payload(script_path))
+                entry = self._script_entry(script_path, digest)
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_redirections_without_spaces_rejected(self):
+        for evil_redir in (">evil", "<evil", ">>evil"):
+            bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  %*\n", f"  %*{evil_redir}\n")
+            with tempfile.TemporaryDirectory() as d:
+                home = _home_with_diverging_codex(d)
+                script_path, digest = self._create_script(d, content=bad_content)
+                settings = _settings_path(d, self._good_script_payload(script_path))
+                entry = self._script_entry(script_path, digest)
+                with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                    with _orca_env(d):
+                        with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                            with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                                dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_second_line_remote_command_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT + "\nremote.exe something\n"
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "ambiguous execution route"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_wrapper_extra_unaccounted_tokens_after_invocation_rejected(self):
+        bad_content = SANITY_SCRIPT_WRAPPER_CONTENT.replace("  %*\n", "  %* evil\n")
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d, content=bad_content)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            entry = self._script_entry(script_path, digest)
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-test-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "unauthorized token"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_red_runtime_env_missing_while_dispatcher_has_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            # Dispatcher process sees OPENCODE_API_KEY, but authoritative runtime source does NOT have it
+            entry = self._script_entry(script_path, digest, runtime_env_source={})
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-dispatcher-key"}):
+                        with self.assertRaisesRegex(RuntimeError, "worker auth mismatch"):
+                            dispatcher.preflight_model(home=home)
+
+    def test_green_runtime_env_file_source_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            script_path, digest = self._create_script(d)
+            settings = _settings_path(d, self._good_script_payload(script_path))
+            env_file = Path(d) / "orca-runtime.env"
+            env_file.write_text("OPENCODE_API_KEY=runtime-secret\nOTHER_VAR=1\n", encoding="utf-8")
+            entry = self._script_entry(script_path, digest, runtime_env_source=None, runtime_env_file=str(env_file))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with _orca_env(d):
+                    with patch.dict(os.environ, {"OPENCODE_API_KEY": "dummy-dispatcher-key"}):
+                        matched = dispatcher.preflight_model(home=home)
+            self.assertEqual(matched["id"], "codex-spark")
+            self.assertEqual(matched["model"], "muse-spark-1.3-contributor")

@@ -182,6 +182,8 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             "wrapper_sha256": wrapper_sha256,
             "allowed_default_args": allowed_args,
             "forbid_substrings": forbid_tuple,
+            "runtime_env_source": entry.get("runtime_env_source"),
+            "runtime_env_file": entry.get("runtime_env_file"),
         })
     return normalized
 
@@ -541,6 +543,53 @@ def resolve_cmd_logical_lines(text: str) -> list[str]:
     return logical_lines
 
 
+BATCH_CONTROL_METACHARS = ("&", "|", "<", ">")
+
+
+def has_unquoted_batch_metachars(line: str) -> bool:
+    in_quote = False
+    quote_char = ""
+    for char in line:
+        if in_quote:
+            if char == quote_char:
+                in_quote = False
+                quote_char = ""
+        else:
+            if char in ('"', "'"):
+                in_quote = True
+                quote_char = char
+            elif char in BATCH_CONTROL_METACHARS:
+                return True
+    return False
+
+
+def is_batch_comment(line: str) -> bool:
+    stripped = line.strip()
+    if stripped.startswith("::") or stripped.startswith("@::"):
+        return True
+    lowered = stripped.lower()
+    return (
+        lowered == "rem"
+        or lowered.startswith("rem ")
+        or lowered.startswith("rem\t")
+        or lowered == "@rem"
+        or lowered.startswith("@rem ")
+        or lowered.startswith("@rem\t")
+    )
+
+
+def is_batch_echo(line: str) -> bool:
+    stripped = line.strip()
+    lowered = stripped.lower()
+    return (
+        lowered in ("@echo off", "echo off")
+        or lowered.startswith("@echo ")
+        or lowered.startswith("echo ")
+        or lowered.startswith("@echo\t")
+        or lowered.startswith("echo\t")
+    )
+
+
 def extract_effective_codex_command(text: str, worker_id: str) -> str:
     lines = resolve_cmd_logical_lines(text)
     executable_statements: list[str] = []
@@ -549,14 +598,17 @@ def extract_effective_codex_command(text: str, worker_id: str) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        lowered = stripped.lower()
-        if lowered.startswith("rem") or lowered.startswith("::"):
-            continue
-        if lowered == "@echo off" or lowered == "echo off" or lowered.startswith("@echo ") or lowered.startswith("echo "):
+        if is_batch_comment(stripped):
             continue
 
-        if any(op in stripped for op in (" && ", " & ", " || ", " | ", ";")):
+        # Reject control metacharacters outside quotes on any non-comment line
+        if has_unquoted_batch_metachars(stripped):
             raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+        if is_batch_echo(stripped):
+            continue
+
+        lowered = stripped.lower()
         first_word = lowered.split(None, 1)[0]
         if first_word in ("if", "goto", "for", "while", "do"):
             raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
@@ -569,7 +621,11 @@ def extract_effective_codex_command(text: str, worker_id: str) -> str:
         raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
 
     exec_line = executable_statements[0]
-    tokens = shlex.split(exec_line, posix=False)
+    try:
+        tokens = shlex.split(exec_line, posix=False)
+    except ValueError:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
     if not tokens:
         raise RuntimeError(f"preflight: codex wrapper missing execution route (worker_id={worker_id})")
 
@@ -583,6 +639,23 @@ def extract_effective_codex_command(text: str, worker_id: str) -> str:
     base_name = Path(target_cmd).name.lower()
     if base_name not in CODEX_CALL_NAMES:
         raise RuntimeError(f"preflight: codex wrapper unauthorized command (worker_id={worker_id})")
+
+    # Strict minimal grammar validation for the remainder of the invocation
+    flag_idx = cmd_idx + 1
+    while flag_idx < len(tokens):
+        tok = tokens[flag_idx]
+        if tok == "%*":
+            flag_idx += 1
+            break
+        if tok == "-c":
+            if flag_idx + 1 >= len(tokens):
+                raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+            flag_idx += 2
+        else:
+            raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
+
+    if flag_idx < len(tokens):
+        raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
 
     return exec_line
 
@@ -650,8 +723,85 @@ def parse_wrapper_script_config(text: str, worker_id: str, expected_provider: st
     }
 
 
+def read_authoritative_runtime_env(
+    env_key: str,
+    entry: dict,
+    runtime_env_source: Any = None,
+) -> bool:
+    """
+    Determines whether the specified environment variable is authoritatively
+    present in the Orca runtime execution environment without recording, logging,
+    or publishing the secret value.
+    """
+    if not env_key:
+        return False
+
+    source = runtime_env_source
+    if source is None:
+        source = entry.get("runtime_env_source")
+    if source is None and entry.get("runtime_env_file"):
+        source = entry.get("runtime_env_file")
+
+    if source is not None:
+        if callable(source):
+            return bool(source(env_key))
+        if isinstance(source, dict):
+            val = source.get(env_key)
+            return bool(val and str(val).strip())
+        if isinstance(source, (str, Path)):
+            source_path = Path(source)
+            if source_path.is_file():
+                try:
+                    for line in source_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("#") or not stripped or "=" not in stripped:
+                            continue
+                        k, v = stripped.split("=", 1)
+                        if k.strip() == env_key:
+                            val_clean = v.strip().strip('"').strip("'")
+                            return bool(val_clean)
+                except Exception:
+                    return False
+            return False
+
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
+                    val, _ = winreg.QueryValueEx(key, env_key)
+                    if val and str(val).strip():
+                        return True
+            except (FileNotFoundError, OSError):
+                pass
+
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                ) as key:
+                    val, _ = winreg.QueryValueEx(key, env_key)
+                    if val and str(val).strip():
+                        return True
+            except (FileNotFoundError, OSError):
+                pass
+        except Exception:
+            pass
+        return False
+
+    if entry.get("allow_process_env_fallback"):
+        val = os.environ.get(env_key)
+        return bool(val and str(val).strip())
+
+    return False
+
+
 def read_codex_script_wrapper_route(
-    entry: dict, home: Path | None = None, settings_path: Path | str | None = None
+    entry: dict,
+    home: Path | None = None,
+    settings_path: Path | str | None = None,
+    runtime_env_source: Any = None,
 ) -> dict:
     worker_id = str(entry.get("id", "") or "")
     if entry.get("command") != CODEX_WRAPPER_KEY or entry.get("identity") != CODEX_WRAPPER_KEY:
@@ -710,7 +860,12 @@ def read_codex_script_wrapper_route(
     require_empty_wrapper_default_env(settings_data, worker_id)
 
     env_key = route.get("env_key")
-    if not env_key or not os.environ.get(env_key):
+    dispatcher_has_key = bool(env_key and os.environ.get(env_key))
+    runtime_has_key = bool(
+        env_key and read_authoritative_runtime_env(env_key, entry, runtime_env_source=runtime_env_source)
+    )
+
+    if not dispatcher_has_key or not runtime_has_key:
         auth_present = False
         auth_mode = ""
     else:
@@ -730,11 +885,16 @@ def read_codex_script_wrapper_route(
 
 
 def worker_evidence(
-    entry: dict, home: Path | None = None, settings_path: Path | str | None = None
+    entry: dict,
+    home: Path | None = None,
+    settings_path: Path | str | None = None,
+    runtime_env_source: Any = None,
 ) -> dict | None:
     if is_wrapper_codex_worker(entry):
         if entry.get("wrapper_mode") == WRAPPER_MODE_SCRIPT_WRAPPER:
-            return read_codex_script_wrapper_route(entry, home=home, settings_path=settings_path)
+            return read_codex_script_wrapper_route(
+                entry, home=home, settings_path=settings_path, runtime_env_source=runtime_env_source
+            )
         return read_codex_wrapper_route(entry, home=home, settings_path=settings_path)
     if is_codex_worker(entry):
         return read_codex_state(home)
@@ -887,9 +1047,13 @@ def slugify(identifier: str, title: str) -> str:
     return f"{identifier.upper()}-{slug}"
 
 
-def preflight_model(home: Path | None = None, settings_path: Path | str | None = None) -> dict:
+def preflight_model(
+    home: Path | None = None,
+    settings_path: Path | str | None = None,
+    runtime_env_source: Any = None,
+) -> dict:
     entry = selected_worker()
-    evidence = worker_evidence(entry, home, settings_path)
+    evidence = worker_evidence(entry, home, settings_path, runtime_env_source=runtime_env_source)
     return validate_worker(entry, evidence)
 
 
