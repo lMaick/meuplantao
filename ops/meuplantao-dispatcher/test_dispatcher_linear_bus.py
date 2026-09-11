@@ -100,6 +100,9 @@ def _run_sync_capture_logs(state):
     return "\n".join(record.getMessage() for record in records)
 
 
+CANON_PR_44 = "https://github.com/example/repository/pull/44"
+
+
 class LinearBusTests(unittest.TestCase):
     def test_no_global_config_mutation_at_import(self):
         lines = Path(__file__).read_text(encoding="utf-8").splitlines()
@@ -214,7 +217,7 @@ class LinearBusTests(unittest.TestCase):
     def test_linear_report_drives_review_without_github_discovery(self):
         state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
         comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=12 ok"]
-        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
               "statusCheckRollup": []}
         with patch.object(dispatcher, "orca", return_value=_linear_issue("In Progress", [], comments=comments)), \
              patch.object(dispatcher, "linear_comment"), \
@@ -244,7 +247,7 @@ class LinearBusTests(unittest.TestCase):
 
     def test_needs_review_notifies_hermes_exactly_once_per_fingerprint(self):
         state = {"issues": {}}
-        pr = {"number": 41, "headRefOid": "sha-1", "url": "https://example.test/pr/41",
+        pr = {"number": 41, "headRefOid": "sha-1", "url": "https://github.com/example/repository/pull/41",
               "statusCheckRollup": []}
         with patch.object(dispatcher, "orca"), \
              patch.object(dispatcher, "linear_comment") as comment, \
@@ -258,9 +261,9 @@ class LinearBusTests(unittest.TestCase):
 
     def test_new_sha_resets_hermes_fingerprint(self):
         state = {"issues": {}}
-        pr1 = {"number": 42, "headRefOid": "sha-old", "url": "https://example.test/pr/42",
+        pr1 = {"number": 42, "headRefOid": "sha-old", "url": "https://github.com/example/repository/pull/42",
                "statusCheckRollup": []}
-        pr2 = {"number": 42, "headRefOid": "sha-new", "url": "https://example.test/pr/42",
+        pr2 = {"number": 42, "headRefOid": "sha-new", "url": "https://github.com/example/repository/pull/42",
                "statusCheckRollup": []}
         with patch.object(dispatcher, "orca"), \
              patch.object(dispatcher, "linear_comment") as comment, \
@@ -340,7 +343,7 @@ class LinearBusTests(unittest.TestCase):
     def test_divergent_report_never_promotes_across_two_cycles(self):
         state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
         comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=deadbeef tests=ok"]
-        reported = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        reported = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
                     "statusCheckRollup": []}
         branch_pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
                      "statusCheckRollup": []}
@@ -422,7 +425,7 @@ class LinearBusTests(unittest.TestCase):
         comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=12 ok"]
         payload = _linear_issue("In Progress", [], comments=comments)
         calls = []
-        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
               "statusCheckRollup": []}
         with patch.object(dispatcher, "linear_comment") as comment, \
              patch.object(dispatcher, "gh_pr_for_url", return_value=pr):
@@ -626,7 +629,7 @@ class LinearBusTests(unittest.TestCase):
 
     def test_review_ack_derivable_from_linear_review_comment(self):
         state = {"issues": {}}
-        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
               "statusCheckRollup": []}
         with patch.object(dispatcher, "orca", return_value={}), \
              patch.object(dispatcher, "linear_comment") as comment, \
@@ -721,7 +724,7 @@ class LinearBusTests(unittest.TestCase):
                  "-----BEGIN RSA PRIVATE KEY----- M7 -----END RSA PRIVATE KEY-----")
         state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
         comments = ["MeuPlantao-Report: delivery pr=" + raw_url + " sha=abc1234 tests=" + tests]
-        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
               "statusCheckRollup": []}
         with patch.object(dispatcher, "orca",
                           return_value=_linear_issue("In Progress", [], comments=comments)), \
@@ -731,7 +734,7 @@ class LinearBusTests(unittest.TestCase):
             dispatcher.sync_worker_reports(state)
         stored = state["issues"]["MAI-69"].get("workerReport") or {}
         self.assertEqual(stored.get("kind"), "delivery")
-        self.assertEqual(stored.get("pr"), "https://example.test/pr/44")
+        self.assertEqual(stored.get("pr"), "https://github.com/example/repository/pull/44")
         self.assertNotEqual(stored.get("pr"), raw_url)
         dump = json.dumps(stored)
         for secret in ("live-tok-AAA111", "sk-m7", "q 1", "pctok-999", "pw-m7",
@@ -742,7 +745,7 @@ class LinearBusTests(unittest.TestCase):
         reported = "https://example.test/pr/99?next=https://evil.test/x"
         state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
         comments = ["MeuPlantao-Report: delivery pr=" + reported + " sha=abc1234 tests=ok"]
-        canonical = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        canonical = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
                      "statusCheckRollup": []}
         with patch.object(dispatcher, "orca",
                           return_value=_linear_issue("In Progress", [], comments=comments)), \
@@ -751,7 +754,7 @@ class LinearBusTests(unittest.TestCase):
              patch.object(dispatcher, "gh_pr_for_url", return_value=canonical):
             dispatcher.sync_worker_reports(state)
         stored = state["issues"]["MAI-69"].get("workerReport") or {}
-        self.assertEqual(stored.get("pr"), "https://example.test/pr/44")
+        self.assertEqual(stored.get("pr"), "https://github.com/example/repository/pull/44")
         dump = json.dumps(stored)
         self.assertNotIn("evil.test", dump)
         self.assertNotIn("pr/99", dump)
@@ -827,7 +830,7 @@ class LinearBusTests(unittest.TestCase):
         tests = _encode_layers("Bearer sink-tok-5", 5)
         state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
         comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=" + tests]
-        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://github.com/example/repository/pull/44",
               "statusCheckRollup": []}
         with patch.object(dispatcher, "orca",
                           return_value=_linear_issue("In Progress", [], comments=comments)), \
@@ -869,6 +872,90 @@ class LinearBusTests(unittest.TestCase):
                 + "\n".join(c.args[1] for c in comment.call_args_list) + "\n"
                 + logged)
         self.assertNotIn("blksink-tok-7", _decode_all(blob))
+
+
+    def test_canonical_pr_object_propagates_to_all_sinks(self):
+        comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=ok"]
+        pr = {"number": 44, "headRefOid": "abc1234", "url": CANON_PR_44,
+              "statusCheckRollup": []}
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)) as orca_mock, \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=pr):
+            dispatcher.sync_worker_reports(state)
+        stored = state["issues"]["MAI-69"].get("workerReport") or {}
+        self.assertEqual(stored.get("pr"), CANON_PR_44)
+        self.assertEqual(state["issues"]["MAI-69"].get("pr"), CANON_PR_44)
+        self.assertEqual(state["issues"]["MAI-69"].get("reviewMarker"), "44:abc1234")
+        attach = [c for c in orca_mock.call_args_list
+                  if c.args[:2] == ("linear", "attach")]
+        self.assertEqual(len(attach), 1)
+        args = attach[0].args
+        self.assertEqual(args[args.index("--url") + 1], CANON_PR_44)
+        bodies = " ".join(c.args[1] for c in comment.call_args_list)
+        self.assertIn(CANON_PR_44, bodies)
+        blob = json.dumps(state) + "\n" + bodies
+        self.assertNotIn("example.test", blob)
+
+    def test_tampered_verifier_output_never_reaches_sinks(self):
+        dirty_urls = [
+            "https://evil.test/example/repository/pull/44",
+            "https://github.com/example/repository/pull/44?utm=evil&token=zzz",
+            "https://bot:s3cret@github.com/example/repository/pull/44",
+            "http://github.com/example/repository/pull/44",
+            "https://github.com/example/repository/pull/99",
+            "https://github.com/other/repo/pull/44",
+            "https://github.com:8443/example/repository/pull/44",
+            "https://github.com/example/repository/pull/44#frag",
+        ]
+        for dirty in dirty_urls:
+            state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+            comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=ok"]
+            pr = {"number": 44, "headRefOid": "abc1234", "url": dirty,
+                  "statusCheckRollup": []}
+            with patch.object(dispatcher, "orca",
+                              return_value=_linear_issue("In Progress", [], comments=comments)), \
+                 patch.object(dispatcher, "linear_comment") as comment, \
+                 patch.object(dispatcher, "save_state"), \
+                 patch.object(dispatcher, "gh_pr_for_url", return_value=pr):
+                dispatcher.sync_worker_reports(state)
+            local = state["issues"]["MAI-69"]
+            self.assertEqual(local.get("status"), "dispatched", dirty)
+            self.assertNotIn("workerReport", local, dirty)
+            self.assertNotIn("reviewMarker", local, dirty)
+            blob = json.dumps(local) + "\n" + " ".join(
+                c.args[1] for c in comment.call_args_list)
+            self.assertNotIn("evil.test", blob, dirty)
+            self.assertNotIn("s3cret", blob, dirty)
+            self.assertNotIn("other/repo", blob, dirty)
+            self.assertNotIn("pull/99", blob, dirty)
+
+    def test_mark_for_review_rejects_noncanonical_pr(self):
+        state = {"issues": {}}
+        dirty = {"number": 44, "headRefOid": "abc1234",
+                 "url": "https://evil.test/example/repository/pull/44",
+                 "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca"), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"):
+            with self.assertRaises(RuntimeError):
+                dispatcher.mark_for_review("MAI-69", dirty, state)
+        self.assertNotIn("MAI-69", state.get("issues", {}))
+
+    def test_gh_pr_for_url_returns_validated_canonical_object(self):
+        clean = {"number": 44, "url": CANON_PR_44, "headRefOid": "ABC1234",
+                 "title": "t", "state": "OPEN", "baseRefName": "main"}
+        with patch.object(dispatcher, "run", return_value=json.dumps(clean)):
+            pr = dispatcher.gh_pr_for_url("https://example.test/pr/44")
+        self.assertEqual(pr["url"], CANON_PR_44)
+        self.assertEqual(pr["number"], 44)
+        self.assertEqual(pr["headRefOid"], "abc1234")
+        dirty = dict(clean, url="https://evil.test/example/repository/pull/44")
+        with patch.object(dispatcher, "run", return_value=json.dumps(dirty)):
+            with self.assertRaises(RuntimeError):
+                dispatcher.gh_pr_for_url("https://example.test/pr/44")
 
 
 class _NoopLock:

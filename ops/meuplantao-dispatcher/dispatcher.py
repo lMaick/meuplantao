@@ -768,6 +768,51 @@ _SECRET_VALUE_RE = r"\"[^\"]*\"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|\S+"
 _URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 
 
+def canonical_pr(raw: object) -> dict:
+    """Validate verifier output into the single canonical PR object.
+    MAI-73: report.pr is untrusted input used only for lookup; every sink
+    (workerReport.pr, issue.pr, attachment, comment, reviewMarker) must derive
+    exclusively from this validated object. Rejects fail-closed anything that
+    is not an HTTPS github.com URL for the configured repo in strict
+    /<repo>/pull/<number> form with matching number, no userinfo, no port,
+    no query and no fragment. Returns a normalized copy; never mutates input.
+    """
+    if not isinstance(raw, dict):
+        raise RuntimeError("PR verification failed for reported delivery")
+    try:
+        number = int(raw.get("number"))
+    except (TypeError, ValueError):
+        raise RuntimeError("PR verification failed for reported delivery")
+    head = str(raw.get("headRefOid") or "").strip().lower()
+    if not head:
+        raise RuntimeError("PR verification failed for reported delivery")
+    parts = urlsplit(str(raw.get("url") or "").strip())
+    if parts.scheme.lower() != "https":
+        raise RuntimeError("PR URL is not canonical")
+    if parts.username or parts.password:
+        raise RuntimeError("PR URL is not canonical")
+    if parts.query or parts.fragment:
+        raise RuntimeError("PR URL is not canonical")
+    try:
+        port = parts.port
+    except ValueError:
+        raise RuntimeError("PR URL is not canonical")
+    if port:
+        raise RuntimeError("PR URL is not canonical")
+    if (parts.hostname or "").lower() != "github.com":
+        raise RuntimeError("PR URL is not canonical")
+    repo = str(CONFIG.get("github_repo") or "").strip().strip("/")
+    if not repo:
+        raise RuntimeError("PR URL is not canonical")
+    if parts.path != "/" + repo + "/pull/" + str(number):
+        raise RuntimeError("PR URL is not canonical")
+    clean = dict(raw)
+    clean["number"] = number
+    clean["headRefOid"] = head
+    clean["url"] = "https://github.com/" + repo + "/pull/" + str(number)
+    return clean
+
+
 def canonical_pr_url(url: object) -> str:
     parts = urlsplit(str(url or "").strip())
     host = (parts.hostname or "").strip().lower()
@@ -979,7 +1024,7 @@ def gh_pr_for_url(url: str) -> dict:
         raise RuntimeError("reported PR is not open")
     if pr.get("baseRefName") != "main":
         raise RuntimeError("reported PR base branch is not main")
-    return pr
+    return canonical_pr(pr)
 
 
 def record_worker_report(issue_id: str, kind: str, text: str, state: dict) -> bool:
@@ -1022,12 +1067,12 @@ def sync_worker_reports(state: dict) -> int:
             continue
         try:
             if report["kind"] == "delivery":
-                pr = gh_pr_for_url(report["pr"])
+                pr = canonical_pr(gh_pr_for_url(report["pr"]))
                 if str(pr.get("headRefOid") or "").lower() != report["sha"]:
                     LOG.error("Reported SHA does not match PR head for %s; waiting for fresh report", issue_id)
                     continue
                 local["workerReport"] = {"kind": "delivery",
-                                         "pr": canonical_pr_url(pr.get("url")),
+                                         "pr": pr["url"],
                                          "sha": report["sha"],
                                          "tests": sanitize_for_linear(report.get("tests", ""), 300),
                                          "number": pr.get("number"),
@@ -1239,8 +1284,7 @@ def gh_pr_for_branch(branch_ref: str) -> dict | None:
 
 
 def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
-    if not pr.get("number") or not pr.get("headRefOid"):
-        raise ValueError("PR identity incomplete; refusing review transition")
+    pr = canonical_pr(pr)
     issue_state = state["issues"].setdefault(issue_id, {})
     marker = f"{pr['number']}:{pr['headRefOid']}"
     if issue_state.get("reviewMarker") == marker:

@@ -128,7 +128,7 @@ class DispatcherBehaviourTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in calls if c[:2] == ("terminal", "create")), 0)
 
     def test_review_new_pr_writes_expected_commands_but_never_done(self):
-        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "abc123", "url": "https://example.test/pr/32", "statusCheckRollup": []}
+        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "abc123", "url": "https://github.com/example/repository/pull/32", "statusCheckRollup": []}
         with patch.object(dispatcher, "orca") as fake, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
             dispatcher.mark_for_review("MAI-60", pr, state)
         args = [a for c in fake.call_args_list for a in c.args]
@@ -136,7 +136,7 @@ class DispatcherBehaviourTests(unittest.TestCase):
         self.assertNotIn("Done", args)
 
     def test_attachment_attempt_is_at_most_once_after_crash(self):
-        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "crash-a", "url": "https://example.test/pr/32"}
+        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "crash-a", "url": "https://github.com/example/repository/pull/32"}
         with patch.object(dispatcher, "orca", side_effect=RuntimeError("attachment crash")) as fake, patch.object(dispatcher, "save_state"):
             with self.assertRaises(RuntimeError): dispatcher.mark_for_review("MAI-60", pr, state)
         with patch.object(dispatcher, "orca") as retry, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
@@ -146,7 +146,7 @@ class DispatcherBehaviourTests(unittest.TestCase):
         self.assertTrue(state["issues"]["MAI-60"]["reviewStages"]["attachmentAttempted"])
 
     def test_comment_attempt_is_at_most_once_after_crash(self):
-        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "crash-c", "url": "https://example.test/pr/32"}
+        state = {"issues": {}}; pr = {"number": 32, "headRefOid": "crash-c", "url": "https://github.com/example/repository/pull/32"}
         with patch.object(dispatcher, "orca"), patch.object(dispatcher, "linear_comment", side_effect=RuntimeError("comment crash")) as comment, patch.object(dispatcher, "save_state"):
             with self.assertRaises(RuntimeError): dispatcher.mark_for_review("MAI-60", pr, state)
         with patch.object(dispatcher, "orca") as retry_orca, patch.object(dispatcher, "linear_comment") as retry_comment, patch.object(dispatcher, "save_state"):
@@ -158,7 +158,7 @@ class DispatcherBehaviourTests(unittest.TestCase):
 
     def test_new_marker_resets_stages_and_applies_new_review_effects(self):
         state = {"issues": {"MAI-60": {"reviewMarker": "32:old", "reviewStages": {"marker": "32:old", "attachmentDone": True, "commentDone": True}}}}
-        pr = {"number": 32, "headRefOid": "new-sha", "url": "https://example.test/pr/32", "statusCheckRollup": []}
+        pr = {"number": 32, "headRefOid": "new-sha", "url": "https://github.com/example/repository/pull/32", "statusCheckRollup": []}
         with patch.object(dispatcher, "orca") as fake, patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
             dispatcher.mark_for_review("MAI-60", pr, state)
         args = [a for c in fake.call_args_list for a in c.args]
@@ -168,11 +168,11 @@ class DispatcherBehaviourTests(unittest.TestCase):
     def test_same_pr_marker_performs_zero_writes(self):
         state = {"issues": {"MAI-60": {"reviewMarker": "32:abc123"}}}
         with patch.object(dispatcher, "orca") as fake, patch.object(dispatcher, "save_state"):
-            dispatcher.mark_for_review("MAI-60", {"number": 32, "headRefOid": "abc123", "url": "https://example.test/pr/32"}, state)
+            dispatcher.mark_for_review("MAI-60", {"number": 32, "headRefOid": "abc123", "url": "https://github.com/example/repository/pull/32"}, state)
         fake.assert_not_called()
 
     def test_pr_without_identity_fails_closed(self):
-        with self.assertRaises(ValueError): dispatcher.mark_for_review("MAI-60", {}, {"issues": {}})
+        with self.assertRaises((ValueError, RuntimeError)): dispatcher.mark_for_review("MAI-60", {}, {"issues": {}})
 
     def test_lock_second_acquisition_returns_none(self):
         with tempfile.TemporaryDirectory() as d, patch.object(dispatcher, "ROOT", Path(d)), patch.object(dispatcher, "LOCK_PATH", Path(d) / "dispatcher.lock"):
