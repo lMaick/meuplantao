@@ -1352,8 +1352,7 @@ def gh_pr_for_branch(branch_ref: str) -> dict | None:
 
 
 def mark_for_review(issue_id: str, pr: dict, state: dict) -> None:
-    if not isinstance(pr, dict) or not pr.get("number") or not pr.get("headRefOid"):
-        raise ValueError("PR identity incomplete; refusing review transition")
+    pr = canonical_pr(pr)
     issue_state = state["issues"].setdefault(issue_id, {})
     marker = f"{pr['number']}:{pr['headRefOid']}"
     if issue_state.get("reviewMarker") == marker:

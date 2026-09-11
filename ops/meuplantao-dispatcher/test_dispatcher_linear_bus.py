@@ -1159,6 +1159,109 @@ class ClosedPRSchemaTests(unittest.TestCase):
         self.assertNotIn("workerReport", local)
         self.assertNotIn("reviewMarker", local)
 
+class MarkForReviewBoundaryTests(unittest.TestCase):
+    def _valid_pr(self, **over):
+        base = {"number": 44, "headRefOid": "abc1234",
+                "url": "https://github.com/example/repository/pull/44",
+                "statusCheckRollup": []}
+        base.update(over)
+        return base
+    def _sink_text(self, state, orca_mock, comment_mock):
+        snapshot = json.dumps(state.get("issues", {}).get("MAI-69", {}),
+                              sort_keys=True, default=str)
+        attach_urls = [args[4] for args in (c.args for c in orca_mock.call_args_list)
+                       if len(args) >= 5 and args[1] == "attach"]
+        bodies = [c.args[1] for c in comment_mock.call_args_list]
+        marker = state.get("issues", {}).get("MAI-69", {}).get("reviewMarker")
+        return snapshot, attach_urls, bodies, marker
+    def test_direct_spoofed_urls_fail_closed_without_raw_sinks(self):
+        spoofed = [
+            "https://evil.test/example/repository/pull/44",
+            "https://github.com/evil/repository/pull/44",
+            "https://github.com/example/wrong/pull/44",
+            "https://mallory:secret@github.com/example/repository/pull/44",
+            "https://github.com/example/repository/pull/44?x=1",
+            "https://github.com/example/repository/pull/44#frag",
+            "https://github.com:443/example/repository/pull/44",
+            "http://github.com/example/repository/pull/44",
+            "https://github.com/example/repository/pull/45",
+        ]
+        for raw_url in spoofed:
+            with self.subTest(url=raw_url):
+                state = {"issues": {}}
+                pr = self._valid_pr(url=raw_url)
+                with patch.object(dispatcher, "orca") as orca_mock, patch.object(dispatcher, "linear_comment") as comment_mock, patch.object(dispatcher, "save_state"):
+                    with self.assertRaises(RuntimeError):
+                        dispatcher.mark_for_review("MAI-69", pr, state)
+                local = state.get("issues", {}).get("MAI-69", {})
+                self.assertNotEqual(local.get("status"), "needs-review")
+                self.assertNotIn("reviewMarker", local)
+                snapshot, attach_urls, bodies, _ = self._sink_text(state, orca_mock, comment_mock)
+                self.assertNotIn(raw_url, snapshot)
+                self.assertNotIn(raw_url, " ".join(bodies))
+                for attached in attach_urls:
+                    self.assertNotEqual(attached, raw_url)
+                self.assertNotIn("evil", snapshot)
+                self.assertNotIn("mallory", snapshot)
+    def test_direct_invalid_sha_forms_fail_closed(self):
+        bad_shas = ["", "   ", 12345, ["abc1234"], "x" * 129]
+        for bad in bad_shas:
+            with self.subTest(sha=bad):
+                state = {"issues": {}}
+                pr = self._valid_pr(headRefOid=bad)
+                with patch.object(dispatcher, "orca") as orca_mock, patch.object(dispatcher, "linear_comment") as comment_mock, patch.object(dispatcher, "save_state"):
+                    with self.assertRaises(RuntimeError):
+                        dispatcher.mark_for_review("MAI-69", pr, state)
+                local = state.get("issues", {}).get("MAI-69", {})
+                self.assertNotEqual(local.get("status"), "needs-review")
+                self.assertNotIn("reviewMarker", local)
+    def test_uppercase_sha_normalized_in_all_sinks(self):
+        state = {"issues": {}}
+        pr = self._valid_pr(headRefOid="ABC1234")
+        with patch.object(dispatcher, "orca") as orca_mock, patch.object(dispatcher, "linear_comment") as comment_mock, patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-69", pr, state)
+        local = state["issues"]["MAI-69"]
+        self.assertEqual(local["headSha"], "abc1234")
+        self.assertEqual(local["reviewMarker"], "44:abc1234")
+        snapshot, attach_urls, bodies, marker = self._sink_text(state, orca_mock, comment_mock)
+        self.assertEqual(marker, "44:abc1234")
+        self.assertNotIn("ABC1234", snapshot)
+        self.assertNotIn("ABC1234", " ".join(bodies))
+        self.assertIn("https://github.com/example/repository/pull/44", snapshot)
+        self.assertIn("https://github.com/example/repository/pull/44", attach_urls)
+    def test_extra_fields_stripped_from_all_sinks(self):
+        state = {"issues": {}}
+        pr = self._valid_pr(title="t", state="OPEN", baseRefName="main",
+                            author={"login": "mallory"}, evil="payload",
+                            token="ghp_0123456789abcdef0123456789abcdef0123",
+                            statusCheckRollup=[{"name": "ci", "conclusion": "ok", "evil": 1}])
+        with patch.object(dispatcher, "orca") as orca_mock, patch.object(dispatcher, "linear_comment") as comment_mock, patch.object(dispatcher, "save_state"):
+            dispatcher.mark_for_review("MAI-69", pr, state)
+        local = state["issues"]["MAI-69"]
+        self.assertEqual(local["pr"], "https://github.com/example/repository/pull/44")
+        self.assertEqual(local["reviewMarker"], "44:abc1234")
+        snapshot, attach_urls, bodies, _ = self._sink_text(state, orca_mock, comment_mock)
+        for probe in ("evil", "mallory", "ghp_0123456789abcdef0123456789abcdef0123", "OPEN", "baseRefName"):
+            self.assertNotIn(probe, snapshot)
+            self.assertNotIn(probe, " ".join(bodies))
+            for attached in attach_urls:
+                self.assertNotIn(probe, attached)
+    def test_sync_path_with_spoofed_verifier_output_fails_closed(self):
+        comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=ok"]
+        spoofed = {"number": 44, "headRefOid": "abc1234",
+                   "url": "https://evil.test/example/repository/pull/44",
+                   "statusCheckRollup": []}
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        with patch.object(dispatcher, "orca", return_value=_linear_issue("In Progress", [], comments=comments)), patch.object(dispatcher, "linear_comment") as comment_mock, patch.object(dispatcher, "save_state"), patch.object(dispatcher, "gh_pr_for_url", return_value=dict(spoofed)):
+            dispatcher.sync_worker_reports(state)
+        local = state["issues"]["MAI-69"]
+        self.assertEqual(local.get("status"), "dispatched")
+        self.assertNotIn("reviewMarker", local)
+        blob = json.dumps(local, sort_keys=True, default=str)
+        self.assertNotIn("evil.test", blob)
+        self.assertNotIn("evil.test", " ".join(c.args[1] for c in comment_mock.call_args_list))
+
+
 class _NoopLock:
     def seek(self, *a):
         return None
