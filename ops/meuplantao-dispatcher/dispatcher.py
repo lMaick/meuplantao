@@ -67,6 +67,7 @@ CODEX_WRAPPER_KEY = "codex"
 WRAPPER_MODEL_FLAGS = ("--model",)
 WRAPPER_PROVIDER_FLAGS = ("--provider",)
 WRAPPER_REASONING_FLAGS = ("--reasoning", "--effort", "--reasoning-effort", "--reasoning_effort")
+WRAPPER_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 
 
 def _pick(mapping: dict, *names: str) -> str:
@@ -100,6 +101,17 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             raise RuntimeError(f"preflight: worker policy entry {index} missing id/model/reasoning/command/identity/auth_mode")
         agent = str(entry.get("agent", "") or "").strip()
         provider = str(entry.get("provider", "") or "").strip()
+        wrapper_executable = str(entry.get("wrapper_executable", "") or "").strip()
+        if wrapper_executable and not WRAPPER_EXECUTABLE_RE.match(wrapper_executable):
+            raise RuntimeError(
+                f"preflight: worker policy entry {index} malformed"
+                " (wrapper_executable must be a bare executable name)"
+            )
+        if agent == "codex" and provider and not wrapper_executable:
+            raise RuntimeError(
+                f"preflight: worker policy entry {index} missing wrapper_executable"
+                " (wrapper-routed codex requires an explicit executable)"
+            )
         forbid = entry.get("forbid_substrings", None)
         if forbid is None:
             forbid = list(DEFAULT_FORBIDDEN_ROUTING) if agent == "codex" else []
@@ -113,6 +125,7 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             "command": command,
             "identity": identity,
             "auth_mode": auth_mode,
+            "wrapper_executable": wrapper_executable,
             "forbid_substrings": forbid_tuple,
         })
     return normalized
@@ -272,19 +285,6 @@ def extract_codex_override(settings_data: dict, worker_id: str):
     raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
 
 
-def _strict_wrapper_field(mapping: dict, names: tuple, worker_id: str) -> list:
-    seen: list = []
-    for key, value in mapping.items():
-        for name in names:
-            if str(key).lower() == name.lower() and value not in (None, ""):
-                if not isinstance(value, str):
-                    raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
-                stripped = value.strip()
-                if stripped:
-                    seen.append(stripped)
-    return seen
-
-
 def _parse_wrapper_flags(tokens: list, worker_id: str) -> dict:
     model_vals: list = []
     provider_vals: list = []
@@ -324,31 +324,15 @@ def _parse_wrapper_flags(tokens: list, worker_id: str) -> dict:
         raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
     if not model_vals[0] or not provider_vals[0] or not reasoning_vals[0]:
         raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
-    return {"model": model_vals[0], "provider": provider_vals[0], "reasoning": reasoning_vals[0]}
+    executable = tokens[0].strip() if tokens else ""
+    if not executable:
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+    return {"executable": executable, "model": model_vals[0], "provider": provider_vals[0], "reasoning": reasoning_vals[0]}
 
 
 def parse_wrapper_route(raw, worker_id: str) -> dict:
-    if isinstance(raw, dict):
-        if "command" in {str(k).lower(): k for k in raw.keys()}:
-            lowered = {str(k).lower(): v for k, v in raw.items()}
-            cmd_value = lowered.get("command")
-            if cmd_value not in (None, ""):
-                if not isinstance(cmd_value, str):
-                    raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
-                if cmd_value.strip() != CODEX_WRAPPER_KEY:
-                    raise RuntimeError(
-                        f"preflight: codex wrapper command not resolved (worker_id={worker_id})"
-                    )
-        models = _strict_wrapper_field(raw, ("model", "model_name"), worker_id)
-        providers = _strict_wrapper_field(raw, ("provider", "agent_provider"), worker_id)
-        reasonings = _strict_wrapper_field(
-            raw, ("reasoning", "reasoning_effort", "model_reasoning_effort", "effort"), worker_id
-        )
-        if len(models) > 1 or len(providers) > 1 or len(reasonings) > 1:
-            raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
-        if not models or not providers or not reasonings:
-            raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
-        return {"model": models[0], "provider": providers[0], "reasoning": reasonings[0]}
+    if not isinstance(raw, str):
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
     if isinstance(raw, str):
         if not raw.strip():
             raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
@@ -359,10 +343,6 @@ def parse_wrapper_route(raw, worker_id: str) -> dict:
         if not tokens:
             raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
         return _parse_wrapper_flags(tokens, worker_id)
-    if isinstance(raw, list):
-        if not raw or any(not isinstance(item, str) for item in raw):
-            raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
-        return _parse_wrapper_flags(list(raw), worker_id)
     raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
 
 
@@ -378,6 +358,9 @@ def read_codex_wrapper_route(
     settings_data = load_orca_settings(resolved, worker_id)
     raw = extract_codex_override(settings_data, worker_id)
     route = parse_wrapper_route(raw, worker_id)
+    expected_executable = str(entry.get("wrapper_executable", "") or "")
+    if not expected_executable or route.get("executable") != expected_executable:
+        raise RuntimeError(f"preflight: codex wrapper command not resolved (worker_id={worker_id})")
     base = home or Path.home()
     auth_data: dict | None = None
     for rel in OPENCODE_REL_AUTHS:
@@ -728,6 +711,10 @@ def create_workspace(issue: dict, worker: dict | None = None) -> tuple[dict, str
 
 def recover_existing(issue: dict, worktree: dict, worker: dict | None = None) -> str:
     active = worker or selected_worker()
+    if is_wrapper_codex_worker(active):
+        raise RuntimeError(
+            f"preflight: codex wrapper recovery unavailable (worker_id={active.get('id', '')})"
+        )
     identity = active["identity"]
     path = worktree["path"]
     terminals = terminals_for_worker(path, active)

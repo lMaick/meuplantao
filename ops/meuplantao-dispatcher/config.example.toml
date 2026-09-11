@@ -11,6 +11,13 @@ ready_label = "Orca Ready"
 review_label = "Needs Review"
 max_dispatch_per_run = 1
 scheduler_task_name = "Hermes-MeuPlantao-Dispatcher"
+# orca_settings_path: CHAVE RAIZ (top-level) com o caminho do settings.json do
+# Orca que contem `settings.agentCmdOverrides` (MAI-81). Deve ficar nesta secao
+# raiz, antes de qualquer [[allowed_workers]]: chave solta depois das tabelas
+# pertenceria a ultima entrada e NAO seria lida. Vazio = sem wrapper (workers
+# nativos). Tambem aceita a env MEUPLANTAO_ORCA_SETTINGS (precedencia maior).
+# Exemplo: orca_settings_path = "C:/Users/<VOCE>/AppData/Roaming/Orca/settings.json"
+orca_settings_path = ""
 # Worker policy (MAI-67): preflight autoriza e executa SOMENTE o worker de
 # worker_id. Sem worker_id, sem [[allowed_workers]] ou com lista vazia, o
 # dispatch falha fechado antes de criar workspace/agente ou alterar a Linear.
@@ -55,8 +62,6 @@ auth_mode = "opencode"
 # modelo/provider/reasoning divergente ou conteudo malformado falha fechado antes
 # de qualquer workspace/agente ou mutacao Linear. Sem credenciais neste arquivo;
 # o settings operacional real nunca e commitado nem usado nos testes.
-# orca_settings_path = "C:/Users/<VOCE>/AppData/Roaming/Orca/settings.json"
-
 [[allowed_workers]]
 id = "codex-spark"
 agent = "codex"
@@ -66,6 +71,7 @@ reasoning = "high"
 command = "codex"
 identity = "codex"
 auth_mode = "opencode"
+wrapper_executable = "opencode"
 
 dispatch_timeout_seconds = 900
 timeout_label = "Dispatch Timeout"

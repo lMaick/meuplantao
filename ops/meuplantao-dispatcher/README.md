@@ -163,18 +163,41 @@ pelo wrapper Orca `settings.agentCmdOverrides.codex`. O `~/.codex/config.toml`
 descreve outra superficie (`gpt-5.6-sol low`) e nao a rota efetiva do processo
 iniciado pelo Orca, por isso o preflight nao confia nele para este worker.
 
+Contrato real confirmado no Orca 1.4.198 instalado (fonte + `--help`, sem
+sintaxe inventada):
+
+- `terminal create --command <texto>` repassa o comando literalmente ao runtime
+(`cli/handlers/terminal.js`): NAO aplica `agentCmdOverrides`. A rota
+agent-aware e `worktree create --agent <id>` (so ids TUI conhecidos via
+`isTuiAgent`, sem flags de modelo) com o comando de lancamento resolvido por
+`resolveAgentLaunchCommand`: `settings.agentCmdOverrides.<agent>` (string que
+substitui o lancamento padrao) + args/eventuais opcoes de sessao.
+- Schema real: `agentCmdOverrides` e objeto `{<agente>: <comando string>}`
+(default `{}` em `shared/default-global-settings.js`); formas dict/lista nao
+sao executadas pelo Orca e sao rejeitadas.
+- Por isso o dispatcher cria via `worktree create --agent codex` (usa o
+override) e a recuperacao em worktree existente falha fechado para workers de
+wrapper: nao existe rota agent-aware via CLI para relancar agente em worktree
+existente, e relancar `codex` literal executaria a superficie errada.
+
 Regras (`dispatcher.py`, antes de qualquer workspace/agente ou mutacao Linear):
 
 - Worker `agent = "codex"` com `provider` declarado e rota de wrapper: a
 evidencia efetiva vem do settings do Orca (`settings.agentCmdOverrides.codex`,
-string/dict/lista, nas formas `settings.agentCmdOverrides` ou raiz
+somente string, nas formas `settings.agentCmdOverrides` ou raiz
 `agentCmdOverrides`), nunca so do `~/.codex/config.toml`.
-- Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` > `orca_settings_path` da
-config; ausente ou ilegivel falha fechado. Worker `codex` nativo (sem
-`provider`) mantem o comportamento anterior e ignora o wrapper.
-- Exige modelo, provider e reasoning exatos da politica, comando/identidade
-`codex` e auth local presente com `auth_mode` exato; o comando efetivamente
-criado continua `codex` (`terminal create --command codex`).
+- A politica exige `wrapper_executable` (nome base, ex. `opencode`): o primeiro
+token do override precisa ser exatamente esse executavel; executavel
+arbitrario com flags corretas e rejeitado (`command not resolved`). Entrada sem
+`wrapper_executable` ou com formato invalido falha na validacao da politica.
+- Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` > `orca_settings_path` RAIZ
+da config (top-level, antes de `[[allowed_workers]]`); ausente ou ilegivel
+falha fechado. Worker `codex` nativo (sem `provider`) mantem o comportamento
+anterior e ignora o wrapper.
+- Exige modelo, provider e reasoning exatos da politica e auth local presente
+com `auth_mode` exato. A criacao usa a rota agent-aware (`worktree create
+--agent codex`, que consome o override); a recuperacao de worker de wrapper
+falha fechado em vez de criar terminal literal.
 - Fail-closed: wrapper ausente, comando nao resolvido, quoting/override ambiguo
 (aspas nao fechadas, flags duplicadas, duplo aninhamento divergente), campo
 ausente, modelo/provider/reasoning divergente, conteudo malformado e auth
@@ -183,10 +206,11 @@ ausente/divergente, tudo antes de qualquer side effect.
 nunca entram em logs, estado ou Linear. Payload Hermes segue estrito
 `{issue, event}`.
 
-Operacao: ver `config.example.toml` (`codex-spark` + `orca_settings_path`) e
-`docs/operations/maick-dispatcher-control.md` (secao MAI-81). Testes:
-`test_dispatcher_codex_wrapper.py` (RED da divergencia, GREEN da rota efetiva e
-fail-closed) + suite completa `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`.
+Operacao: ver `config.example.toml` (`codex-spark` + `orca_settings_path` raiz)
+e `docs/operations/maick-dispatcher-control.md` (secao MAI-81). Testes:
+`test_dispatcher_codex_wrapper.py` (RED da divergencia e da auditoria, GREEN da
+rota efetiva e fail-closed) + suite completa
+`python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`.
 
 Testes: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 (caminho feliz, erro reportado via Linear sem GitHub, timeout com marca no Linear,

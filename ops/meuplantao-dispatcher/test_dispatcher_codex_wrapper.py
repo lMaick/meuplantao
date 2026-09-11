@@ -26,7 +26,8 @@ _fixture.write_text(
     "reasoning = \"high\"\n"
     "command = \"codex\"\n"
     "identity = \"codex\"\n"
-    "auth_mode = \"opencode\"\n",
+    "auth_mode = \"opencode\"\n"
+    "wrapper_executable = \"opencode\"\n",
     encoding="utf-8",
 )
 os.environ["MEUPLANTAO_DISPATCHER_CONFIG"] = str(_fixture)
@@ -43,6 +44,17 @@ SPARK_CODEX_ENTRY = {
     "command": "codex",
     "identity": "codex",
     "auth_mode": "opencode",
+    "wrapper_executable": "opencode",
+}
+
+NATIVE_CODEX_ENTRY = {
+    "id": "codex-luna",
+    "agent": "codex",
+    "model": "gpt-5.6-luna",
+    "reasoning": "low",
+    "command": "codex",
+    "identity": "codex",
+    "auth_mode": "chatgpt",
 }
 
 GOOD_OVERRIDE = (
@@ -121,15 +133,6 @@ class CodexWrapperGreenTests(unittest.TestCase):
         self.assertEqual(matched["provider"], "opencode-go")
         self.assertEqual(matched["reasoning"], "high")
 
-    def test_green_dict_override(self):
-        with tempfile.TemporaryDirectory() as d:
-            home = _home_with_diverging_codex(d)
-            settings = _settings_path(d, _good_payload(dict(GOOD_DICT_OVERRIDE)))
-            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
-                    matched = dispatcher.preflight_model(home=home)
-        self.assertEqual(matched["id"], "codex-spark")
-
     def test_green_toplevel_overrides_without_settings_nesting(self):
         with tempfile.TemporaryDirectory() as d:
             home = _home_with_diverging_codex(d)
@@ -149,7 +152,7 @@ class CodexWrapperGreenTests(unittest.TestCase):
         self.assertEqual(matched["command"], "codex")
         self.assertEqual(matched["identity"], "codex")
 
-    def test_recovery_creates_terminal_with_codex_command(self):
+    def test_recovery_creates_terminal_with_codex_command_for_native_worker(self):
         seen = {}
 
         def fake_orca(*args, **kwargs):
@@ -163,16 +166,23 @@ class CodexWrapperGreenTests(unittest.TestCase):
             raise AssertionError("unexpected orca call: %r" % (args,))
 
         with tempfile.TemporaryDirectory() as d:
-            home = _home_with_diverging_codex(d)
-            settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
-            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
-                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+            base = Path(d)
+            codex = base / ".codex"
+            codex.mkdir(parents=True, exist_ok=True)
+            (codex / "config.toml").write_text(
+                "model = \"gpt-5.6-luna\"\nmodel_reasoning_effort = \"low\"\n",
+                encoding="utf-8",
+            )
+            (codex / "auth.json").write_text("{\"auth_mode\": \"chatgpt\"}", encoding="utf-8")
+            native = {"allowed_workers": [dict(NATIVE_CODEX_ENTRY)], "worker_id": "codex-luna"}
+            with patch.object(dispatcher, "CONFIG", native):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": "C:/nao-existe/81.json"}):
                     with patch.object(dispatcher, "orca", side_effect=fake_orca):
                         with patch.object(dispatcher, "wait_for_worker", return_value=("h-81", {})):
                             handle = dispatcher.recover_existing(
                                 {"identifier": "MAI-81"},
                                 {"path": "C:/w/MAI-81", "displayName": "MAI-81-w"},
-                                worker=dict(SPARK_CODEX_ENTRY),
+                                worker=dict(NATIVE_CODEX_ENTRY),
                             )
         self.assertEqual(handle, "h-81")
         self.assertIn("--command", seen["args"])
@@ -367,3 +377,105 @@ class CodexWrapperFailClosedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CodexWrapperAuditRedTests(unittest.TestCase):
+    def test_red_wrapper_recovery_fails_closed_without_literal_create(self):
+        calls = []
+
+        def fake_orca(*args, **kwargs):
+            calls.append(tuple(args[:2]))
+            if args[:2] == ("terminal", "list"):
+                return {"terminals": []}
+            if args[:2] == ("terminal", "create"):
+                return {"terminal": {"handle": "h-should-not-exist"}}
+            if args[:2] == ("terminal", "send"):
+                return {}
+            raise AssertionError("unexpected orca call: %r" % (args,))
+
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with patch.object(dispatcher, "orca", side_effect=fake_orca):
+                        with patch.object(dispatcher, "wait_for_worker", return_value=("h-x", {})):
+                            with self.assertRaisesRegex(RuntimeError, "recovery unavailable"):
+                                dispatcher.recover_existing(
+                                    {"identifier": "MAI-81"},
+                                    {"path": "C:/w/MAI-81", "displayName": "MAI-81-w"},
+                                    worker=dict(SPARK_CODEX_ENTRY),
+                                )
+        self.assertNotIn(("terminal", "create"), calls)
+
+    def test_red_arbitrary_executable_with_correct_flags_rejected(self):
+        evil = "evil-bin --model muse-spark-1.3-contributor --provider opencode-go --reasoning high"
+        entry = dict(SPARK_CODEX_ENTRY)
+        entry["wrapper_executable"] = "opencode"
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(evil))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with self.assertRaisesRegex(RuntimeError, "command not resolved"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_dict_override_rejected_as_non_string_schema(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(dict(GOOD_DICT_OVERRIDE)))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with self.assertRaisesRegex(RuntimeError, "wrapper malformed"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_list_override_rejected_as_non_string_schema(self):
+        override = ["opencode", "--model", "muse-spark-1.3-contributor",
+                    "--provider", "opencode-go", "--reasoning", "high"]
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(override))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with self.assertRaisesRegex(RuntimeError, "wrapper malformed"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_red_policy_without_wrapper_executable_rejected(self):
+        entry = dict(SPARK_CODEX_ENTRY)
+        entry.pop("wrapper_executable", None)
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark", entry)):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with self.assertRaisesRegex(RuntimeError, "wrapper_executable"):
+                        dispatcher.preflight_model(home=home)
+
+    def test_create_uses_agent_aware_worktree_route(self):
+        seen = []
+
+        def fake_orca(*args, **kwargs):
+            seen.append(list(args))
+            if args[:2] == ("worktree", "create"):
+                return {"worktree": {"id": "wt-81", "path": "C:/w/MAI-81",
+                                     "displayName": "MAI-81-w", "linkedLinearIssue": "MAI-81"}}
+            if args[:2] == ("terminal", "list"):
+                return {"terminals": [{"handle": "h-81", "agentIdentity": "codex"}]}
+            raise AssertionError("unexpected orca call: %r" % (args,))
+
+        with tempfile.TemporaryDirectory() as d:
+            home = _home_with_diverging_codex(d)
+            settings = _settings_path(d, _good_payload(GOOD_OVERRIDE))
+            with patch.object(dispatcher, "CONFIG", _config("codex-spark")):
+                with patch.dict(os.environ, {"MEUPLANTAO_ORCA_SETTINGS": str(settings)}):
+                    with patch.object(dispatcher, "orca", side_effect=fake_orca):
+                        with patch.object(dispatcher, "wait_for_worker", return_value=("h-81", {})):
+                            worktree, handle = dispatcher.create_workspace(
+                                {"identifier": "MAI-81", "title": "Auditoria"},
+                                worker=dict(SPARK_CODEX_ENTRY),
+                            )
+        self.assertEqual(handle, "h-81")
+        create_calls = [c for c in seen if c[:2] == ["worktree", "create"]]
+        self.assertEqual(len(create_calls), 1)
+        self.assertIn("--agent", create_calls[0])
+        self.assertEqual(create_calls[0][create_calls[0].index("--agent") + 1], "codex")
+        self.assertFalse(any(c[:2] == ["terminal", "create"] for c in seen))

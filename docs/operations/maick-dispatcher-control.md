@@ -432,26 +432,40 @@ wrapper `settings.agentCmdOverrides.codex` (`muse-spark-1.3-contributor` via
 `opencode-go`, effort `high`). Nenhum segredo e lido/publicado/persistido; o
 `config.toml` operacional real nunca e commitado nem usado nos testes.
 
+Auditoria externa (reprovacao do SHA `8c18af9`, comentario `c8d1035b`):
+`terminal create --command codex` NAO aplica `agentCmdOverrides.codex` (a fonte
+do Orca passa `--command` literalmente ao runtime); a rota agent-aware e
+`worktree create --agent codex`, cujo lancamento resolve
+`settings.agentCmdOverrides.<agent>` como string (schema real: objeto
+agente->string, default `{}`). Correcoes aplicadas: recuperacao de worker de
+wrapper falha fechado (sem relancamento literal); parser valida o executavel
+efetivo contra `wrapper_executable` da politica; schema limitado a string;
+`orca_settings_path` como chave raiz do TOML.
+
 Comportamento (`ops/meuplantao-dispatcher/dispatcher.py`, antes de qualquer
 workspace/agente ou mutacao Linear): worker `agent = "codex"` com `provider`
 declarado (`codex-spark`: comando/identidade `codex`, modelo
 `muse-spark-1.3-contributor`, provider `opencode-go`, reasoning `high`, auth
-`opencode`) valida a rota efetiva do wrapper com modelo/provider/reasoning
-exatos; `~/.codex/config.toml` divergente e ignorado para este worker e o
-comando efetivo continua `codex`. Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS`
-> `orca_settings_path` da config. Worker `codex` nativo (sem `provider`) e
+`opencode`, `wrapper_executable` `opencode`) valida a rota efetiva do wrapper
+(executavel + modelo/provider/reasoning exatos); `~/.codex/config.toml`
+divergente e ignorado para este worker. Criacao usa `worktree create --agent
+codex` (consome o override); `recover_existing` de worker de wrapper falha
+fechado sem criar terminal. Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` >
+`orca_settings_path` RAIZ da config. Worker `codex` nativo (sem `provider`) e
 workers `opencode` seguem inalterados; payload Hermes segue estrito
 `{issue, event}`.
 
-Fail-closed: wrapper ausente, comando nao resolvido, quoting/override ambiguo,
-campo ausente, modelo/provider/reasoning divergente, conteudo malformado e auth
-ausente/divergente. Erros carregam so `worker_id`, sem args/env/tokens/conteudo.
-Exemplo operacional em `config.example.toml` (`codex-spark` + `orca_settings_path`)
-e runbook em `ops/meuplantao-dispatcher/README.md` (secao MAI-81). Cobertura em
-`test_dispatcher_codex_wrapper.py`: RED da divergencia no SHA base, GREEN da rota
-efetiva (string/dict/raiz), comando `codex` provado inclusive no `recover_existing`,
-`codex` nativo preservado, Hermes estrito preservado e 14 casos fail-closed +
-antivazamento de segredos.
+Fail-closed: wrapper ausente, comando nao resolvido (incl. executavel
+divergente), quoting/override ambiguo, campo ausente, modelo/provider/reasoning
+divergente, conteudo malformado e auth ausente/divergente. Erros carregam so
+`worker_id`, sem args/env/tokens/conteudo. Exemplo operacional em
+`config.example.toml` (`codex-spark` + `orca_settings_path` raiz) e runbook em
+`ops/meuplantao-dispatcher/README.md` (secao MAI-81). Cobertura em
+`test_dispatcher_codex_wrapper.py`: RED da divergencia e da auditoria no SHA
+anterior, GREEN da rota efetiva (string/raiz) com criacao agent-aware provada
+(`--agent codex`, sem `terminal create`), recuperacao fail-closed para wrapper
+(com `codex` literal preservado para worker nativo), `codex` nativo preservado,
+Hermes estrito preservado e fail-closed + antivazamento de segredos.
 
 Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 plus `git diff --check`. PR #39 contra `main` (integracao final; MAI-67/PR #37
