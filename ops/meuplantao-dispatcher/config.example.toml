@@ -87,7 +87,27 @@ reasoning = "high"
 command = "codex"
 identity = "codex"
 auth_mode = "opencode"
+wrapper_mode = "command_flags"
 wrapper_executable = "opencode"
+
+# MAI-82 modo script_wrapper: o override do Orca aponta para um script wrapper
+# local (ex.: codex.cmd) que invoca o Codex repassando flags de configuracao (-c).
+# O preflight valida: caminho canonico, extensao (.cmd/.bat), integridade via
+# hash SHA-256 esperado, resolucao deterministica de modelo/provider/reasoning,
+# allowlist restrita de agentDefaultArgs (--dangerously-bypass-approvals-and-sandbox)
+# e agentDefaultEnv ausente/vazio.
+# [[allowed_workers]]
+# id = "codex-spark-script"
+# agent = "codex"
+# model = "muse-spark-1.3-contributor"
+# provider = "opencode-go"
+# reasoning = "high"
+# command = "codex"
+# identity = "codex"
+# auth_mode = "opencode"
+# wrapper_mode = "script_wrapper"
+# wrapper_path = "C:/Users/<VOCE>/AppData/Local/orca-codex/codex.cmd"
+# wrapper_sha256 = "<SHA256_DO_SCRIPT>"
 
 dispatch_timeout_seconds = 900
 timeout_label = "Dispatch Timeout"

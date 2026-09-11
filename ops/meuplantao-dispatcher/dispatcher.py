@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -73,6 +74,17 @@ WRAPPER_REASONING_FLAGS = ("--reasoning", "--effort", "--reasoning-effort", "--r
 WRAPPER_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 WRAPPER_SHELL_OPERATORS = frozenset({"&", "&&", "|", "||", ";", ">", ">>", "<", "<<", "(", ")", "`"})
 WRAPPER_TOKEN_METACHARS = frozenset(list(";&|><$`'\"\\(){}[]*?!~#") + ["\n", "\r", "\x00"])
+WRAPPER_MODE_COMMAND_FLAGS = "command_flags"
+WRAPPER_MODE_SCRIPT_WRAPPER = "script_wrapper"
+SUPPORTED_WRAPPER_MODES = (WRAPPER_MODE_COMMAND_FLAGS, WRAPPER_MODE_SCRIPT_WRAPPER)
+SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+ALLOWED_SCRIPT_WRAPPER_EXTENSIONS = (".cmd", ".bat")
+AUDITED_DEFAULT_ARGS_ALLOWLIST = frozenset({"", "--dangerously-bypass-approvals-and-sandbox"})
+DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS = ("", "--dangerously-bypass-approvals-and-sandbox")
+EXPECTED_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+EXPECTED_OPENCODE_GO_ENV_KEY = "OPENCODE_API_KEY"
+EXPECTED_OPENCODE_GO_WIRE_API = "responses"
+CODEX_CALL_NAMES = frozenset({"codex.cmd", "codex.bat", "codex.exe", "codex"})
 
 
 def _pick(mapping: dict, *names: str) -> str:
@@ -106,21 +118,55 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             raise RuntimeError(f"preflight: worker policy entry {index} missing id/model/reasoning/command/identity/auth_mode")
         agent = str(entry.get("agent", "") or "").strip()
         provider = str(entry.get("provider", "") or "").strip()
+        wrapper_mode = str(entry.get("wrapper_mode", "") or "").strip().lower()
+        if not wrapper_mode:
+            wrapper_mode = WRAPPER_MODE_COMMAND_FLAGS
+        if wrapper_mode not in SUPPORTED_WRAPPER_MODES:
+            raise RuntimeError(
+                f"preflight: worker policy entry {index} invalid wrapper_mode"
+                f" (expected one of {SUPPORTED_WRAPPER_MODES}; got {wrapper_mode})"
+            )
         wrapper_executable = str(entry.get("wrapper_executable", "") or "").strip()
-        if wrapper_executable and not WRAPPER_EXECUTABLE_RE.match(wrapper_executable):
-            raise RuntimeError(
-                f"preflight: worker policy entry {index} malformed"
-                " (wrapper_executable must be a bare executable name)"
-            )
-        if agent == "codex" and provider and not wrapper_executable:
-            raise RuntimeError(
-                f"preflight: worker policy entry {index} missing wrapper_executable"
-                " (wrapper-routed codex requires an explicit executable)"
-            )
+        wrapper_path = str(entry.get("wrapper_path", "") or "").strip()
+        wrapper_sha256 = str(entry.get("wrapper_sha256", "") or "").strip().lower()
+
+        if wrapper_mode == WRAPPER_MODE_SCRIPT_WRAPPER:
+            if not wrapper_path:
+                raise RuntimeError(f"preflight: worker policy entry {index} missing wrapper_path")
+            if not wrapper_sha256 or not SHA256_HEX_RE.match(wrapper_sha256):
+                raise RuntimeError(f"preflight: worker policy entry {index} missing or invalid wrapper_sha256")
+        else:
+            if wrapper_executable and not WRAPPER_EXECUTABLE_RE.match(wrapper_executable):
+                raise RuntimeError(
+                    f"preflight: worker policy entry {index} malformed"
+                    " (wrapper_executable must be a bare executable name)"
+                )
+            if agent == "codex" and provider and not wrapper_executable:
+                raise RuntimeError(
+                    f"preflight: worker policy entry {index} missing wrapper_executable"
+                    " (wrapper-routed codex requires an explicit executable)"
+                )
         forbid = entry.get("forbid_substrings", None)
         if forbid is None:
             forbid = list(DEFAULT_FORBIDDEN_ROUTING) if agent == "codex" else []
         forbid_tuple = tuple(str(item).lower() for item in forbid) if isinstance(forbid, (list, tuple)) else ()
+
+        allowed_args_raw = entry.get("allowed_default_args", None)
+        if wrapper_mode == WRAPPER_MODE_SCRIPT_WRAPPER:
+            if allowed_args_raw is not None:
+                parsed_args = tuple(str(x) for x in allowed_args_raw) if isinstance(allowed_args_raw, (list, tuple)) else (str(allowed_args_raw),)
+                for arg in parsed_args:
+                    if arg not in AUDITED_DEFAULT_ARGS_ALLOWLIST:
+                        raise RuntimeError(
+                            f"preflight: worker policy entry {index} unauthorized allowed_default_args"
+                            f" (cannot expand beyond audited allowlist: {sorted(AUDITED_DEFAULT_ARGS_ALLOWLIST)})"
+                        )
+                allowed_args = parsed_args
+            else:
+                allowed_args = DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS
+        else:
+            allowed_args = ("",)
+
         normalized.append({
             "id": worker_id,
             "agent": agent,
@@ -130,8 +176,14 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             "command": command,
             "identity": identity,
             "auth_mode": auth_mode,
+            "wrapper_mode": wrapper_mode,
             "wrapper_executable": wrapper_executable,
+            "wrapper_path": wrapper_path,
+            "wrapper_sha256": wrapper_sha256,
+            "allowed_default_args": allowed_args,
             "forbid_substrings": forbid_tuple,
+            "runtime_env_source": entry.get("runtime_env_source"),
+            "runtime_env_file": entry.get("runtime_env_file"),
         })
     return normalized
 
@@ -467,10 +519,567 @@ def read_codex_wrapper_route(
     }
 
 
+def resolve_cmd_logical_lines(text: str) -> list[str]:
+    raw_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    logical_lines: list[str] = []
+    current_parts: list[str] = []
+
+    for line in raw_lines:
+        trimmed_right = line.rstrip()
+        if trimmed_right.endswith("^"):
+            current_parts.append(trimmed_right[:-1].strip())
+        else:
+            current_parts.append(line.strip())
+            joined = " ".join(part for part in current_parts if part).strip()
+            if joined:
+                logical_lines.append(joined)
+            current_parts = []
+
+    if current_parts:
+        joined = " ".join(part for part in current_parts if part).strip()
+        if joined:
+            logical_lines.append(joined)
+
+    return logical_lines
+
+
+BATCH_CONTROL_METACHARS = ("&", "|", "<", ">")
+
+
+def has_unquoted_batch_metachars(line: str) -> bool:
+    in_quote = False
+    quote_char = ""
+    for char in line:
+        if in_quote:
+            if char == quote_char:
+                in_quote = False
+                quote_char = ""
+        else:
+            if char in ('"', "'"):
+                in_quote = True
+                quote_char = char
+            elif char in BATCH_CONTROL_METACHARS:
+                return True
+    return False
+
+
+def is_batch_comment(line: str) -> bool:
+    stripped = line.strip()
+    if stripped.startswith("::") or stripped.startswith("@::"):
+        return True
+    lowered = stripped.lower()
+    return (
+        lowered == "rem"
+        or lowered.startswith("rem ")
+        or lowered.startswith("rem\t")
+        or lowered == "@rem"
+        or lowered.startswith("@rem ")
+        or lowered.startswith("@rem\t")
+    )
+
+
+def is_batch_echo(line: str) -> bool:
+    stripped = line.strip()
+    lowered = stripped.lower()
+    return (
+        lowered in ("@echo off", "echo off")
+        or lowered.startswith("@echo ")
+        or lowered.startswith("echo ")
+        or lowered.startswith("@echo\t")
+        or lowered.startswith("echo\t")
+    )
+
+
+def extract_effective_codex_command(text: str, worker_id: str) -> str:
+    lines = resolve_cmd_logical_lines(text)
+    executable_statements: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if is_batch_comment(stripped):
+            continue
+
+        # Reject control metacharacters outside quotes on any non-comment line
+        if has_unquoted_batch_metachars(stripped):
+            raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+        if is_batch_echo(stripped):
+            continue
+
+        lowered = stripped.lower()
+        first_word = lowered.split(None, 1)[0]
+        if first_word in ("if", "goto", "for", "while", "do"):
+            raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+        executable_statements.append(stripped)
+
+    if len(executable_statements) == 0:
+        raise RuntimeError(f"preflight: codex wrapper missing execution route (worker_id={worker_id})")
+    if len(executable_statements) > 1:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+    exec_line = executable_statements[0]
+    try:
+        tokens = shlex.split(exec_line, posix=False)
+    except ValueError:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous execution route (worker_id={worker_id})")
+
+    if not tokens:
+        raise RuntimeError(f"preflight: codex wrapper missing execution route (worker_id={worker_id})")
+
+    cmd_idx = 0
+    if tokens[0].lower() == "call":
+        cmd_idx = 1
+    if cmd_idx >= len(tokens):
+        raise RuntimeError(f"preflight: codex wrapper unauthorized command (worker_id={worker_id})")
+
+    target_cmd = tokens[cmd_idx].strip('"').strip("'")
+    base_name = Path(target_cmd).name.lower()
+    if base_name not in CODEX_CALL_NAMES:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized command (worker_id={worker_id})")
+
+    # Strict minimal grammar validation for the remainder of the invocation
+    flag_idx = cmd_idx + 1
+    while flag_idx < len(tokens):
+        tok = tokens[flag_idx]
+        if tok == "%*":
+            flag_idx += 1
+            break
+        if tok == "-c":
+            if flag_idx + 1 >= len(tokens):
+                raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+            flag_idx += 2
+        else:
+            raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
+
+    if flag_idx < len(tokens):
+        raise RuntimeError(f"preflight: codex wrapper unauthorized token (worker_id={worker_id})")
+
+    return exec_line
+
+
+def parse_wrapper_script_config(text: str, worker_id: str, expected_provider: str = "opencode-go") -> dict:
+    exec_line = extract_effective_codex_command(text, worker_id)
+
+    models: list[str] = []
+    providers: list[str] = []
+    reasonings: list[str] = []
+    base_urls: list[str] = []
+    env_keys: list[str] = []
+    wire_apis: list[str] = []
+
+    pattern = re.compile(r"""-c\s+["']?([A-Za-z0-9_.-]+)=['"]?([^'"\r\n\^]+?)['"]?["']?(?:\s|$)""")
+    for match in pattern.finditer(exec_line):
+        key = match.group(1).strip().lower()
+        val = match.group(2).strip()
+        if key == "model":
+            models.append(val)
+        elif key in ("model_provider", "provider"):
+            providers.append(val)
+        elif key in ("model_reasoning_effort", "reasoning"):
+            reasonings.append(val)
+        elif key.endswith(".base_url") or key == "base_url":
+            base_urls.append(val)
+        elif key.endswith(".env_key") or key == "env_key":
+            env_keys.append(val)
+        elif key.endswith(".wire_api") or key == "wire_api":
+            wire_apis.append(val)
+
+    if len(models) > 1 or len(providers) > 1 or len(reasonings) > 1:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
+    if len(base_urls) > 1 or len(env_keys) > 1 or len(wire_apis) > 1:
+        raise RuntimeError(f"preflight: codex wrapper duplicate field (worker_id={worker_id})")
+
+    if not models or not providers or not reasonings:
+        raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
+
+    model_val = models[0]
+    provider_val = providers[0]
+    reasoning_val = reasonings[0]
+
+    base_url_val = base_urls[0] if base_urls else ""
+    env_key_val = env_keys[0] if env_keys else ""
+    wire_api_val = wire_apis[0] if wire_apis else ""
+
+    if provider_val.lower() == "opencode-go" or expected_provider.lower() == "opencode-go":
+        if not base_urls or not env_keys or not wire_apis:
+            raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
+        if base_url_val != EXPECTED_OPENCODE_GO_BASE_URL:
+            raise RuntimeError(f"preflight: codex wrapper base_url mismatch (worker_id={worker_id})")
+        if env_key_val != EXPECTED_OPENCODE_GO_ENV_KEY:
+            raise RuntimeError(f"preflight: codex wrapper env_key mismatch (worker_id={worker_id})")
+        if wire_api_val != EXPECTED_OPENCODE_GO_WIRE_API:
+            raise RuntimeError(f"preflight: codex wrapper wire_api mismatch (worker_id={worker_id})")
+
+    return {
+        "model": model_val,
+        "provider": provider_val,
+        "reasoning": reasoning_val,
+        "base_url": base_url_val,
+        "env_key": env_key_val,
+        "wire_api": wire_api_val,
+    }
+
+
+def discover_active_orca_pid(worker_id: str, user_data: Path | None = None) -> int | None:
+    candidates = []
+    if user_data is not None:
+        candidates.append(user_data / "orca-runtime.json")
+        if user_data.name == "profiles":
+            candidates.append(user_data.parent / "orca-runtime.json")
+    default_base = orca_user_data_dir(worker_id)
+    if user_data is None or user_data != default_base:
+        candidates.append(default_base / "orca-runtime.json")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+                pid = data.get("pid")
+                if isinstance(pid, int) and pid > 0:
+                    return pid
+            except Exception:
+                continue
+    return None
+
+
+_last_process_env_status: str = "unavailable"
+
+
+def inspect_process_architecture(kernel32: Any, hProcess: Any) -> str:
+    """
+    Determines process architecture using Windows API:
+    Returns:
+      'x64' if native 64-bit AMD64 process
+      'wow64' if 32-bit process running under WOW64
+      'unsupported' if another architecture (e.g. ARM64)
+      'undetermined' if architecture cannot be determined
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        IMAGE_FILE_MACHINE_UNKNOWN = 0x0000
+        IMAGE_FILE_MACHINE_I386 = 0x014C
+        IMAGE_FILE_MACHINE_AMD64 = 0x8664
+
+        if hasattr(kernel32, "IsWow64Process2"):
+            proc_machine = wintypes.USHORT()
+            native_machine = wintypes.USHORT()
+            if kernel32.IsWow64Process2(hProcess, ctypes.byref(proc_machine), ctypes.byref(native_machine)):
+                if native_machine.value != IMAGE_FILE_MACHINE_AMD64:
+                    return "unsupported"
+                if proc_machine.value == IMAGE_FILE_MACHINE_I386:
+                    return "wow64"
+                if proc_machine.value == IMAGE_FILE_MACHINE_UNKNOWN:
+                    return "x64"
+                return "unsupported"
+            return "undetermined"
+
+        if hasattr(kernel32, "IsWow64Process"):
+            is_wow64 = wintypes.BOOL()
+            if kernel32.IsWow64Process(hProcess, ctypes.byref(is_wow64)):
+                if is_wow64.value:
+                    return "wow64"
+                return "x64"
+            return "undetermined"
+    except Exception:
+        return "undetermined"
+
+    return "undetermined"
+
+
+def _win32_dlls():
+    import ctypes
+    return ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("ntdll", use_last_error=True)
+
+
+def probe_process_env_block(pid: int) -> tuple[dict[str, str] | None, str]:
+    """
+    Reads the environment block of an active process by PID after validating
+    that caller and target processes are supported 64-bit x64 processes.
+    Returns (env_dict, status) where status is one of:
+      - 'present': environment block read successfully from verified x64 process
+      - 'unsupported_architecture': caller or target process is not supported Windows x64 (e.g. WOW64/32-bit)
+      - 'undetermined_architecture': process architecture could not be verified
+      - 'unavailable': process cannot be opened or memory cannot be read
+    """
+    global _last_process_env_status
+    if not isinstance(pid, int) or pid <= 0:
+        _last_process_env_status = "unavailable"
+        return None, "unavailable"
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            if ctypes.sizeof(ctypes.c_void_p) != 8:
+                _last_process_env_status = "unsupported_architecture"
+                return None, "unsupported_architecture"
+
+            PROCESS_QUERY_INFORMATION = 0x0400
+            PROCESS_VM_READ = 0x0010
+
+            class PROCESS_BASIC_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("Reserved1", ctypes.c_void_p),
+                    ("PebBaseAddress", ctypes.c_void_p),
+                    ("Reserved2", ctypes.c_void_p * 2),
+                    ("UniqueProcessId", ctypes.c_void_p),
+                    ("Reserved3", ctypes.c_void_p),
+                ]
+
+            kernel32, ntdll = _win32_dlls()
+
+            hProcess = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+            if not hProcess:
+                _last_process_env_status = "unavailable"
+                return None, "unavailable"
+
+            try:
+                arch = inspect_process_architecture(kernel32, hProcess)
+                if arch == "wow64":
+                    _last_process_env_status = "unsupported_architecture"
+                    return None, "unsupported_architecture"
+                if arch == "undetermined":
+                    _last_process_env_status = "undetermined_architecture"
+                    return None, "undetermined_architecture"
+                if arch != "x64":
+                    _last_process_env_status = "unsupported_architecture"
+                    return None, "unsupported_architecture"
+
+                pbi = PROCESS_BASIC_INFORMATION()
+                ret_len = wintypes.ULONG()
+                status = ntdll.NtQueryInformationProcess(
+                    hProcess, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), ctypes.byref(ret_len)
+                )
+                if status != 0 or not pbi.PebBaseAddress:
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
+
+                proc_params_addr = ctypes.c_void_p()
+                read_bytes = ctypes.c_size_t()
+                if not kernel32.ReadProcessMemory(
+                    hProcess, ctypes.c_void_p(pbi.PebBaseAddress + 0x20), ctypes.byref(proc_params_addr), 8, ctypes.byref(read_bytes)
+                ) or not proc_params_addr.value:
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
+
+                env_addr = ctypes.c_void_p()
+                if not kernel32.ReadProcessMemory(
+                    hProcess, ctypes.c_void_p(proc_params_addr.value + 0x80), ctypes.byref(env_addr), 8, ctypes.byref(read_bytes)
+                ) or not env_addr.value:
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
+
+                buffer_size = 65536
+                buf = ctypes.create_string_buffer(buffer_size)
+                if not kernel32.ReadProcessMemory(
+                    hProcess, env_addr, buf, buffer_size, ctypes.byref(read_bytes)
+                ) or read_bytes.value == 0:
+                    _last_process_env_status = "unavailable"
+                    return None, "unavailable"
+
+                raw = buf.raw[:read_bytes.value]
+                text = raw.decode("utf-16-le", errors="ignore")
+                env_dict = {}
+                for line in text.split("\x00"):
+                    if not line:
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        if k:
+                            env_dict[k] = v
+                _last_process_env_status = "present"
+                return env_dict, "present"
+            finally:
+                kernel32.CloseHandle(hProcess)
+        except Exception:
+            _last_process_env_status = "unavailable"
+            return None, "unavailable"
+
+    if sys.platform.startswith("linux"):
+        try:
+            environ_path = Path(f"/proc/{pid}/environ")
+            if environ_path.is_file():
+                raw = environ_path.read_bytes()
+                text = raw.decode("utf-8", errors="replace")
+                env_dict = {}
+                for line in text.split("\x00"):
+                    if not line:
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        if k:
+                            env_dict[k] = v
+                _last_process_env_status = "present"
+                return env_dict, "present"
+            _last_process_env_status = "unavailable"
+            return None, "unavailable"
+        except Exception:
+            _last_process_env_status = "unavailable"
+            return None, "unavailable"
+
+    _last_process_env_status = "unsupported_architecture"
+    return None, "unsupported_architecture"
+
+
+def read_process_env_block(pid: int) -> dict[str, str] | None:
+    global _last_process_env_status
+    env_block, status = probe_process_env_block(pid)
+    _last_process_env_status = status
+    return env_block
+
+
+def probe_authoritative_runtime_env(
+    env_key: str,
+    worker_id: str,
+    user_data: Path | None = None,
+) -> tuple[bool, str]:
+    """
+    Determines whether the specified environment variable is authoritatively
+    present in the active Orca runtime process environment block without recording,
+    logging, or publishing the secret value.
+
+    Returns (has_key: bool, status: str).
+    Status values:
+      - 'present': environment block read from verified x64 process and env_key is present and non-empty
+      - 'missing_key': environment block read from verified x64 process, but env_key is absent or empty
+      - 'unsupported_architecture': caller or target process is not supported Windows x64 (e.g. WOW64/32-bit)
+      - 'undetermined_architecture': process architecture could not be verified
+      - 'unavailable': active process could not be found or opened
+    """
+    global _last_process_env_status
+    if not env_key:
+        return False, "missing_key"
+
+    pid = discover_active_orca_pid(worker_id, user_data=user_data)
+    if pid is None:
+        return False, "unavailable"
+
+    _last_process_env_status = "unavailable"
+    env_block = read_process_env_block(pid)
+    if env_block is not None:
+        val = env_block.get(env_key)
+        if val and str(val).strip():
+            return True, "present"
+        return False, "missing_key"
+
+    return False, _last_process_env_status
+
+
+def read_authoritative_runtime_env(
+    env_key: str,
+    worker_id: str,
+    user_data: Path | None = None,
+) -> bool:
+    has_key, _ = probe_authoritative_runtime_env(env_key, worker_id, user_data=user_data)
+    return has_key
+
+
+def read_codex_script_wrapper_route(
+    entry: dict,
+    home: Path | None = None,
+    settings_path: Path | str | None = None,
+) -> dict:
+    worker_id = str(entry.get("id", "") or "")
+    if entry.get("command") != CODEX_WRAPPER_KEY or entry.get("identity") != CODEX_WRAPPER_KEY:
+        raise RuntimeError(f"preflight: codex wrapper command not resolved (worker_id={worker_id})")
+    resolved = resolve_wrapper_settings_path(worker_id, explicit=settings_path)
+    settings_data = load_orca_settings(resolved, worker_id)
+    raw = extract_codex_override(settings_data, worker_id)
+
+    clean_raw = raw.strip().strip('"').strip("'")
+    if not clean_raw:
+        raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+
+    ext = Path(clean_raw).suffix.lower()
+    allowed_exts = tuple(entry.get("allowed_wrapper_extensions", ALLOWED_SCRIPT_WRAPPER_EXTENSIONS))
+    if ext not in allowed_exts:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized extension (worker_id={worker_id})")
+
+    configured_path = str(entry.get("wrapper_path", "") or "").strip()
+    try:
+        raw_norm = os.path.normcase(os.path.abspath(clean_raw))
+        conf_norm = os.path.normcase(os.path.abspath(configured_path))
+    except Exception:
+        raise RuntimeError(f"preflight: codex wrapper path mismatch (worker_id={worker_id})")
+    if raw_norm != conf_norm:
+        raise RuntimeError(f"preflight: codex wrapper path mismatch (worker_id={worker_id})")
+
+    target_file = Path(clean_raw)
+    if not target_file.is_file():
+        raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+
+    content_bytes = target_file.read_bytes()
+    actual_hash = hashlib.sha256(content_bytes).hexdigest().lower()
+    expected_hash = str(entry.get("wrapper_sha256", "") or "").strip().lower()
+    if actual_hash != expected_hash:
+        raise RuntimeError(f"preflight: codex wrapper hash mismatch (worker_id={worker_id})")
+
+    try:
+        content_text = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        content_text = content_bytes.decode("latin1", errors="replace")
+
+    expected_prov = str(entry.get("provider", "") or "")
+    route = parse_wrapper_script_config(content_text, worker_id, expected_provider=expected_prov)
+
+    nested = settings_data.get("settings")
+    args_record = nested.get("agentDefaultArgs") if isinstance(nested, dict) else None
+    if not isinstance(args_record, dict) or CODEX_WRAPPER_KEY not in args_record:
+        raise RuntimeError(f"preflight: codex wrapper default args missing (worker_id={worker_id})")
+    default_args_val = args_record[CODEX_WRAPPER_KEY]
+    if not isinstance(default_args_val, str):
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+    allowed_args = entry.get("allowed_default_args", DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS)
+    if default_args_val not in allowed_args or default_args_val not in AUDITED_DEFAULT_ARGS_ALLOWLIST:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized default args (worker_id={worker_id})")
+
+    require_empty_wrapper_default_env(settings_data, worker_id)
+
+    res_path = Path(resolved)
+    if "profiles" in res_path.parts:
+        user_data_path = res_path.parent.parent
+    else:
+        user_data_path = res_path.parent
+
+    env_key = route.get("env_key")
+    dispatcher_has_key = bool(env_key and os.environ.get(env_key))
+    runtime_has_key, runtime_status = probe_authoritative_runtime_env(
+        env_key, worker_id, user_data=user_data_path
+    )
+
+    if not dispatcher_has_key or not runtime_has_key:
+        auth_present = False
+        auth_mode = ""
+    else:
+        auth_present = True
+        auth_mode = entry.get("auth_mode", "opencode")
+
+    return {
+        "present": True,
+        "wrapper": True,
+        "command": CODEX_WRAPPER_KEY,
+        "model": route["model"],
+        "provider": route["provider"],
+        "reasoning": route["reasoning"],
+        "auth_present": auth_present,
+        "auth_mode": auth_mode,
+        "runtime_status": runtime_status,
+    }
+
+
 def worker_evidence(
-    entry: dict, home: Path | None = None, settings_path: Path | str | None = None
+    entry: dict,
+    home: Path | None = None,
+    settings_path: Path | str | None = None,
 ) -> dict | None:
     if is_wrapper_codex_worker(entry):
+        if entry.get("wrapper_mode") == WRAPPER_MODE_SCRIPT_WRAPPER:
+            return read_codex_script_wrapper_route(entry, home=home, settings_path=settings_path)
         return read_codex_wrapper_route(entry, home=home, settings_path=settings_path)
     if is_codex_worker(entry):
         return read_codex_state(home)
