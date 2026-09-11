@@ -1,4 +1,4 @@
-﻿# Maick Dispatcher Control (MAI-66)
+# Maick Dispatcher Control (MAI-66)
 
 GUI Windows (Python 3.11 + Tkinter + PyInstaller) que controla com seguranca o dispatcher existente.
 Autoridade unica: `ops/meuplantao-dispatcher/dispatcher.py`. Fluxo preservado: Linear -> dispatcher.py -> Orca.
@@ -421,6 +421,72 @@ o Orca inicia; nao e modelo do dispatcher.
 - Canonicalizacao convergente com limites: nao-convergente/superlimite vira `[REDACTED]`; payload grande limitado.
 - Nenhuma chamada a modelo/LLM no polling e na coordenacao.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
+
+### MAI-81: preflight do Dispatcher contra a rota efetiva do wrapper Codex no Orca
+
+Contexto: no rollout da MAI-69 (scheduler desabilitado, controle `PAUSED`, suite
+264/264, dry-run read-only), o smoke real falhou fechado com `worker model
+mismatch`: o preflight lia so `~/.codex/config.toml` (`gpt-5.6-sol low`) enquanto
+a rota efetiva aprovada do Orca para `terminal create --command codex` vem do
+wrapper `settings.agentCmdOverrides.codex` (`muse-spark-1.3-contributor` via
+`opencode-go`, effort `high`). Nenhum segredo e lido/publicado/persistido; o
+`config.toml` operacional real nunca e commitado nem usado nos testes.
+
+Auditoria externa (reprovacao do SHA `8c18af9`, comentario `c8d1035b`):
+`terminal create --command codex` NAO aplica `agentCmdOverrides.codex` (a fonte
+do Orca passa `--command` literalmente ao runtime); a rota agent-aware e
+`worktree create --agent codex`, cujo lancamento resolve
+`settings.agentCmdOverrides.<agent>` como string (schema real: objeto
+agente->string, default `{}`). Correcoes aplicadas: recuperacao de worker de
+wrapper falha fechado (sem relancamento literal); parser valida o executavel
+efetivo contra `wrapper_executable` da politica; schema limitado a string;
+`orca_settings_path` como chave raiz do TOML.
+
+Comportamento (`ops/meuplantao-dispatcher/dispatcher.py`, antes de qualquer
+workspace/agente ou mutacao Linear): worker `agent = "codex"` com `provider`
+declarado (`codex-spark`: comando/identidade `codex`, modelo
+`muse-spark-1.3-contributor`, provider `opencode-go`, reasoning `high`, auth
+`opencode`, `wrapper_executable` `opencode`) valida a rota efetiva do wrapper
+(executavel + modelo/provider/reasoning exatos); `~/.codex/config.toml`
+divergente e ignorado para este worker. Criacao usa `worktree create --agent
+codex` (consome o override); `recover_existing` de worker de wrapper falha
+fechado sem criar terminal. Caminho do settings: `MEUPLANTAO_ORCA_SETTINGS` >
+`orca_settings_path` RAIZ da config. Worker `codex` nativo (sem `provider`) e
+workers `opencode` seguem inalterados; payload Hermes segue estrito
+`{issue, event}`.
+
+Auditoria externa (reprovacao do SHA `660ccba`, comentario `2fabec4b`):
+o P1 de rota estrita estava corrigido; restava autoridade da fonte (o preflight
+aceitava arquivo arbitrario e `agentCmdOverrides` top-level). Correcoes:
+descoberta deterministica do `orca-data.json` do perfil ativo replicando
+`getDataPath()` (`orca-profile-index.json` + `.bak`, `activeProfileId`
+validado, fallback legado), leitura SOMENTE de
+`state.settings.agentCmdOverrides.codex`, `agentCmdOverrides` top-level
+rejeitado, pin `orca_settings_path`/`MEUPLANTAO_ORCA_SETTINGS` so aceito se
+igual ao autoritativo (`not authoritative` caso contrario) e exemplo
+`.../Orca/settings.json` corrigido para o `orca-data.json` do perfil ativo.
+
+Auditoria externa (reprovacao do SHA `294111b`): fonte autoritativa aprovada;
+restava a rota completa — o Orca 1.4.198 anexa `settings.agentDefaultArgs.codex`
+ao comando do `worktree create --agent codex` (default embutido do codex:
+`--dangerously-bypass-approvals-and-sandbox`, que seria anexado ao `opencode`).
+Correcoes: leitura de `agentDefaultArgs.codex`/`agentDefaultEnv.codex` da mesma
+fonte autoritativa; exigencia de default args vazio e default env ausente/vazio
+para o `codex-spark` (sem allowlist); nativos inalterados.
+
+Fail-closed: wrapper ausente, fonte nao autoritativa, comando nao resolvido
+(incl. executavel divergente), quoting/override ambiguo (incl. top-level),
+campo ausente, modelo/provider/reasoning divergente, token/operador de shell
+ou flag desconhecida, conteudo malformado e auth ausente/divergente. Erros
+carregam so `worker_id`, sem args/env/tokens/conteudo. Exemplo operacional em
+`config.example.toml` (`codex-spark` + descoberta autoritativa/pin raiz) e
+runbook em `ops/meuplantao-dispatcher/README.md` (secao MAI-81). Cobertura em
+`test_dispatcher_codex_wrapper.py`: RED da divergencia e das auditorias no SHA
+anterior, GREEN da rota efetiva do perfil ativo com criacao agent-aware provada
+(`--agent codex`, sem `terminal create`), troca de perfil com pin stale
+rejeitada, recuperacao fail-closed para wrapper (com `codex` literal preservado
+para worker nativo), `codex` nativo preservado, Hermes estrito preservado e
+fail-closed + antivazamento de segredos.
 
 Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
 plus `git diff --check`. PR #39 contra `main` (integracao final; MAI-67/PR #37
