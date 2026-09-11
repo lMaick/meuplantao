@@ -768,16 +768,6 @@ _SECRET_VALUE_RE = r"\"[^\"]*\"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|\S+"
 _URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 
 
-def _percent_decode(text: str) -> str:
-    current = str(text)
-    for _ in range(3):
-        decoded = unquote(current)
-        if decoded == current:
-            return decoded
-        current = decoded
-    return current
-
-
 def canonical_pr_url(url: object) -> str:
     parts = urlsplit(str(url or "").strip())
     host = (parts.hostname or "").strip().lower()
@@ -793,8 +783,25 @@ def canonical_pr_url(url: object) -> str:
     return urlunsplit((parts.scheme.lower(), netloc, parts.path or "", "", ""))
 
 
+_CANON_MAX_ROUNDS = 25
+_CANON_MAX_CHARS = 200000
+
+
+def canonicalize_untrusted_text(text: object) -> str:
+    current = str(text)
+    if len(current) > _CANON_MAX_CHARS:
+        return "[REDACTED]"
+    for _ in range(_CANON_MAX_ROUNDS):
+        decoded = unquote(current)
+        if decoded == current:
+            return _scrub_secret_material(decoded)
+        current = decoded
+        if len(current) > _CANON_MAX_CHARS:
+            return "[REDACTED]"
+    return "[REDACTED]"
+
+
 def _scrub_secret_material(clean: str) -> str:
-    clean = _percent_decode(clean)
     for pattern in _SECRET_PATTERNS:
         clean = re.sub(pattern, "[redacted]", clean, flags=re.IGNORECASE)
     clean = _URL_USERINFO_RE.sub(r"\1[redacted]@", clean)
@@ -806,12 +813,12 @@ def _scrub_secret_material(clean: str) -> str:
 
 
 def sanitize_for_linear(text: object, limit: int = 900) -> str:
-    clean = re.sub(r"\s+", " ", str(text)).strip()
-    return _scrub_secret_material(clean)[:limit]
+    clean = canonicalize_untrusted_text(text)
+    return re.sub(r"\s+", " ", clean).strip()[:limit]
 
 
 def sanitize_for_log(text: object, limit: int = 4000) -> str:
-    return _scrub_secret_material(str(text))[:limit]
+    return canonicalize_untrusted_text(text)[:limit]
 
 
 def log_exception_safe(message: str, *args) -> None:

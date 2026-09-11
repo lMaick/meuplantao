@@ -62,6 +62,44 @@ def _hermes_bodies(comment_mock):
             if "fluxo padrao" in c.args[1]]
 
 
+def _encode_layers(value, layers):
+    from urllib.parse import quote
+    current = value
+    for _ in range(layers):
+        current = quote(current, safe="")
+    return current
+
+
+def _decode_all(value):
+    from urllib.parse import unquote
+    current = str(value)
+    while True:
+        decoded = unquote(current)
+        if decoded == current:
+            return decoded
+        current = decoded
+
+
+def _capture_log_records():
+    import logging
+    records = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+    return records, _H()
+
+
+def _run_sync_capture_logs(state):
+    records, handler = _capture_log_records()
+    dispatcher.LOG.addHandler(handler)
+    try:
+        dispatcher.sync_worker_reports(state)
+    finally:
+        dispatcher.LOG.removeHandler(handler)
+    return "\n".join(record.getMessage() for record in records)
+
+
 class LinearBusTests(unittest.TestCase):
     def test_no_global_config_mutation_at_import(self):
         lines = Path(__file__).read_text(encoding="utf-8").splitlines()
@@ -750,6 +788,87 @@ class LinearBusTests(unittest.TestCase):
         dump = json.dumps(state["issues"]["MAI-69"])
         for secret in ("blk-tok-1", "blk-s3cr3t", "p-blk", "MBLK"):
             self.assertNotIn(secret, dump)
+
+
+    def test_canonicalization_converges_zero_to_ten_layers(self):
+        for layers in (0, 1, 2, 5, 10):
+            evil = "prefix " + _encode_layers("Bearer nest-tok-72", layers) + " suffix"
+            for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+                clean = fn(evil)
+                self.assertNotIn("nest-tok-72", _decode_all(clean),
+                                 "layers=%d via %s" % (layers, fn.__name__))
+
+    def test_nonconvergent_input_fails_closed_to_redacted(self):
+        evil = "x " + _encode_layers("Bearer cap-tok-72", 5)
+        with patch.object(dispatcher, "_CANON_MAX_ROUNDS", 2):
+            for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+                self.assertEqual(fn(evil), "[REDACTED]")
+
+    def test_canonicalization_covers_mixed_malformed_unicode_shapes(self):
+        evil = ("bearer mix-tok-1 %42earer mix-tok-2 %62earer mix-tok-3 "
+                "token=%4dix-tok-4 password=%zz %2 trailing% "
+                "caf%C3%A9 https://u:pw-user-9@host/x "
+                "-----BEGIN RSA PRIVATE KEY-----\nM72X\n-----END RSA PRIVATE KEY-----\n"
+                "secret=top-mark-9\ntail")
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = fn(evil)
+            for secret in ("mix-tok-1", "mix-tok-2", "mix-tok-3", "ix-tok-4",
+                           "pw-user-9", "top-mark-9", "M72X"):
+                self.assertNotIn(secret, _decode_all(clean))
+
+    def test_large_payload_stays_bounded_without_expansion(self):
+        big = _encode_layers("Bearer big-tok-9", 4) + "ok " * 20000
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = _decode_all(fn(big))
+            self.assertNotIn("big-tok-9", clean)
+            self.assertLessEqual(len(clean), len(big) + 256)
+
+    def test_delivery_e2e_converged_canonicalization_across_sinks(self):
+        tests = _encode_layers("Bearer sink-tok-5", 5)
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=" + tests]
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+              "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=pr):
+            logged = _run_sync_capture_logs(state)
+        blob = (json.dumps(state) + "\n"
+                + "\n".join(c.args[1] for c in comment.call_args_list) + "\n"
+                + logged)
+        self.assertNotIn("sink-tok-5", _decode_all(blob))
+
+    def test_error_e2e_converged_canonicalization_across_sinks(self):
+        evil = _encode_layers("Bearer errsink-tok-6", 5)
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: error boom " + evil]
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"):
+            logged = _run_sync_capture_logs(state)
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "error")
+        blob = (json.dumps(state) + "\n"
+                + "\n".join(c.args[1] for c in comment.call_args_list) + "\n"
+                + logged)
+        self.assertNotIn("errsink-tok-6", _decode_all(blob))
+
+    def test_blocked_e2e_converged_canonicalization_across_sinks(self):
+        evil = _encode_layers("Bearer blksink-tok-7", 5)
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: blocked wall " + evil]
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"):
+            logged = _run_sync_capture_logs(state)
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "blocked")
+        blob = (json.dumps(state) + "\n"
+                + "\n".join(c.args[1] for c in comment.call_args_list) + "\n"
+                + logged)
+        self.assertNotIn("blksink-tok-7", _decode_all(blob))
 
 
 class _NoopLock:
