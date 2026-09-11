@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -73,6 +74,12 @@ WRAPPER_REASONING_FLAGS = ("--reasoning", "--effort", "--reasoning-effort", "--r
 WRAPPER_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 WRAPPER_SHELL_OPERATORS = frozenset({"&", "&&", "|", "||", ";", ">", ">>", "<", "<<", "(", ")", "`"})
 WRAPPER_TOKEN_METACHARS = frozenset(list(";&|><$`'\"\\(){}[]*?!~#") + ["\n", "\r", "\x00"])
+WRAPPER_MODE_COMMAND_FLAGS = "command_flags"
+WRAPPER_MODE_SCRIPT_WRAPPER = "script_wrapper"
+SUPPORTED_WRAPPER_MODES = (WRAPPER_MODE_COMMAND_FLAGS, WRAPPER_MODE_SCRIPT_WRAPPER)
+SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+ALLOWED_SCRIPT_WRAPPER_EXTENSIONS = (".cmd", ".bat")
+DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS = ("--dangerously-bypass-approvals-and-sandbox", "")
 
 
 def _pick(mapping: dict, *names: str) -> str:
@@ -106,21 +113,47 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             raise RuntimeError(f"preflight: worker policy entry {index} missing id/model/reasoning/command/identity/auth_mode")
         agent = str(entry.get("agent", "") or "").strip()
         provider = str(entry.get("provider", "") or "").strip()
+        wrapper_mode = str(entry.get("wrapper_mode", "") or "").strip().lower()
+        if not wrapper_mode:
+            wrapper_mode = WRAPPER_MODE_COMMAND_FLAGS
+        if wrapper_mode not in SUPPORTED_WRAPPER_MODES:
+            raise RuntimeError(
+                f"preflight: worker policy entry {index} invalid wrapper_mode"
+                f" (expected one of {SUPPORTED_WRAPPER_MODES}; got {wrapper_mode})"
+            )
         wrapper_executable = str(entry.get("wrapper_executable", "") or "").strip()
-        if wrapper_executable and not WRAPPER_EXECUTABLE_RE.match(wrapper_executable):
-            raise RuntimeError(
-                f"preflight: worker policy entry {index} malformed"
-                " (wrapper_executable must be a bare executable name)"
-            )
-        if agent == "codex" and provider and not wrapper_executable:
-            raise RuntimeError(
-                f"preflight: worker policy entry {index} missing wrapper_executable"
-                " (wrapper-routed codex requires an explicit executable)"
-            )
+        wrapper_path = str(entry.get("wrapper_path", "") or "").strip()
+        wrapper_sha256 = str(entry.get("wrapper_sha256", "") or "").strip().lower()
+
+        if wrapper_mode == WRAPPER_MODE_SCRIPT_WRAPPER:
+            if not wrapper_path:
+                raise RuntimeError(f"preflight: worker policy entry {index} missing wrapper_path")
+            if not wrapper_sha256 or not SHA256_HEX_RE.match(wrapper_sha256):
+                raise RuntimeError(f"preflight: worker policy entry {index} missing or invalid wrapper_sha256")
+        else:
+            if wrapper_executable and not WRAPPER_EXECUTABLE_RE.match(wrapper_executable):
+                raise RuntimeError(
+                    f"preflight: worker policy entry {index} malformed"
+                    " (wrapper_executable must be a bare executable name)"
+                )
+            if agent == "codex" and provider and not wrapper_executable:
+                raise RuntimeError(
+                    f"preflight: worker policy entry {index} missing wrapper_executable"
+                    " (wrapper-routed codex requires an explicit executable)"
+                )
         forbid = entry.get("forbid_substrings", None)
         if forbid is None:
             forbid = list(DEFAULT_FORBIDDEN_ROUTING) if agent == "codex" else []
         forbid_tuple = tuple(str(item).lower() for item in forbid) if isinstance(forbid, (list, tuple)) else ()
+
+        allowed_args_raw = entry.get("allowed_default_args", None)
+        if allowed_args_raw is not None:
+            allowed_args = tuple(str(x) for x in allowed_args_raw) if isinstance(allowed_args_raw, (list, tuple)) else (str(allowed_args_raw),)
+        elif wrapper_mode == WRAPPER_MODE_SCRIPT_WRAPPER:
+            allowed_args = DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS
+        else:
+            allowed_args = ("",)
+
         normalized.append({
             "id": worker_id,
             "agent": agent,
@@ -130,7 +163,11 @@ def allowed_workers(config: dict | None = None) -> list[dict]:
             "command": command,
             "identity": identity,
             "auth_mode": auth_mode,
+            "wrapper_mode": wrapper_mode,
             "wrapper_executable": wrapper_executable,
+            "wrapper_path": wrapper_path,
+            "wrapper_sha256": wrapper_sha256,
+            "allowed_default_args": allowed_args,
             "forbid_substrings": forbid_tuple,
         })
     return normalized
@@ -467,10 +504,127 @@ def read_codex_wrapper_route(
     }
 
 
+def parse_wrapper_script_config(text: str, worker_id: str) -> dict:
+    models = []
+    providers = []
+    reasonings = []
+    env_keys = []
+    pattern = re.compile(r"""-c\s+["']?([A-Za-z0-9_.]+)=['"]?([^'"\r\n\^]+?)['"]?["']?(?:\s|\^|$)""")
+    for match in pattern.finditer(text):
+        key = match.group(1).strip().lower()
+        val = match.group(2).strip()
+        if key == "model":
+            models.append(val)
+        elif key in ("model_provider", "provider"):
+            providers.append(val)
+        elif key in ("model_reasoning_effort", "reasoning"):
+            reasonings.append(val)
+        elif key.endswith(".env_key") or key == "env_key":
+            env_keys.append(val)
+
+    if len(set(models)) > 1 or len(set(providers)) > 1 or len(set(reasonings)) > 1:
+        raise RuntimeError(f"preflight: codex wrapper ambiguous (worker_id={worker_id})")
+    if not models or not providers or not reasonings:
+        raise RuntimeError(f"preflight: codex wrapper field missing (worker_id={worker_id})")
+    return {
+        "model": models[0],
+        "provider": providers[0],
+        "reasoning": reasonings[0],
+        "env_key": env_keys[0] if env_keys else "",
+    }
+
+
+def read_codex_script_wrapper_route(
+    entry: dict, home: Path | None = None, settings_path: Path | str | None = None
+) -> dict:
+    worker_id = str(entry.get("id", "") or "")
+    if entry.get("command") != CODEX_WRAPPER_KEY or entry.get("identity") != CODEX_WRAPPER_KEY:
+        raise RuntimeError(f"preflight: codex wrapper command not resolved (worker_id={worker_id})")
+    resolved = resolve_wrapper_settings_path(worker_id, explicit=settings_path)
+    settings_data = load_orca_settings(resolved, worker_id)
+    raw = extract_codex_override(settings_data, worker_id)
+
+    clean_raw = raw.strip().strip('"').strip("'")
+    if not clean_raw:
+        raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+
+    ext = Path(clean_raw).suffix.lower()
+    allowed_exts = tuple(entry.get("allowed_wrapper_extensions", ALLOWED_SCRIPT_WRAPPER_EXTENSIONS))
+    if ext not in allowed_exts:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized extension (worker_id={worker_id})")
+
+    configured_path = str(entry.get("wrapper_path", "") or "").strip()
+    try:
+        raw_norm = os.path.normcase(os.path.abspath(clean_raw))
+        conf_norm = os.path.normcase(os.path.abspath(configured_path))
+    except Exception:
+        raise RuntimeError(f"preflight: codex wrapper path mismatch (worker_id={worker_id})")
+    if raw_norm != conf_norm:
+        raise RuntimeError(f"preflight: codex wrapper path mismatch (worker_id={worker_id})")
+
+    target_file = Path(clean_raw)
+    if not target_file.is_file():
+        raise RuntimeError(f"preflight: codex wrapper missing (worker_id={worker_id})")
+
+    content_bytes = target_file.read_bytes()
+    actual_hash = hashlib.sha256(content_bytes).hexdigest().lower()
+    expected_hash = str(entry.get("wrapper_sha256", "") or "").strip().lower()
+    if actual_hash != expected_hash:
+        raise RuntimeError(f"preflight: codex wrapper hash mismatch (worker_id={worker_id})")
+
+    try:
+        content_text = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        content_text = content_bytes.decode("latin1", errors="replace")
+
+    route = parse_wrapper_script_config(content_text, worker_id)
+
+    nested = settings_data.get("settings")
+    args_record = nested.get("agentDefaultArgs") if isinstance(nested, dict) else None
+    if not isinstance(args_record, dict) or CODEX_WRAPPER_KEY not in args_record:
+        raise RuntimeError(f"preflight: codex wrapper default args missing (worker_id={worker_id})")
+    default_args_val = args_record[CODEX_WRAPPER_KEY]
+    if not isinstance(default_args_val, str):
+        raise RuntimeError(f"preflight: codex wrapper malformed (worker_id={worker_id})")
+    allowed_args = entry.get("allowed_default_args", DEFAULT_ALLOWED_SCRIPT_WRAPPER_ARGS)
+    if default_args_val not in allowed_args:
+        raise RuntimeError(f"preflight: codex wrapper unauthorized default args (worker_id={worker_id})")
+
+    require_empty_wrapper_default_env(settings_data, worker_id)
+
+    auth_present = False
+    auth_mode = ""
+    env_key = route.get("env_key")
+    if env_key and os.environ.get(env_key):
+        auth_present = True
+        auth_mode = entry.get("auth_mode", "opencode")
+    else:
+        base = home or Path.home()
+        for rel in OPENCODE_REL_AUTHS:
+            candidate = _read_toml_or_json(base / rel)
+            if candidate is not None and not candidate.get("__unparseable__"):
+                auth_present = True
+                auth_mode = _pick(candidate, "auth_mode", "mode", "provider") or entry.get("auth_mode", "opencode")
+                break
+
+    return {
+        "present": True,
+        "wrapper": True,
+        "command": CODEX_WRAPPER_KEY,
+        "model": route["model"],
+        "provider": route["provider"],
+        "reasoning": route["reasoning"],
+        "auth_present": auth_present,
+        "auth_mode": auth_mode,
+    }
+
+
 def worker_evidence(
     entry: dict, home: Path | None = None, settings_path: Path | str | None = None
 ) -> dict | None:
     if is_wrapper_codex_worker(entry):
+        if entry.get("wrapper_mode") == WRAPPER_MODE_SCRIPT_WRAPPER:
+            return read_codex_script_wrapper_route(entry, home=home, settings_path=settings_path)
         return read_codex_wrapper_route(entry, home=home, settings_path=settings_path)
     if is_codex_worker(entry):
         return read_codex_state(home)
