@@ -968,6 +968,119 @@ class LinearBusTests(unittest.TestCase):
                 dispatcher.gh_pr_for_url("https://example.test/pr/44")
 
 
+def _u_escape(text):
+    return "".join("\\u%04x" % ord(ch) for ch in text)
+
+
+def _decode_fully(text):
+    from urllib.parse import unquote
+    simple = {'"': '"', "\\": "\\", "/": "/",
+              "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+    hexdigits = set("0123456789abcdefABCDEF")
+    current = str(text)
+    for _ in range(60):
+        step = unquote(current)
+        out = []
+        i = 0
+        while i < len(step):
+            ch = step[i]
+            if ch == "\\" and i + 1 < len(step):
+                nxt = step[i + 1]
+                if nxt == "u" and i + 6 <= len(step):
+                    hexpart = step[i + 2:i + 6]
+                    if all(c in hexdigits for c in hexpart):
+                        unit = int(hexpart, 16)
+                        if 0xD800 <= unit <= 0xDBFF and step[i + 6:i + 8] == "\\u":
+                            low = step[i + 8:i + 12]
+                            if len(low) == 4 and all(c in hexdigits for c in low):
+                                lowsed = int(low, 16)
+                                if 0xDC00 <= lowed <= 0xDFFF:
+                                    out.append(chr(0x10000 + ((unit - 0xD800) << 10) + (lowed - 0xDC00)))
+                                    i += 12
+                                    continue
+                        if not 0xD800 <= unit <= 0xDFFF:
+                            out.append(chr(unit))
+                            i += 6
+                            continue
+                elif nxt in simple:
+                    out.append(simple[nxt])
+                    i += 2
+                    continue
+            out.append(ch)
+            i += 1
+        step = "".join(out)
+        if step == current:
+            return step
+        current = step
+    return current
+
+
+class UnicodeEscapeMatrixTests(unittest.TestCase):
+    def test_unicode_escapes_normalized_before_secret_scrub(self):
+        evil = "\\u0042earer uniU-tok-1"
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = _decode_fully(fn(evil))
+            self.assertNotIn("uniU-tok-1", clean)
+            self.assertNotIn("Bearer", clean)
+        hidden = "Bearer " + _u_escape("uniU-tok-2")
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            self.assertNotIn("uniU-tok-2", _decode_fully(fn(hidden)))
+        pair = "prefix \\uD83D\\uDE00 suffix"
+        self.assertIn("\U0001F600", _decode_fully(dispatcher.sanitize_for_log(pair)))
+        mixed = "Bearer\\u0020uniU-tok-3"
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            self.assertNotIn("uniU-tok-3", _decode_fully(fn(mixed)))
+        layered = "%5Cu0042earer%20uniU-tok-4"
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = _decode_fully(fn(layered))
+            self.assertNotIn("uniU-tok-4", clean)
+            self.assertNotIn("Bearer", clean)
+
+    def test_malformed_escapes_stay_inert_and_encodable(self):
+        evil = "\\uZZZZ \\u12 trailing\\ \\uD800 lone Bearer uniU-tok-5"
+        for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+            clean = fn(evil)
+            clean.encode("utf-8")
+            self.assertNotIn("uniU-tok-5", _decode_fully(clean))
+
+    def test_deep_mixed_layers_fail_closed_when_rounds_exhausted(self):
+        from urllib.parse import quote
+        evil = quote(quote("\\u0042earer uniU-tok-6"))
+        with patch.object(dispatcher, "_CANON_MAX_ROUNDS", 2):
+            for fn in (dispatcher.sanitize_for_linear, dispatcher.sanitize_for_log):
+                self.assertEqual(fn(evil), "[REDACTED]")
+
+    def test_unicode_escape_matrix_across_error_blocked_delivery(self):
+        kinds = {
+            "delivery": "MeuPlantao-Report: delivery pr=https://example.test/pr/44 sha=abc1234 tests=",
+            "error": "MeuPlantao-Report: error boom ",
+            "blocked": "MeuPlantao-Report: blocked wall ",
+        }
+        sentinels = {"delivery": "uniM-tok-1", "error": "uniM-tok-2", "blocked": "uniM-tok-3"}
+        canon = {"number": 44, "headRefOid": "abc1234",
+                 "url": "https://github.com/example/repository/pull/44",
+                 "statusCheckRollup": []}
+        for kind, prefix in kinds.items():
+            with self.subTest(kind=kind):
+                hidden = _u_escape("Bearer " + sentinels[kind])
+                state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+                comments = [prefix + hidden]
+                with patch.object(dispatcher, "orca",
+                                  return_value=_linear_issue("In Progress", [], comments=comments)), \
+                     patch.object(dispatcher, "linear_comment") as comment, \
+                     patch.object(dispatcher, "save_state"), \
+                     patch.object(dispatcher, "gh_pr_for_url", return_value=dict(canon)):
+                    logged = _run_sync_capture_logs(state)
+                blob = (json.dumps(state) + "\n"
+                        + "\n".join(c.args[1] for c in comment.call_args_list) + "\n"
+                        + logged)
+                self.assertNotIn(sentinels[kind], _decode_fully(blob))
+                if kind == "delivery":
+                    self.assertEqual(state["issues"]["MAI-69"].get("status"), "needs-review")
+                else:
+                    self.assertIn(state["issues"]["MAI-69"].get("status"), ("error", "blocked"))
+
+
 class _NoopLock:
     def seek(self, *a):
         return None

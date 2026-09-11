@@ -828,6 +828,34 @@ def canonical_pr_url(url: object) -> str:
     return urlunsplit((parts.scheme.lower(), netloc, parts.path or "", "", ""))
 
 
+_UNICODE_PAIR_RE = re.compile(r"\\u([dD][89a-fA-F][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})")
+_UNICODE_UNIT_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_SIMPLE_ESCAPE_RE = re.compile(r"\\([\"\\/bfnrt])")
+_SIMPLE_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
+                   "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _decode_unicode_escapes(text: str) -> str:
+    if "\\" not in text:
+        return text
+
+    def _pair(match):
+        high = int(match.group(1), 16)
+        low = int(match.group(2), 16)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+    text = _UNICODE_PAIR_RE.sub(_pair, text)
+    text = _SIMPLE_ESCAPE_RE.sub(lambda match: _SIMPLE_ESCAPES[match.group(1)], text)
+
+    def _unit(match):
+        unit = int(match.group(1), 16)
+        if 0xD800 <= unit <= 0xDFFF:
+            return match.group(0)
+        return chr(unit)
+
+    return _UNICODE_UNIT_RE.sub(_unit, text)
+
+
 _CANON_MAX_ROUNDS = 25
 _CANON_MAX_CHARS = 200000
 
@@ -837,7 +865,7 @@ def canonicalize_untrusted_text(text: object) -> str:
     if len(current) > _CANON_MAX_CHARS:
         return "[REDACTED]"
     for _ in range(_CANON_MAX_ROUNDS):
-        decoded = unquote(current)
+        decoded = _decode_unicode_escapes(unquote(current))
         if decoded == current:
             return _scrub_secret_material(decoded)
         current = decoded
