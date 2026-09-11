@@ -676,6 +676,81 @@ class LinearBusTests(unittest.TestCase):
         stamped = head + "```json\n{\"issue\":\"MAI-69\",\"event\":\"needs-review\",\"at\":123}\n```"
         self.assertIsNone(dispatcher.parse_hermes_payload(stamped))
 
+    def test_delivery_report_persists_only_canonical_sanitized(self):
+        raw_url = "https://bot:s3cret@example.test/pr/44?utm=evil&token=zzz#frag"
+        tests = ("Bearer live-tok-AAA111 OPENAI_API_KEY=sk-m7 secret=\"q 1\" "
+                 "%42earer pctok-999 postgres://u:pw-m7@db/x "
+                 "-----BEGIN RSA PRIVATE KEY----- M7 -----END RSA PRIVATE KEY-----")
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: delivery pr=" + raw_url + " sha=abc1234 tests=" + tests]
+        pr = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+              "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=pr):
+            dispatcher.sync_worker_reports(state)
+        stored = state["issues"]["MAI-69"].get("workerReport") or {}
+        self.assertEqual(stored.get("kind"), "delivery")
+        self.assertEqual(stored.get("pr"), "https://example.test/pr/44")
+        self.assertNotEqual(stored.get("pr"), raw_url)
+        dump = json.dumps(stored)
+        for secret in ("live-tok-AAA111", "sk-m7", "q 1", "pctok-999", "pw-m7",
+                       "s3cret", "utm=evil", "token=zzz", "M7", "bot:s3cret"):
+            self.assertNotIn(secret, dump)
+
+    def test_tampered_report_url_never_replaces_canonical(self):
+        reported = "https://example.test/pr/99?next=https://evil.test/x"
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: delivery pr=" + reported + " sha=abc1234 tests=ok"]
+        canonical = {"number": 44, "headRefOid": "abc1234", "url": "https://example.test/pr/44",
+                     "statusCheckRollup": []}
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"), \
+             patch.object(dispatcher, "gh_pr_for_url", return_value=canonical):
+            dispatcher.sync_worker_reports(state)
+        stored = state["issues"]["MAI-69"].get("workerReport") or {}
+        self.assertEqual(stored.get("pr"), "https://example.test/pr/44")
+        dump = json.dumps(stored)
+        self.assertNotIn("evil.test", dump)
+        self.assertNotIn("pr/99", dump)
+
+    def test_error_report_with_secret_matrix_stays_clean(self):
+        evil = ("Authorization: Bearer err-tok-1 passwd='p w' OPENAI_API_KEY=sk-err "
+                "postgres://a:b-err@h/db?token=t-err %42earer pctok-err\n"
+                "-----BEGIN RSA PRIVATE KEY-----\nMERR\n-----END RSA PRIVATE KEY-----")
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: error boom " + evil]
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"):
+            dispatcher.sync_worker_reports(state)
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "error")
+        dump = json.dumps(state["issues"]["MAI-69"])
+        for secret in ("err-tok-1", "p w", "sk-err", "b-err", "t-err",
+                       "pctok-err", "MERR"):
+            self.assertNotIn(secret, dump)
+
+    def test_blocked_report_with_secret_matrix_stays_clean(self):
+        evil = ("blocked by wall Authorization: %42earer blk-tok-1\n"
+                "client_secret=blk-s3cr3t https://u:p-blk@hooks/x?k=v\n"
+                "-----BEGIN EC PRIVATE KEY-----\nMBLK\n-----END EC PRIVATE KEY-----")
+        state = {"issues": {"MAI-69": {"status": "dispatched", "dispatchId": "d-1"}}}
+        comments = ["MeuPlantao-Report: " + evil]
+        with patch.object(dispatcher, "orca",
+                          return_value=_linear_issue("In Progress", [], comments=comments)), \
+             patch.object(dispatcher, "linear_comment"), \
+             patch.object(dispatcher, "save_state"):
+            dispatcher.sync_worker_reports(state)
+        self.assertEqual(state["issues"]["MAI-69"].get("status"), "blocked")
+        dump = json.dumps(state["issues"]["MAI-69"])
+        for secret in ("blk-tok-1", "blk-s3cr3t", "p-blk", "MBLK"):
+            self.assertNotIn(secret, dump)
+
 
 class _NoopLock:
     def seek(self, *a):

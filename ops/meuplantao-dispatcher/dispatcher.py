@@ -16,6 +16,7 @@ import traceback
 import tomllib
 import unicodedata
 import uuid
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("MEUPLANTAO_DISPATCHER_CONFIG", ROOT / "config.toml"))
@@ -767,7 +768,33 @@ _SECRET_VALUE_RE = r"\"[^\"]*\"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|\S+"
 _URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 
 
+def _percent_decode(text: str) -> str:
+    current = str(text)
+    for _ in range(3):
+        decoded = unquote(current)
+        if decoded == current:
+            return decoded
+        current = decoded
+    return current
+
+
+def canonical_pr_url(url: object) -> str:
+    parts = urlsplit(str(url or "").strip())
+    host = (parts.hostname or "").strip().lower()
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        raise RuntimeError("PR URL is not canonical")
+    netloc = host
+    try:
+        port = parts.port
+    except ValueError:
+        raise RuntimeError("PR URL is not canonical")
+    if port:
+        netloc += ":" + str(port)
+    return urlunsplit((parts.scheme.lower(), netloc, parts.path or "", "", ""))
+
+
 def _scrub_secret_material(clean: str) -> str:
+    clean = _percent_decode(clean)
     for pattern in _SECRET_PATTERNS:
         clean = re.sub(pattern, "[redacted]", clean, flags=re.IGNORECASE)
     clean = _URL_USERINFO_RE.sub(r"\1[redacted]@", clean)
@@ -992,8 +1019,10 @@ def sync_worker_reports(state: dict) -> int:
                 if str(pr.get("headRefOid") or "").lower() != report["sha"]:
                     LOG.error("Reported SHA does not match PR head for %s; waiting for fresh report", issue_id)
                     continue
-                local["workerReport"] = {"kind": "delivery", "pr": report["pr"],
-                                         "sha": report["sha"], "tests": report.get("tests", ""),
+                local["workerReport"] = {"kind": "delivery",
+                                         "pr": canonical_pr_url(pr.get("url")),
+                                         "sha": report["sha"],
+                                         "tests": sanitize_for_linear(report.get("tests", ""), 300),
                                          "number": pr.get("number"),
                                          "head": str(pr.get("headRefOid") or "").lower()}
                 save_state(state)
