@@ -300,13 +300,20 @@ o Orca inicia; nao e modelo do dispatcher.
   transporte lateral e usado.
 - Entrega reportada so e persistida/promovida apos validacao exata de PR + SHA;
   relatorio divergente tem zero promocoes em dois ciclos (sem fallback por branch).
+- Fronteira de normalizacao do WorkerReport (MAI-70): `sync_worker_reports` constroi
+  o `workerReport` em ponto unico, persistindo apenas a URL canonica verificada
+  (`canonical_pr_url`: sem userinfo/query/fragmento) e o resumo `tests` sanitizado
+  e limitado; campos crus do comentario nunca entram no estado; o scrubber comum
+  decodifica percent-encoding antes de redigir.
 - Timeout retryavel de verdade: label e comentario so marcam `Done` apos escrita
   confirmada; falha mantem a etapa pendente, sem finalizar o timeout nem notificar
   antes de ambas confirmadas.
 - Segredos nunca em canal persistente: Linear/estado sanitizados e logs via
   `sanitize_for_log` + `log_exception_safe` (cobertura por captura de logs).
-- Cada evento contem estritamente identificador da issue e tipo do evento; o
-  fingerprint vive so no `state.json/issues/<ID>/hermesNotified` para dedup.
+- Cada evento carrega estritamente identificador da issue e tipo do evento no bloco
+  JSON (`{issue, event}`); o dedup vive em `state.json/issues/<ID>/hermesNotified`
+  e o comentario remoto carrega o marcador `MeuPlantao-Hermes-Fp: <fingerprint>`
+  para correlacao no read-back crash-safe (funcoes distintas, JSON segue estrito).
 - Dedup somente apos entrega confirmada: o fingerprint e gravado depois que o
   comentario e aceito; falha de entrega gera retry no proximo tick (sem perda
   definitiva) e repeticao do mesmo fingerprint gera zero escritas.
@@ -373,5 +380,5 @@ o Orca inicia; nao e modelo do dispatcher.
 - Sem policy/worker valido: zero criacao, zero mutacao indevida, erro sanitizado.
 
 Suite completa: `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py"`
-plus `git diff --check`. Base empilhada sobre o SHA da MAI-67; PR contra
-`lMaick/MAI-67-desacoplar-preflight-modelo-unico` com dependencia explicita da PR #37.
+plus `git diff --check`. PR #39 contra `main` (integracao final; MAI-67/PR #37
+sao historico, nao dependencia ativa); sem merge/rollout pelo agente.

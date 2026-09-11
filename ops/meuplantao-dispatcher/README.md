@@ -63,6 +63,10 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    (issue + PR + SHA para review; issue + marcador para os demais; novo SHA reseta
    o fingerprint). Entrega reportada so e persistida/promovida apos validacao exata
    de PR + SHA; relatorio divergente nunca avanca, nem via fallback por branch.
+   O `workerReport` e construido em ponto unico na ingestao (MAI-70): apenas a
+   URL canonica verificada (sem userinfo/query/fragmento) e o resumo `tests`
+   sanitizado e limitado; campos crus do comentario nunca entram no estado;
+   o scrubber comum decodifica percent-encoding antes de redigir.
    Etapas de marcacao de timeout so concluem apos escrita confirmada no Linear;
    falha mantem a etapa pendente para retry no proximo tick, sem finalizar o
    timeout nem notificar antes de label e comentario confirmados.
@@ -74,8 +78,8 @@ Responsabilidades por tick (sob lock, no maximo `max_dispatch_per_run`):
    zero mutacao no Linear).
 6. Acionamento Hermes em duas partes, sem LLM no dispatcher. (a) Evento duravel:
    comentario Linear com instrucao minima mais bloco JSON estrito de exatamente
-   `{issue, event}` (validavel por `parse_hermes_payload`); fingerprint gravado em
-   `state.json` somente apos o comentario confirmado; falha gera retry no proximo
+   `{issue, event}` (validavel por `parse_hermes_payload`); o dedup e guardado em
+   `state.json` (`hermesNotified`) somente apos o comentario confirmado; falha gera retry no proximo
    tick (sem perda); entrega reconcilia por leitura remota, de modo que queda entre
    aceite remoto e save local nunca duplica o evento (idempotente e crash-safe).
    O comentario carrega ainda a linha `MeuPlantao-Hermes-Fp: <fingerprint>` (fora
@@ -138,3 +142,6 @@ do estado corrente (review/timeout, sem historico) e expectedAck no precheck,
 read-back por marcador de fingerprint (evento antigo nao suprime novo SHA),
 sanitizacao de formatos reais (Bearer/Authorization, quoted, userinfo em URL),
 sem policy/worker, sem LLM no polling, sem mutacao global de CONFIG).
+
+Entrega na PR #39 contra `main` (integracao final; MAI-67/PR #37 sao historico,
+nao dependencia ativa); sem merge/rollout pelo agente.
