@@ -1418,5 +1418,94 @@ def _run_main(state, orca_fake, argv=("dispatcher.py",)):
          patch.object(sys, "argv", list(argv)):
         return dispatcher.main()
 
+class ReconcileTerminalPreservationTests(unittest.TestCase):
+    def _confirmed_reconcile_orca(self):
+        linear = _linear_issue("In Progress", [])
+        terms = {"terminals": [{"handle": "term-99", "agentIdentity": "codex"}]}
+        tail = {"terminal": {"tail": ["model: gpt-5.6-luna low"]}}
+        return [linear, terms, tail]
+
+    def test_reconcile_preserves_terminal_blocked_and_hermes_ack_flow(self):
+        issue_id = "MAI-99"
+        wt = {"id": "wt-99", "path": "C:/work/MAI-99", "displayName": "MAI-99-work", "linkedLinearIssue": issue_id}
+        state = {"issues": {issue_id: {"status": "dispatched", "dispatchId": "d-99"}}}
+        blocked_body = "MeuPlantao-Report: blocked waiting on dependencies"
+        orca_payload = {
+            "issue": {"team": {"name": dispatcher.TEAM}, "project": {"name": dispatcher.PROJECT}, "state": {"name": "In Progress"}, "labels": []},
+            "comments": [{"body": blocked_body}],
+        }
+        with patch.object(dispatcher, "orca", return_value=orca_payload), patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
+            applied = dispatcher.sync_worker_reports(state)
+        self.assertEqual(applied, 1)
+        self.assertEqual(state["issues"][issue_id]["status"], "blocked")
+        fp = dispatcher.hermes_fingerprint(issue_id, "blocked")
+        self.assertEqual(fp, "MAI-99:blocked")
+        with patch.object(dispatcher, "orca", return_value=_linear_issue("In Progress", [], comments=[blocked_body])), patch.object(dispatcher, "linear_comment") as comment, patch.object(dispatcher, "save_state"):
+            count = dispatcher.deliver_hermes_notifications(state)
+            count2 = dispatcher.deliver_hermes_notifications(state)
+        bodies = _hermes_bodies(comment)
+        self.assertEqual(count, 1)
+        self.assertEqual(len(bodies), 1)
+        self.assertEqual(count2, 0)
+        self.assertEqual(dispatcher.parse_hermes_payload(bodies[0]), {"issue": issue_id, "event": "blocked"})
+        with patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)), patch.object(dispatcher, "orca", side_effect=self._confirmed_reconcile_orca()) as fake, patch.object(dispatcher, "linear_comment") as reconciled_comment, patch.object(dispatcher, "save_state"), patch.object(dispatcher, "create_workspace") as create:
+            dispatcher.reconcile_dispatches(state, [wt])
+        self.assertEqual(state["issues"][issue_id]["status"], "blocked")
+        create.assert_not_called()
+        reconciled_comment.assert_not_called()
+        self.assertEqual([c for c in fake.call_args_list if len(c.args) >= 2 and c.args[:2] == ("terminal", "create")], [])
+        self.assertEqual([c for c in fake.call_args_list if len(c.args) >= 2 and c.args[:2] == ("worktree", "create")], [])
+        bare = _linear_issue("In Progress", [], comments=[blocked_body])
+        with patch.object(dispatcher, "orca", return_value=bare):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["fingerprint"], fp)
+        self.assertEqual(events[0]["event"], "blocked")
+        self.assertEqual(code, 0)
+        ack = "MeuPlantao-Ack: " + fp
+        acked = _linear_issue("In Progress", [], comments=[blocked_body, ack])
+        with patch.object(dispatcher, "orca", return_value=acked):
+            events, code = dispatcher.hermes_precheck(state)
+        self.assertEqual(events, [])
+        self.assertEqual(code, 1)
+        with patch.object(dispatcher, "orca", return_value=acked), patch.object(dispatcher, "linear_comment") as comment2, patch.object(dispatcher, "save_state"):
+            count3 = dispatcher.deliver_hermes_notifications(state)
+        self.assertEqual(count3, 0)
+        self.assertEqual(_hermes_bodies(comment2), [])
+        with patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)), patch.object(dispatcher, "orca", side_effect=self._confirmed_reconcile_orca()), patch.object(dispatcher, "linear_comment") as reconciled2, patch.object(dispatcher, "save_state"):
+            dispatcher.reconcile_dispatches(state, [wt])
+        self.assertEqual(state["issues"][issue_id]["status"], "blocked")
+        reconciled2.assert_not_called()
+
+    def test_reconcile_preserves_all_terminal_result_statuses(self):
+        cases = {
+            "blocked": {"status": "blocked"},
+            "error": {"status": "error", "workerError": "boom"},
+            "needs-review": {"status": "needs-review", "reviewMarker": "44:abc1234"},
+            "dispatch-timeout": {"status": "dispatch-timeout", "dispatchId": "d-1"},
+            "dispatched": {"status": "dispatched", "dispatchId": "d-1"},
+        }
+        for status, local in cases.items():
+            with self.subTest(status=status):
+                issue_id = "MAI-98"
+                wt = {"id": "wt-98", "path": "C:/work/MAI-98", "displayName": "MAI-98-work", "linkedLinearIssue": issue_id}
+                state = {"issues": {issue_id: dict(local)}}
+                with patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)), patch.object(dispatcher, "orca", side_effect=[_linear_issue("In Progress", []), {"terminals": [{"handle": "t", "agentIdentity": "codex"}]}, {"terminal": {"tail": ["gpt-5.6-luna low"]}}]) as fake, patch.object(dispatcher, "linear_comment") as comment, patch.object(dispatcher, "save_state"):
+                    dispatcher.reconcile_dispatches(state, [wt])
+                self.assertEqual(state["issues"][issue_id]["status"], status)
+                comment.assert_not_called()
+                self.assertEqual([c for c in fake.call_args_list if len(c.args) >= 2 and c.args[:2] == ("terminal", "create")], [])
+
+    def test_reconcile_still_recovers_incomplete_claiming_and_dispatching(self):
+        for status in ("claiming", "dispatching"):
+            with self.subTest(status=status):
+                issue_id = "MAI-97"
+                wt = {"id": "wt-97", "path": "C:/work/MAI-97", "displayName": "MAI-97-work", "linkedLinearIssue": issue_id}
+                state = {"issues": {issue_id: {"status": status, "dispatchId": "d-97"}}}
+                with patch.object(dispatcher, "preflight_model", return_value=dict(POLICY_ENTRY)), patch.object(dispatcher, "orca", side_effect=[_linear_issue("In Progress", []), {"terminals": [{"handle": "t", "agentIdentity": "codex"}]}, {"terminal": {"tail": ["gpt-5.6-luna low"]}}]), patch.object(dispatcher, "linear_comment"), patch.object(dispatcher, "save_state"):
+                    dispatcher.reconcile_dispatches(state, [wt])
+                self.assertEqual(state["issues"][issue_id]["status"], "dispatched")
+
+
 if __name__ == "__main__":
     unittest.main()
