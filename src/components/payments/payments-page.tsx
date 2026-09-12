@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createPayment, listPayments, removePayment, type Payment } from "@/lib/payments";
 import { listShifts, type Shift } from "@/lib/shifts";
@@ -16,10 +17,25 @@ const formatDate = (value: string) => new Intl.DateTimeFormat("pt-BR", { timeZon
 type Filter = "todos" | "atrasados" | "a-vencer" | "pagos";
 type Row = { shift: Shift; obligation: Obligation; placeName: string; responsible: string; expected: number; received: number; balance: number };
 
+function parseValidFilter(value: string | null): Filter | null {
+  if (value === "todos" || value === "atrasados" || value === "a-vencer" || value === "pagos") return value;
+  return null;
+}
+
 export default function PaymentsPage() {
+  const searchParams = useSearchParams();
+  const paramFilter = parseValidFilter(searchParams.get("filter") || searchParams.get("status"));
+  const paramPeriod = searchParams.get("period");
+  const paramPlaceId = searchParams.get("placeId");
+
   const [payments, setPayments] = useState<Payment[]>([]), [shifts, setShifts] = useState<Shift[]>([]), [obligations, setObligations] = useState<Obligation[]>([]), [places, setPlaces] = useState<Place[]>([]), [contacts, setContacts] = useState<Contact[]>([]);
-  const [period, setPeriod] = useState<string>(() => currentMonthValue()), [placeId, setPlaceId] = useState<string>(ALL_PLACES);
-  const [filter, setFilter] = useState<Filter>("todos"), [shiftId, setShiftId] = useState(""), [amount, setAmount] = useState(""), [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10)), [error, setError] = useState(""), [saving, setSaving] = useState(false);
+  const [userPeriod, setPeriod] = useState<string | null>(null), [userPlaceId, setPlaceId] = useState<string | null>(null);
+  const [userFilter, setFilter] = useState<Filter | null>(null), [shiftId, setShiftId] = useState(""), [amount, setAmount] = useState(""), [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10)), [error, setError] = useState(""), [saving, setSaving] = useState(false);
+
+  const period = userPeriod ?? paramPeriod ?? currentMonthValue();
+  const placeId = userPlaceId ?? paramPlaceId ?? ALL_PLACES;
+  const filter = userFilter ?? paramFilter ?? "todos";
+
   async function load() { const [p, s, o, l, c] = await Promise.all([listPayments(), listShifts(), listObligations(), listPlaces(), listContacts()]); setPayments(p); setShifts(s); setObligations(o); setPlaces(l); setContacts(c); }
   useEffect(() => { void Promise.resolve().then(load).catch((e: unknown) => setError(e instanceof Error ? e.message : "Não foi possível carregar os recebimentos.")); }, []);
   const rows = useMemo<Row[]>(() => { const placeNames = new Map(places.map((p) => [p.id, p.nome])), contactNames = new Map(contacts.map((c) => [c.id, c.nome])); return shifts.filter((s) => s.status === "realizado" && matchesShift(s, period, placeId)).flatMap((shift) => { const obligation = obligations.find((o) => o.shift_id === shift.id); if (!obligation || obligation.valor_devido === null) return []; const expected = Number(obligation.valor_devido), balance = Math.max(0, Number(obligation.saldo ?? 0)); return [{ shift, obligation, placeName: placeNames.get(shift.place_id) ?? "Local não informado", responsible: obligation.responsavel_contact_id ? `Contato · ${contactNames.get(obligation.responsavel_contact_id) ?? "não informado"}` : `Local · ${placeNames.get(obligation.responsavel_place_id ?? "") ?? "não informado"}`, expected, received: Math.max(0, expected - balance), balance }]; }); }, [contacts, obligations, places, shifts, period, placeId]);
