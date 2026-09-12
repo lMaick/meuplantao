@@ -52,9 +52,10 @@ def _linear_issue(state_name="Todo", labels=(), team="Team", project=None, comme
     payload = {"team": {"name": team}, "project": {"name": pname},
                "state": {"name": state_name},
                "labels": [{"name": name} for name in labels]}
+    result = {"issue": payload}
     if comments:
-        payload["comments"] = [{"body": body} for body in comments]
-    return {"issue": payload}
+        result["comments"] = [{"body": body} for body in comments]
+    return result
 
 
 def _hermes_bodies(comment_mock):
@@ -244,6 +245,52 @@ class LinearBusTests(unittest.TestCase):
         self.assertNotIn("ghp_0123456789abcdef0123456789abcdef0123", bodies)
         self.assertNotIn("ghp_0123456789abcdef0123456789abcdef0123",
                          json.dumps(state["issues"]["MAI-69"]))
+
+    def test_fetch_linear_issue_full_maps_top_level_orca_comments(self):
+        orca_payload = {
+            "issue": {"id": "uuid-87", "identifier": "MAI-87", "title": "Fix comment contract"},
+            "comments": [
+                {"id": "c-1", "body": "MeuPlantao-Report: error build failed"}
+            ],
+        }
+        with patch.object(dispatcher, "orca", return_value=orca_payload):
+            issue = dispatcher.fetch_linear_issue_full("MAI-87")
+        self.assertEqual(issue["id"], "uuid-87")
+        self.assertEqual(issue["identifier"], "MAI-87")
+        self.assertEqual(issue["comments"], [{"id": "c-1", "body": "MeuPlantao-Report: error build failed"}])
+
+    def test_fetch_linear_issue_full_handles_direct_issue_dict_and_non_dict(self):
+        direct_issue = {"id": "uuid-87", "title": "Direct", "comments": [{"body": "hello"}]}
+        with patch.object(dispatcher, "orca", return_value=direct_issue):
+            issue = dispatcher.fetch_linear_issue_full("MAI-87")
+        self.assertEqual(issue["id"], "uuid-87")
+        self.assertEqual(len(issue.get("comments", [])), 1)
+
+        with patch.object(dispatcher, "orca", return_value=None):
+            self.assertEqual(dispatcher.fetch_linear_issue_full("MAI-87"), {})
+
+    def test_sync_worker_reports_handles_top_level_orca_cli_comments(self):
+        state = {"issues": {"MAI-87": {"status": "dispatched", "dispatchId": "d-87"}}}
+        orca_payload = {
+            "issue": {
+                "id": "uuid-87",
+                "identifier": "MAI-87",
+                "team": {"name": dispatcher.TEAM},
+                "project": {"name": dispatcher.PROJECT},
+                "state": {"name": "In Progress"},
+                "labels": [],
+            },
+            "comments": [
+                {"id": "c-1", "body": "MeuPlantao-Report: blocked waiting on dependencies"}
+            ],
+        }
+        with patch.object(dispatcher, "orca", return_value=orca_payload), \
+             patch.object(dispatcher, "linear_comment") as comment, \
+             patch.object(dispatcher, "save_state"):
+            applied = dispatcher.sync_worker_reports(state)
+        self.assertEqual(applied, 1)
+        self.assertEqual(state["issues"]["MAI-87"]["status"], "blocked")
+        self.assertIn("blocked", comment.call_args[0][1])
 
     def test_needs_review_notifies_hermes_exactly_once_per_fingerprint(self):
         state = {"issues": {}}

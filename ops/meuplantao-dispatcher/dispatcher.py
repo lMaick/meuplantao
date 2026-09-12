@@ -1926,8 +1926,16 @@ _WORKER_BLOCKED_RE = re.compile(r"MeuPlantao-Report:\s*blocked\s+(.*)", re.IGNOR
 
 
 def fetch_linear_issue_full(issue_id: str) -> dict:
-    return orca("linear", "issue", issue_id, "--comments",
-                "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
+    payload = orca("linear", "issue", issue_id, "--comments",
+                   "--workspace", LINEAR_WORKSPACE_ID)
+    if not isinstance(payload, dict):
+        return {}
+    issue = payload.get("issue")
+    if not isinstance(issue, dict):
+        issue = payload
+    if "comments" in payload and "comments" not in issue:
+        issue["comments"] = payload["comments"]
+    return issue
 
 
 def extract_comment_bodies(issue: dict) -> list[str]:
