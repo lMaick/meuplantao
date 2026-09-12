@@ -1509,7 +1509,8 @@ def reconcile_dispatches(state: dict, worktrees: list[dict]) -> None:
         issue_state = state.get("issues", {}).get(issue_id)
         if issue_state is None:
             issue_state = {}
-        if issue_state.get("status") in {"dispatched", "needs-review"}:
+        status = issue_state.get("status")
+        if status not in (None, "", "claiming", "dispatching"):
             continue
         try:
             current = orca("linear", "issue", issue_id, "--workspace", LINEAR_WORKSPACE_ID).get("issue", {})
