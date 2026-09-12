@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Ícone do MeuPlantão</title>
+  <rect width="512" height="512" rx="112" fill="#0D3F5E"/>
+  <path d="M111 376V155c0-26 31-39 49-20l96 102" fill="none" stroke="#FFFFFF" stroke-width="65" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m256 237 96-102c18-19 49-6 49 20v221" fill="none" stroke="#10B981" stroke-width="65" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

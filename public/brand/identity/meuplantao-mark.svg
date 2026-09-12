@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Símbolo MeuPlantão</title>
+  <path d="M12 48V18c0-3.8 4.6-5.7 7.2-2.9L32 29" fill="none" stroke="#0B6E99" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 29 44.8 15.1C47.4 12.3 52 14.2 52 18v30" fill="none" stroke="#10B981" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
