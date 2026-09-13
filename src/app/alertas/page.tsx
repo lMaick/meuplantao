@@ -2,5 +2,19 @@ import { Bell } from "lucide-react";
 import { AlertsList } from "@/components/alerts/alerts-list";
 
 export default function AlertsPage() {
-  return <main className="mx-auto w-full max-w-2xl flex-1 bg-zinc-50 px-4 py-8 sm:px-6"><div className="mb-8 flex items-start gap-3"><div className="rounded-xl bg-zinc-900 p-3 text-white"><Bell className="h-6 w-6" /></div><div><p className="text-sm font-medium text-zinc-500">MeuPlantão</p><h1 className="text-2xl font-bold tracking-tight text-zinc-950">Alertas</h1><p className="mt-1 text-sm text-zinc-600">Acompanhe atrasos e os próximos compromissos.</p></div></div><AlertsList /></main>;
+  return (
+    <main className="mx-auto w-full max-w-3xl flex-1 bg-background px-4 py-6 text-foreground sm:px-6 sm:py-10">
+      <header className="mb-8 flex items-start gap-3.5">
+        <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
+          <Bell className="size-6" aria-hidden="true" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">MeuPlantão</p>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Alertas</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Acompanhe repasses em atraso e seus próximos compromissos.</p>
+        </div>
+      </header>
+      <AlertsList />
+    </main>
+  );
 }

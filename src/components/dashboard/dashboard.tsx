@@ -2,21 +2,47 @@
 /* eslint-disable react-hooks/set-state-in-effect -- initial data load is asynchronous */
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDownToLine, ArrowUpRight, CalendarDays, CircleAlert, RefreshCw, WalletCards } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowUpRight,
+  Calendar,
+  CalendarDays,
+  CircleAlert,
+  Hospital,
+  Moon,
+  Plus,
+  RefreshCw,
+  Sun,
+  WalletCards,
+} from "lucide-react";
 import { listContacts, type Contact } from "@/lib/contacts";
 import { listPlaces, type Place } from "@/lib/places";
 import { listPayments, type Payment } from "@/lib/payments";
 import { listShifts, type Shift } from "@/lib/shifts";
 import { isOverdue, listObligations, type Obligation } from "@/lib/obligations";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { StatCard } from "@/components/ui/stat-card";
+import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { DashboardSkeleton } from "@/components/ui/skeletons";
 import { FinanceFilters } from "@/components/finance/finance-filters";
-import { ALL_PLACES, currentMonthValue, matchesPeriod, matchesPlace, matchesShift, receivedLabel } from "@/lib/finance-filters";
+import {
+  ALL_PLACES,
+  currentMonthValue,
+  matchesPeriod,
+  matchesPlace,
+  matchesShift,
+  receivedLabel,
+} from "@/lib/finance-filters";
 import { computeDashboardAlerts } from "@/lib/dashboard/alerts";
 import { DashboardAlerts } from "@/components/dashboard/dashboard-alerts";
+import { cn } from "cn";
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const date = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" });
-const bahiaDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(value);
+const bahiaDate = (value = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(value);
 
 export function Dashboard() {
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -28,18 +54,21 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<string>(() => currentMonthValue());
   const [placeId, setPlaceId] = useState<string>(ALL_PLACES);
+  const [onboardingReady, setOnboardingReady] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const [nextShifts, nextPayments, nextObligations, nextPlaces, nextContacts] = await Promise.all([
-        listShifts(),
-        listPayments(),
-        listObligations(),
-        listPlaces(),
-        listContacts(),
-      ]);
+      const [nextShifts, nextPayments, nextObligations, nextPlaces, nextContacts] =
+        await Promise.all([
+          listShifts(),
+          listPayments(),
+          listObligations(),
+          listPlaces(),
+          listContacts(),
+        ]);
       setShifts(nextShifts);
       setPayments(nextPayments);
       setObligations(nextObligations);
@@ -52,7 +81,19 @@ export function Dashboard() {
     }
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+  }, []);
+
+  useEffect(() => {
+    setOnboardingDismissed(window.localStorage.getItem("meuplantao:onboarding-dismissed") === "true");
+    setOnboardingReady(true);
+  }, []);
+
+  function dismissOnboarding() {
+    window.localStorage.setItem("meuplantao:onboarding-dismissed", "true");
+    setOnboardingDismissed(true);
+  }
 
   const alertsSummary = useMemo(() => {
     return computeDashboardAlerts({
@@ -74,15 +115,22 @@ export function Dashboard() {
     const placesById = new Map(places.map((place) => [place.id, place.nome]));
     const contactsById = new Map(contacts.map((contact) => [contact.id, contact.nome]));
     const filteredShifts = shifts.filter((shift) => matchesShift(shift, period, placeId));
-    const realized = new Set(filteredShifts.filter((shift) => shift.status === "realizado").map((shift) => shift.id));
-    const financial = obligations.filter((obligation) => realized.has(obligation.shift_id) && obligation.valor_devido !== null);
+    const realized = new Set(
+      filteredShifts.filter((shift) => shift.status === "realizado").map((shift) => shift.id)
+    );
+    const financial = obligations.filter(
+      (obligation) => realized.has(obligation.shift_id) && obligation.valor_devido !== null
+    );
     const pending = financial
       .filter((obligation) => Number(obligation.saldo ?? 0) > 0)
       .sort((a, b) => a.data_prevista.localeCompare(b.data_prevista))
       .slice(0, 4);
 
     return {
-      due: financial.reduce((sum, obligation) => sum + Math.max(0, Number(obligation.saldo ?? 0)), 0),
+      due: financial.reduce(
+        (sum, obligation) => sum + Math.max(0, Number(obligation.saldo ?? 0)),
+        0
+      ),
       received: payments
         .filter((payment) => {
           if (payment.status !== "registrado") return false;
@@ -94,14 +142,22 @@ export function Dashboard() {
         })
         .reduce((sum, payment) => sum + Number(payment.valor), 0),
       overdue: financial
-        .filter((obligation) => Number(obligation.saldo ?? 0) > 0 && isOverdue(obligation.data_prevista))
+        .filter(
+          (obligation) => Number(obligation.saldo ?? 0) > 0 && isOverdue(obligation.data_prevista)
+        )
         .reduce((sum, obligation) => sum + Number(obligation.saldo ?? 0), 0),
       pending,
       shiftsById,
       placesById,
       contactsById,
       upcoming: shifts
-        .filter((shift) => shift.status === "agendado" && shift.data >= today && shift.data <= endIso && matchesPlace(shift.place_id, placeId))
+        .filter(
+          (shift) =>
+            shift.status === "agendado" &&
+            shift.data >= today &&
+            shift.data <= endIso &&
+            matchesPlace(shift.place_id, placeId)
+        )
         .sort((a, b) => `${a.data}${a.hora_inicio}`.localeCompare(`${b.data}${b.hora_inicio}`))
         .slice(0, 5),
     };
@@ -115,20 +171,21 @@ export function Dashboard() {
         : undefined;
 
   if (loading) {
-    return (
-      <main role="status" className="mx-auto flex min-h-screen items-center justify-center p-6">
-        <RefreshCw className="mr-2 size-4 animate-spin" />
-        Carregando seu resumo financeiro...
-      </main>
-    );
+    return <DashboardSkeleton />;
   }
 
   if (error) {
     return (
-      <main className="mx-auto flex min-h-screen flex-col items-center justify-center gap-4 p-6">
-        <CircleAlert />
-        <p role="alert">{error}</p>
-        <Button onClick={() => void load()}>Tentar novamente</Button>
+      <main className="mx-auto flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-foreground">
+        <div className="rounded-full bg-destructive/10 p-3 text-destructive">
+          <CircleAlert className="size-6" />
+        </div>
+        <p role="alert" className="text-center text-sm font-medium text-destructive">
+          {error}
+        </p>
+        <Button variant="outline" onClick={() => void load()}>
+          Tentar novamente
+        </Button>
       </main>
     );
   }
@@ -141,25 +198,41 @@ export function Dashboard() {
   ] as const;
 
   return (
-    <main className="min-h-screen bg-[#f7f8fc] px-4 py-6 text-slate-900 sm:px-8">
+    <main className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-8">
       <div className="mx-auto max-w-6xl space-y-8">
-        <header className="flex justify-between">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-violet-600">MeuPlantão</p>
-            <h1 className="mt-2 text-3xl font-bold">Resumo financeiro</h1>
-            <p className="mt-2 text-slate-500">Uma visão clara do que você tem para receber.</p>
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+              <span className="size-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
+              <span>Painel de Conciliação</span>
+            </div>
+            <h1 className="mt-2 text-3xl sm:text-4xl font-extrabold tracking-tight text-foreground">Resumo financeiro</h1>
+            <p className="mt-1 text-sm sm:text-base text-muted-foreground">Uma visão clara do que você tem para receber.</p>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void load()}>
+          <Button variant="outline" size="sm" onClick={() => void load()} className="min-h-[44px] rounded-xl font-medium border-border/80 shadow-xs hover:border-primary/40">
             <RefreshCw className="mr-2 size-4" />
             Atualizar
           </Button>
         </header>
 
-        <nav className="flex flex-wrap gap-4">
-          <Link href="/locais" className="rounded-lg border bg-white px-4 py-3 font-medium underline">
+        <nav className="flex flex-wrap gap-3">
+          <Link
+            href="/locais"
+            className={cn(
+              buttonVariants({ variant: "outline", size: "default" }),
+              "min-h-[44px] rounded-xl px-5 font-semibold shadow-xs border-border/80 hover:border-primary/40 hover:bg-muted/40 transition-all"
+            )}
+          >
             Locais de trabalho
           </Link>
-          <Link href="/calendario" className="rounded-lg bg-violet-700 px-4 py-3 font-medium text-white underline">
+          <Link
+            href="/calendario"
+            className={cn(
+              buttonVariants({ variant: "default", size: "default" }),
+              "min-h-[44px] rounded-xl px-5 font-semibold text-white bg-gradient-to-r from-emerald-600 to-teal-600 shadow-md shadow-emerald-700/20 hover:from-emerald-500 hover:to-teal-500 hover:shadow-lg hover:shadow-emerald-700/30 transition-all"
+            )}
+          >
+            <Calendar className="mr-2 size-4" />
             Calendário e novo plantão
           </Link>
         </nav>
@@ -172,96 +245,235 @@ export function Dashboard() {
           onPlaceChange={setPlaceId}
         />
 
+        {onboardingReady && !onboardingDismissed && shifts.length === 0 && places.length === 0 && (
+          <section
+            aria-labelledby="first-value-title"
+            className="motion-success relative overflow-hidden rounded-2xl border border-primary/20 bg-primary/5 p-5 shadow-xs sm:p-6"
+          >
+            <button
+              type="button"
+              onClick={dismissOnboarding}
+              className="absolute right-3 top-3 min-h-[44px] rounded-lg px-3 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              Explorar sozinho
+            </button>
+            <div className="max-w-2xl pr-24">
+              <p className="text-xs font-semibold uppercase tracking-wider text-primary">Primeiro passo · 1 de 2</p>
+              <h2 id="first-value-title" className="mt-1.5 text-xl font-bold tracking-tight text-foreground">
+                Vamos registrar seu primeiro plantão?
+              </h2>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                Comece cadastrando o hospital ou local onde você trabalha. Em seguida, informe um plantão para acompanhar o valor previsto e o saldo a receber.
+              </p>
+              <Link
+                href="/locais"
+                className={cn(buttonVariants({ variant: "default", size: "default" }), "mt-4 min-h-[44px] rounded-xl")}
+              >
+                <Hospital className="mr-2 size-4" />
+                Cadastrar primeiro local
+              </Link>
+            </div>
+          </section>
+        )}
+
         <DashboardAlerts summary={alertsSummary} placeId={placeId} />
 
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {kpis.map(([label, value, Icon]) => (
-            <article key={label} className="rounded-2xl border bg-white p-5 shadow-sm">
-              <div className="flex justify-between">
-                <span className="text-sm font-medium text-slate-500">{label}</span>
-                <Icon className="size-5 text-violet-600" />
-              </div>
-              <p className="mt-5 text-2xl font-bold">
-                {label === "Próximos 7 dias" ? value : money.format(Number(value))}
-              </p>
-            </article>
-          ))}
+          {kpis.map(([label, value, Icon]) => {
+            const isOverdueKpi = label === "Em atraso" && Number(value) > 0;
+            const isReceivedKpi = label.startsWith("Recebido");
+            const isUpcomingKpi = label === "Próximos 7 dias";
+            return (
+              <StatCard
+                key={label}
+                label={label}
+                value={
+                  <span className="flex items-center justify-between">
+                    <span className={cn(isOverdueKpi ? "text-destructive" : "text-foreground")}>
+                      {label === "Próximos 7 dias" ? value : money.format(Number(value))}
+                    </span>
+                    <span
+                      className={cn(
+                        "rounded-xl p-2 shadow-xs",
+                        isOverdueKpi
+                          ? "bg-destructive/10 text-destructive ring-1 ring-destructive/20"
+                          : isReceivedKpi
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/20"
+                            : isUpcomingKpi
+                              ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 ring-1 ring-sky-500/20"
+                              : "bg-primary/10 text-primary ring-1 ring-primary/20"
+                      )}
+                    >
+                      <Icon className="size-5" />
+                    </span>
+                  </span>
+                }
+              />
+            );
+          })}
         </section>
 
         <section className="grid gap-6 lg:grid-cols-2">
-          <Card title="Recebimentos pendentes" icon={ArrowUpRight} empty="Nenhum valor pendente. Acompanhe seus pagamentos.">
-            {data.pending.length ? (
-              <div className="divide-y">
+          <Card className="p-5 shadow-xs">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="rounded-lg bg-primary/10 p-1.5 text-primary">
+                  <ArrowUpRight className="size-5" />
+                </div>
+                <h2 className="font-bold tracking-tight text-foreground">Recebimentos pendentes</h2>
+              </div>
+              {data.pending.length > 0 && (
+                <Link
+                  href="/pagamentos"
+                  className="text-xs font-semibold text-primary hover:underline"
+                >
+                  Ver todos
+                </Link>
+              )}
+            </div>
+
+            {data.pending.length > 0 ? (
+              <div className="divide-y divide-border">
                 {data.pending.map((obligation) => {
                   const shift = data.shiftsById.get(obligation.shift_id);
                   const balance = Number(obligation.saldo ?? 0);
                   const overdue = balance > 0 && isOverdue(obligation.data_prevista);
                   return (
-                    <div className="flex items-center justify-between gap-3 py-3" key={obligation.id}>
-                      <div>
-                        <p className="font-semibold">
-                          {responsible(obligation) ?? (shift ? data.placesById.get(shift.place_id) : undefined) ?? "Responsável não informado"}
-                        </p>
-                        <p className="text-sm text-slate-500">
-                          Previsto para {date.format(new Date(`${obligation.data_prevista}T12:00:00`))} · {money.format(balance)}
-                        </p>
-                        <span className={`mt-2 inline-flex rounded-full px-2 py-1 text-xs font-semibold ${overdue ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-800"}`}>
-                          {overdue ? "Atrasado" : "A vencer"}
-                        </span>
+                    <div className="flex items-center justify-between gap-3 py-3.5 px-3 rounded-xl transition-all hover:bg-muted/40 -mx-1" key={obligation.id}>
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className="mt-0.5 rounded-xl bg-primary/10 p-2 text-primary ring-1 ring-primary/20 shrink-0">
+                          <Hospital className="size-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-semibold text-foreground truncate">
+                            {responsible(obligation) ??
+                              (shift ? data.placesById.get(shift.place_id) : undefined) ??
+                              "Responsável não informado"}
+                          </p>
+                          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+                            Previsto para {date.format(new Date(`${obligation.data_prevista}T12:00:00`))} ·{" "}
+                            <span className="font-mono font-bold text-foreground">{money.format(balance)}</span>
+                          </p>
+                          <div className="mt-1.5">
+                            <Badge variant={overdue ? "destructive" : "warning"} dot>
+                              {overdue ? "Atrasado" : "A vencer"}
+                            </Badge>
+                          </div>
+                        </div>
                       </div>
-                      <Link href={`/calendario/plantao/${shift?.id ?? obligation.shift_id}`} className="shrink-0 rounded-md px-2 py-1 text-sm font-semibold text-violet-700 underline">
+                      <Link
+                        href={`/calendario/plantao/${shift?.id ?? obligation.shift_id}`}
+                        className={cn(
+                          buttonVariants({ variant: "ghost", size: "sm" }),
+                          "text-primary hover:text-primary hover:bg-primary/10 font-semibold min-h-[44px] rounded-xl shrink-0"
+                        )}
+                      >
                         Ver plantão
                       </Link>
                     </div>
                   );
                 })}
               </div>
-            ) : undefined}
+            ) : (
+              <EmptyState
+                compact
+                icon={WalletCards}
+                title="Nenhum valor pendente"
+                description="Todos os seus plantões realizados estão quitados ou sem pendências financeiras."
+                action={
+                  <Link
+                    href="/calendario?novo=1"
+                    className={cn(buttonVariants({ variant: "outline", size: "sm" }), "min-h-[44px] rounded-xl")}
+                  >
+                    <Calendar className="mr-1.5 size-4" />
+                    Cadastrar plantão
+                  </Link>
+                }
+              />
+            )}
           </Card>
 
-          <Card title="Próximos 7 dias" icon={CalendarDays} empty="Nenhum plantão agendado. Crie um no calendário.">
-            {data.upcoming.length ? (
-              <div className="divide-y">
-                {data.upcoming.map((shift) => (
-                  <div className="flex items-center justify-between gap-3 py-3" key={shift.id}>
-                    <div>
-                      <p className="font-semibold">{data.placesById.get(shift.place_id) ?? "Local não informado"}</p>
-                      <p className="text-sm text-slate-500">
-                        {date.format(new Date(`${shift.data}T12:00:00`))} · {shift.hora_inicio.slice(0, 5)}–{shift.hora_fim.slice(0, 5)}
-                      </p>
-                    </div>
-                    <Link href={`/calendario/plantao/${shift.id}`} className="shrink-0 rounded-md px-2 py-1 text-sm font-semibold text-violet-700 underline">
-                      Abrir plantão
-                    </Link>
-                  </div>
-                ))}
+          <Card className="p-5 shadow-xs">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="rounded-lg bg-primary/10 p-1.5 text-primary">
+                  <CalendarDays className="size-5" />
+                </div>
+                <h2 className="font-bold tracking-tight text-foreground">Próximos 7 dias</h2>
               </div>
-            ) : undefined}
+              {data.upcoming.length > 0 && (
+                <Link
+                  href="/calendario"
+                  className="text-xs font-semibold text-primary hover:underline"
+                >
+                  Ver agenda
+                </Link>
+              )}
+            </div>
+
+            {data.upcoming.length > 0 ? (
+              <div className="divide-y divide-border">
+                {data.upcoming.map((shift) => {
+                  const isNight = shift.hora_inicio >= "18:00" || shift.hora_inicio < "06:00";
+                  return (
+                    <div className="flex items-center justify-between gap-3 py-3.5 px-3 rounded-xl transition-all hover:bg-muted/40 -mx-1" key={shift.id}>
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className="mt-0.5 rounded-xl bg-primary/10 p-2 text-primary ring-1 ring-primary/20 shrink-0">
+                          <Hospital className="size-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-semibold text-foreground truncate">
+                            {data.placesById.get(shift.place_id) ?? "Local não informado"}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-muted-foreground mt-0.5">
+                            <span>
+                              {date.format(new Date(`${shift.data}T12:00:00`))} · {shift.hora_inicio.slice(0, 5)}–
+                              {shift.hora_fim.slice(0, 5)}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-border/80 bg-muted/60 px-2 py-0.5 text-xs font-medium text-foreground">
+                              {isNight ? (
+                                <Moon className="size-3 text-indigo-500" />
+                              ) : (
+                                <Sun className="size-3 text-amber-500" />
+                              )}
+                              <span>{isNight ? "Noturno" : "Diurno"}</span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <Link
+                        href={`/calendario/plantao/${shift.id}`}
+                        className={cn(
+                          buttonVariants({ variant: "ghost", size: "sm" }),
+                          "text-primary hover:text-primary hover:bg-primary/10 font-semibold min-h-[44px] rounded-xl shrink-0"
+                        )}
+                      >
+                        Abrir plantão
+                      </Link>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState
+                compact
+                icon={CalendarDays}
+                title="Nenhum plantão agendado"
+                description="Você não possui plantões marcados para os próximos 7 dias."
+                action={
+                  <Link
+                    href="/calendario?novo=1"
+                    className={cn(buttonVariants({ variant: "default", size: "sm" }), "min-h-[44px]")}
+                  >
+                    <Plus className="mr-1.5 size-4" />
+                    Cadastrar plantão
+                  </Link>
+                }
+              />
+            )}
           </Card>
         </section>
       </div>
     </main>
-  );
-}
-
-function Card({
-  title,
-  icon: Icon,
-  empty,
-  children,
-}: {
-  title: string;
-  icon: typeof CalendarDays;
-  empty: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <article className="rounded-2xl border bg-white p-5 shadow-sm">
-      <div className="mb-4 flex items-center gap-2">
-        <Icon className="size-5 text-violet-600" />
-        <h2 className="font-bold">{title}</h2>
-      </div>
-      {children || <p className="py-6 text-sm text-slate-600">{empty}</p>}
-    </article>
   );
 }

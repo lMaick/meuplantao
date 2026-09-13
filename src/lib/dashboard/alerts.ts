@@ -90,6 +90,7 @@ export type ComputeAlertsParams = {
   contacts?: AlertContact[];
   placeId?: string;
   now?: Date | string;
+  referenceDate?: Date | string;
 };
 
 export function computeDashboardAlerts(params: ComputeAlertsParams): DashboardAlertsSummary {
@@ -99,7 +100,7 @@ export function computeDashboardAlerts(params: ComputeAlertsParams): DashboardAl
     places = [],
     contacts = [],
     placeId = ALL_PLACES,
-    now = new Date(),
+    now = params.now ?? params.referenceDate ?? new Date(),
   } = params;
 
   const todayIso = typeof now === "string" && /^\d{4}-\d{2}-\d{2}$/.test(now)
