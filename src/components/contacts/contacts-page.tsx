@@ -1,8 +1,12 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Pencil, Plus, Trash2, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/primitives";
+import { EmptyState } from "@/components/ui/empty-state";
+import { CardSkeleton } from "@/components/ui/skeletons";
+import { cn } from "cn";
 import {
   createContact,
   listContacts,
@@ -11,6 +15,7 @@ import {
   type Contact,
   type ContactInput,
 } from "@/lib/contacts";
+import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
 
 const emptyForm: ContactInput = { nome: "", telefone: "", tipo: "instituicao" };
 
@@ -28,6 +33,8 @@ export function ContactsPage() {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const contactDialogRef = useRef<HTMLElement>(null);
+  useFocusTrap(isFormOpen, contactDialogRef);
 
   async function loadContacts() {
     try {
@@ -118,57 +125,234 @@ export function ContactsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-10">
+    <main className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-6 sm:py-10">
       <div className="mx-auto max-w-3xl">
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>
-            <p className="mb-2 text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">MeuPlantao</p>
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Contatos de repasse</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">Cadastre quem cuida dos seus pagamentos para encontrar essa informação quando precisar.</p>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">MeuPlantão</p>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-4xl">Contatos de repasse</h1>
+            <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
+              Cadastre quem cuida dos seus pagamentos para encontrar essa informação quando precisar.
+            </p>
           </div>
-          <Button type="button" size="lg" onClick={openCreate} aria-label="Adicionar contato">
-            <Plus /> <span className="hidden sm:inline">Adicionar</span>
+          <Button
+            type="button"
+            size="default"
+            onClick={openCreate}
+            className="min-h-[44px] gap-2 shrink-0"
+            aria-label="Adicionar contato"
+          >
+            <Plus className="size-4" />
+            <span className="hidden sm:inline">Adicionar</span>
           </Button>
         </header>
 
-        {error && <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-
-        {isFormOpen && (
-          <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6" aria-labelledby="contact-form-title">
-            <div className="mb-5 flex items-center justify-between">
-              <h2 id="contact-form-title" className="text-lg font-semibold">{editingId ? "Editar contato" : "Novo contato"}</h2>
-              <Button type="button" variant="ghost" size="icon" onClick={closeForm} aria-label="Fechar formulário"><X /></Button>
-            </div>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <label className="block text-sm font-medium">Nome
-                <input autoFocus required maxLength={120} value={form.nome} onChange={(event) => setForm({ ...form, nome: event.target.value })} placeholder="Ex.: Hospital São Lucas" className="mt-1.5 h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-base outline-none transition focus:border-sky-600 focus:ring-3 focus:ring-sky-100" />
-              </label>
-              <label className="block text-sm font-medium">Telefone <span className="font-normal text-slate-500">(opcional)</span>
-                <input type="tel" inputMode="tel" maxLength={30} value={form.telefone ?? ""} onChange={(event) => setForm({ ...form, telefone: event.target.value })} placeholder="(00) 00000-0000" className="mt-1.5 h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-base outline-none transition focus:border-sky-600 focus:ring-3 focus:ring-sky-100" />
-              </label>
-              <fieldset>
-                <legend className="text-sm font-medium">Tipo</legend>
-                <div className="mt-2 grid grid-cols-2 gap-3">
-                  {[{ value: "instituicao", label: "Instituição" }, { value: "pessoa", label: "Pessoa" }].map((option) => (
-                    <label key={option.value} className={`cursor-pointer rounded-lg border px-3 py-3 text-center text-sm transition ${form.tipo === option.value ? "border-sky-600 bg-sky-50 text-sky-800" : "border-slate-300 hover:bg-slate-50"}`}>
-                      <input type="radio" name="tipo" value={option.value} checked={form.tipo === option.value} onChange={(event) => setForm({ ...form, tipo: event.target.value })} className="sr-only" />{option.label}
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-              <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
-                <Button type="button" variant="outline" onClick={closeForm} disabled={saving}>Cancelar</Button>
-                <Button type="submit" disabled={saving}>{saving ? "Salvando..." : editingId ? "Salvar alterações" : "Adicionar contato"}</Button>
-              </div>
-            </form>
-          </section>
+        {error && !isFormOpen && (
+          <div role="alert" className="mb-5 rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive">
+            {error}
+          </div>
         )}
 
         <section aria-labelledby="contacts-list-title">
-          <div className="mb-3 flex items-center justify-between"><h2 id="contacts-list-title" className="text-lg font-semibold">Seus contatos</h2><span className="text-sm text-slate-500">{contacts.length} {contacts.length === 1 ? "contato" : "contatos"}</span></div>
-          {loading ? <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">Carregando contatos...</div> : contacts.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center"><UserRound className="mx-auto mb-3 text-slate-400" size={32} /><h3 className="font-semibold">Nenhum contato cadastrado</h3><p className="mt-1 text-sm text-slate-500">Adicione seu primeiro contato de repasse.</p><Button type="button" className="mt-5" onClick={openCreate}><Plus /> Adicionar contato</Button></div> : <div className="space-y-3">{contacts.map((contact) => <article key={contact.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><div className="flex min-w-0 items-center gap-3"><div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-700"><UserRound size={21} /></div><div className="min-w-0"><h3 className="truncate font-semibold">{contact.nome}</h3><p className="mt-1 truncate text-sm text-slate-500">{contact.tipo === "pessoa" ? "Pessoa" : "Instituição"} · {formatPhone(contact.telefone)}</p></div></div><div className="flex shrink-0 gap-1"><Button type="button" variant="ghost" size="icon" onClick={() => openEdit(contact)} aria-label={`Editar ${contact.nome}`}><Pencil /></Button><Button type="button" variant="ghost" size="icon" className="text-red-600 hover:text-red-700" onClick={() => void handleDelete(contact)} disabled={deletingId === contact.id} aria-label={`Excluir ${contact.nome}`}><Trash2 /></Button></div></article>)}</div>}
+          <div className="mb-4 flex items-center justify-between">
+            <h2 id="contacts-list-title" className="text-lg font-semibold text-foreground">
+              Seus contatos
+            </h2>
+            <span className="text-sm text-muted-foreground">
+              {contacts.length} {contacts.length === 1 ? "contato" : "contatos"}
+            </span>
+          </div>
+
+          {loading ? (
+            <div role="status" aria-label="Carregando contatos..." className="space-y-3">
+              <CardSkeleton lines={2} />
+              <CardSkeleton lines={2} />
+              <CardSkeleton lines={2} />
+            </div>
+          ) : contacts.length === 0 ? (
+            <EmptyState
+              icon={UserRound}
+              title="Nenhum contato cadastrado"
+              description="Adicione escalas e responsáveis por repasse financeiro."
+              action={
+                <Button type="button" onClick={openCreate} className="min-h-[44px] gap-2">
+                  <Plus className="size-4" />
+                  Adicionar contato
+                </Button>
+              }
+            />
+          ) : (
+            <div className="space-y-3">
+              {contacts.map((contact) => (
+                <article
+                  key={contact.id}
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4 shadow-xs transition-colors hover:border-border/80 sm:p-5"
+                >
+                  <div className="flex min-w-0 items-center gap-3.5">
+                    <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
+                      <UserRound className="size-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="truncate font-semibold text-foreground">{contact.nome}</h3>
+                      <p className="mt-0.5 truncate text-sm text-muted-foreground">
+                        {contact.tipo === "pessoa" ? "Pessoa" : "Instituição"} · {formatPhone(contact.telefone)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => openEdit(contact)}
+                      aria-label={`Editar ${contact.nome}`}
+                      className="size-11 min-h-[44px] min-w-[44px]"
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-11 min-h-[44px] min-w-[44px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => void handleDelete(contact)}
+                      disabled={deletingId === contact.id}
+                      aria-label={`Excluir ${contact.nome}`}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
+
+        {isFormOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm sm:items-center sm:justify-center sm:p-4"
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && !saving) setIsFormOpen(false);
+            }}
+          >
+            <section
+              ref={contactDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="contact-form-title"
+              tabIndex={-1}
+              className="w-full rounded-t-2xl border border-border bg-card p-6 shadow-xl sm:max-w-md sm:rounded-2xl"
+            >
+              <div className="mb-5 flex items-center justify-between">
+                <h2 id="contact-form-title" className="text-xl font-bold tracking-tight text-foreground">
+                  {editingId ? "Editar contato" : "Novo contato"}
+                </h2>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={closeForm}
+                  aria-label="Fechar formulário"
+                  className="size-11 min-h-[44px] min-w-[44px]"
+                >
+                  <X className="size-5" />
+                </Button>
+              </div>
+
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="contact-nome" className="block text-sm font-medium text-foreground">
+                    Nome
+                  </label>
+                  <Input
+                    id="contact-nome"
+                    autoFocus
+                    required
+                    maxLength={120}
+                    value={form.nome}
+                    onChange={(event) => setForm({ ...form, nome: event.target.value })}
+                    placeholder="Ex.: Hospital São Lucas ou Dr. Carlos"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="contact-telefone" className="block text-sm font-medium text-foreground">
+                      Telefone
+                    </label>
+                    <span className="text-xs text-muted-foreground">Opcional</span>
+                  </div>
+                  <Input
+                    id="contact-telefone"
+                    type="tel"
+                    inputMode="tel"
+                    maxLength={30}
+                    value={form.telefone ?? ""}
+                    onChange={(event) => setForm({ ...form, telefone: event.target.value })}
+                    placeholder="(00) 00000-0000"
+                  />
+                </div>
+
+                <fieldset>
+                  <legend className="text-sm font-medium text-foreground">Tipo de contato</legend>
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    {[
+                      { value: "instituicao", label: "Instituição" },
+                      { value: "pessoa", label: "Pessoa" },
+                    ].map((option) => (
+                      <label
+                        key={option.value}
+                        className={cn(
+                          "flex min-h-[44px] cursor-pointer items-center justify-center rounded-lg border px-3 py-2 text-center text-sm font-medium transition select-none touch-manipulation",
+                          form.tipo === option.value
+                            ? "border-primary bg-primary/10 text-primary shadow-xs"
+                            : "border-border bg-card text-muted-foreground hover:bg-muted"
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="tipo"
+                          value={option.value}
+                          checked={form.tipo === option.value}
+                          onChange={(event) => setForm({ ...form, tipo: event.target.value as "instituicao" | "pessoa" })}
+                          className="sr-only"
+                        />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                {error && (
+                  <div role="alert" className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                    {error}
+                  </div>
+                )}
+
+                <div className="flex flex-col-reverse gap-2.5 pt-3 sm:flex-row sm:justify-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={closeForm}
+                    disabled={saving}
+                    className="min-h-[44px] w-full sm:w-auto"
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={saving}
+                    className="min-h-[44px] w-full sm:w-auto font-semibold"
+                  >
+                    {saving ? "Salvando..." : editingId ? "Salvar alterações" : "Adicionar contato"}
+                  </Button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
       </div>
     </main>
   );
 }
+
