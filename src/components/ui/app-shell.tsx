@@ -158,7 +158,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* Mobile Slide-Out Sheet Drawer (z-50) */}
       {drawerOpen && (
         <div
-           className="motion-overlay-in fixed inset-0 z-50 bg-black/40 backdrop-blur-xs transition-opacity duration-300 lg:hidden"
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs motion-overlay-in transition-opacity duration-300 lg:hidden"
           onClick={() => setDrawerOpen(false)}
           role="dialog"
           aria-modal="true"

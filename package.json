@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint src/",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs"
   },

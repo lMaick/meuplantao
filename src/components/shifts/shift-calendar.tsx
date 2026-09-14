@@ -575,6 +575,18 @@ function Form({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const initialResponsibleType = obligation?.responsavel_contact_id
+    ? "contato"
+    : obligation?.responsavel_place_id
+      ? "local"
+      : "";
+  const [status, setStatus] = useState<ShiftStatus>(shift?.status ?? "agendado");
+  const [responsibleType, setResponsibleType] = useState<"" | "local" | "contato">(
+    initialResponsibleType
+  );
+  const [responsibleId, setResponsibleId] = useState(
+    obligation?.responsavel_contact_id ?? obligation?.responsavel_place_id ?? ""
+  );
 
   async function run(operation: () => Promise<void>) {
     setBusy(true);
@@ -640,7 +652,14 @@ function Form({
           </button>
         </div>
 
-        <fieldset disabled={busy} className="mt-5 grid gap-4">
+        <fieldset disabled={busy} className="mt-5 grid gap-5">
+          <div className="grid gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">Quando e onde?</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Informe o local e o horário do plantão.
+              </p>
+            </div>
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
             <span>Local</span>
             {places.length === 0 ? (
@@ -690,8 +709,18 @@ function Form({
             </label>
           </div>
 
+          </div>
+
+          <div className="grid gap-3 border-t border-border pt-5">
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">Valor e recebimento</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                O valor pode ser planejado agora. Os dados de recebimento entram quando o plantão for realizado.
+              </p>
+            </div>
+
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Valor previsto (R$)</span>
+            <span>Valor do plantão (R$)</span>
             <Input
               name="valor_previsto"
               type="number"
@@ -702,11 +731,17 @@ function Form({
             />
           </label>
 
+          {status === "realizado" && (
+            <div className="grid gap-4 rounded-xl border border-border/70 bg-muted/20 p-3.5 sm:p-4">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Preencha estes dados para acompanhar o recebimento deste plantão.
+              </p>
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Data prevista de pagamento</span>
+            <span>Quando você espera receber?</span>
             <Input
               name="data_prevista"
               type="date"
+              required
               defaultValue={obligation?.data_prevista ?? ""}
             />
           </label>
@@ -715,56 +750,75 @@ function Form({
             <span>Tipo de responsável</span>
             <Select
               name="responsavel_tipo"
-              defaultValue={
-                obligation?.responsavel_contact_id
-                  ? "contato"
-                  : obligation?.responsavel_place_id
-                  ? "local"
-                  : ""
-              }
+              value={responsibleType}
+              required
+              onChange={(event) => {
+                setResponsibleType(event.target.value as "" | "local" | "contato");
+                setResponsibleId("");
+              }}
             >
               <option value="">Selecione...</option>
-              <option value="local">Local</option>
-              <option value="contato">Contato</option>
+              <option value="local">O próprio local</option>
+              <option value="contato">Uma pessoa de contato</option>
             </Select>
+            <span className="text-xs font-normal leading-relaxed text-muted-foreground">
+              Primeiro escolha o tipo para ver as opções corretas.
+            </span>
           </label>
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
             <span>Responsável pelo repasse</span>
             <Select
               name="responsavel_id"
-              defaultValue={
-                obligation?.responsavel_contact_id ?? obligation?.responsavel_place_id ?? ""
-              }
+              value={responsibleId}
+              required
+              disabled={!responsibleType}
+              onChange={(event) => setResponsibleId(event.target.value)}
             >
-              <option value="">Selecione...</option>
-              <optgroup label="Locais">
-                {places.map((p) => (
-                  <option key={`place-${p.id}`} value={p.id}>
-                    {p.nome}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="Contatos">
-                {contacts.map((c) => (
-                  <option key={`contact-${c.id}`} value={c.id}>
-                    {c.nome}
-                  </option>
-                ))}
-              </optgroup>
+              <option value="">
+                {responsibleType ? "Selecione..." : "Escolha o tipo primeiro"}
+              </option>
+              {responsibleType === "local" && places.map((p) => (
+                <option key={`place-${p.id}`} value={p.id}>
+                  {p.nome}
+                </option>
+              ))}
+              {responsibleType === "contato" && contacts.map((c) => (
+                <option key={`contact-${c.id}`} value={c.id}>
+                  {c.nome}
+                </option>
+              ))}
             </Select>
           </label>
+            </div>
+          )}
 
+          <div className="grid gap-3 border-t border-border pt-5">
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">Situação do plantão</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Isso define se ele ainda vai acontecer, já aconteceu ou foi cancelado.
+              </p>
+            </div>
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
             <span>Status</span>
-            <Select name="status" defaultValue={shift?.status ?? "agendado"}>
+            <Select name="status" value={status}
+              onChange={(event) => setStatus(event.target.value as ShiftStatus)}
+            >
               {Object.entries(labels).map(([v, l]) => (
                 <option key={v} value={v}>
                   {l}
                 </option>
               ))}
             </Select>
+            <span className="text-xs font-normal leading-relaxed text-muted-foreground">
+              {status === "agendado" && "O plantão ainda vai acontecer."}
+              {status === "realizado" && "O plantão aconteceu e pode gerar um recebimento."}
+              {status === "cancelado" && "O plantão não aconteceu e não gera recebimento."}
+            </span>
           </label>
+          </div>
+          </div>
         </fieldset>
 
         {error && (
