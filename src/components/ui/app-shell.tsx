@@ -224,7 +224,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       )}
 
       {/* Main Container (pb-28 lg:pb-8 prevents bottom bar occlusion) */}
-      <main className="min-h-screen pb-28 lg:ml-64 lg:pb-8">
+      <main className="min-h-screen pb-28 lg:ml-64 lg:pb-8 w-full max-w-full overflow-x-hidden">
         {children}
       </main>
 
