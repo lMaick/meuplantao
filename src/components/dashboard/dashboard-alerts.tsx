@@ -22,6 +22,9 @@ export function DashboardAlerts({
     placeId && placeId !== ALL_PLACES
       ? `/pagamentos?filter=atrasados&period=all&placeId=${encodeURIComponent(placeId)}`
       : "/pagamentos?filter=atrasados&period=all";
+  const overdueRegisterHref = summary.topOverdue
+    ? `${overdueHref}&open=${encodeURIComponent(summary.topOverdue.obligationId)}`
+    : overdueHref;
 
   const upcomingHref =
     placeId && placeId !== ALL_PLACES
@@ -67,13 +70,20 @@ export function DashboardAlerts({
             </div>
           </div>
 
-          <div className="pt-2 sm:pt-0 shrink-0">
+          <div className="grid w-full gap-2 pt-2 sm:w-auto sm:shrink-0 sm:pt-0">
             <Link
-              href={overdueHref}
-              className="inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-destructive px-5 py-2.5 text-sm font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 focus-visible:ring-3 focus-visible:ring-destructive/50 transition-colors"
+              href={overdueRegisterHref}
+              className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-destructive px-5 py-2.5 text-sm font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 focus-visible:ring-3 focus-visible:ring-destructive/50 transition-colors"
             >
               Cobrar atrasados
               <ArrowRight className="size-4" aria-hidden="true" />
+            </Link>
+            <p className="text-center text-xs text-muted-foreground">Começar pelo maior atraso</p>
+            <Link
+              href={overdueHref}
+              className="inline-flex min-h-[44px] w-full items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-destructive hover:bg-destructive/10 focus-visible:ring-3 focus-visible:ring-destructive/40 transition-colors sm:w-auto"
+            >
+              Ver todos os atrasados
             </Link>
           </div>
         </div>
