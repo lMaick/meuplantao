@@ -370,11 +370,20 @@ export default function PaymentsPage() {
       />
 
       {/* Metric Cards / Totalizers */}
-      <section className="grid gap-4 sm:grid-cols-3" aria-label="Métricas financeiras do período">
+      <section className="grid gap-4" aria-labelledby="receivables-summary-title">
+        <div>
+          <h2 id="receivables-summary-title" className="text-base font-semibold tracking-tight text-foreground">
+            Resumo dos recebimentos
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            O que foi combinado, o que já entrou e o que ainda falta receber.
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3" aria-label="Métricas financeiras do período">
         <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card p-5 shadow-xs transition-all duration-200 hover:shadow-md hover:border-primary/40">
           <div className="absolute top-0 inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-primary/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total devido</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total dos plantões</span>
             <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
               <WalletCards className="size-4.5" />
             </span>
@@ -388,7 +397,7 @@ export default function PaymentsPage() {
         <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card p-5 shadow-xs transition-all duration-200 hover:shadow-md hover:border-primary/40">
           <div className="absolute top-0 inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recebido</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Já recebido</span>
             <span className="flex size-9 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/20">
               <ArrowDownToLine className="size-4.5" />
             </span>
@@ -401,10 +410,10 @@ export default function PaymentsPage() {
           </p>
         </div>
 
-        <div className="group relative overflow-hidden rounded-2xl border border-border/80 bg-card p-5 shadow-xs transition-all duration-200 hover:shadow-md hover:border-primary/40">
+        <div className="group relative overflow-hidden rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 shadow-xs transition-all duration-200 hover:shadow-md">
           <div className="absolute top-0 inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-amber-500/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Saldo a receber</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Ainda falta receber</span>
             <span className="flex size-9 items-center justify-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20">
               <CircleAlert className="size-4.5" />
             </span>
@@ -417,6 +426,7 @@ export default function PaymentsPage() {
               ? `${counts.atrasados} em atraso`
               : `${counts.aVencer} a vencer`}
           </p>
+        </div>
         </div>
       </section>
 
