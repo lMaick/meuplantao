@@ -90,6 +90,9 @@ function loadTsxModule(relativeFilePath) {
       if (id === "@/lib/finance-filters") {
         return { ALL_PLACES: "all" };
       }
+      if (id === "@/lib/accessibility/use-focus-trap") {
+        return { useFocusTrap: () => {} };
+      }
       return require(id);
     },
     exports: {},

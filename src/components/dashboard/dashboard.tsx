@@ -313,8 +313,8 @@ export function Dashboard() {
           })}
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-2">
-          <Card className="p-5 shadow-xs">
+        <section className="grid gap-4 lg:grid-cols-2">
+          <Card className="p-4 shadow-xs sm:p-5">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="rounded-lg bg-primary/10 p-1.5 text-primary">
@@ -339,7 +339,7 @@ export function Dashboard() {
                   const balance = Number(obligation.saldo ?? 0);
                   const overdue = balance > 0 && isOverdue(obligation.data_prevista);
                   return (
-                    <div className="flex items-center justify-between gap-3 py-3.5 px-3 rounded-xl transition-all hover:bg-muted/40 -mx-1" key={obligation.id}>
+                    <div className="flex flex-col items-stretch gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:-mx-1" key={obligation.id}>
                       <div className="flex items-start gap-3 min-w-0">
                         <div className="mt-0.5 rounded-xl bg-primary/10 p-2 text-primary ring-1 ring-primary/20 shrink-0">
                           <Hospital className="size-4" />
@@ -365,7 +365,7 @@ export function Dashboard() {
                         href={`/calendario/plantao/${shift?.id ?? obligation.shift_id}`}
                         className={cn(
                           buttonVariants({ variant: "ghost", size: "sm" }),
-                          "text-primary hover:text-primary hover:bg-primary/10 font-semibold min-h-[44px] rounded-xl shrink-0"
+                          "w-full text-primary hover:bg-primary/10 hover:text-primary font-semibold min-h-[44px] rounded-xl sm:w-auto sm:shrink-0"
                         )}
                       >
                         Ver plantão
@@ -393,7 +393,7 @@ export function Dashboard() {
             )}
           </Card>
 
-          <Card className="p-5 shadow-xs">
+          <Card className="p-4 shadow-xs sm:p-5">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="rounded-lg bg-primary/10 p-1.5 text-primary">
@@ -416,7 +416,7 @@ export function Dashboard() {
                 {data.upcoming.map((shift) => {
                   const isNight = shift.hora_inicio >= "18:00" || shift.hora_inicio < "06:00";
                   return (
-                    <div className="flex items-center justify-between gap-3 py-3.5 px-3 rounded-xl transition-all hover:bg-muted/40 -mx-1" key={shift.id}>
+                    <div className="flex flex-col items-stretch gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:-mx-1" key={shift.id}>
                       <div className="flex items-start gap-3 min-w-0">
                         <div className="mt-0.5 rounded-xl bg-primary/10 p-2 text-primary ring-1 ring-primary/20 shrink-0">
                           <Hospital className="size-4" />
@@ -445,7 +445,7 @@ export function Dashboard() {
                         href={`/calendario/plantao/${shift.id}`}
                         className={cn(
                           buttonVariants({ variant: "ghost", size: "sm" }),
-                          "text-primary hover:text-primary hover:bg-primary/10 font-semibold min-h-[44px] rounded-xl shrink-0"
+                          "w-full text-primary hover:bg-primary/10 hover:text-primary font-semibold min-h-[44px] rounded-xl sm:w-auto sm:shrink-0"
                         )}
                       >
                         Abrir plantão
