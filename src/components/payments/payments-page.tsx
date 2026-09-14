@@ -64,6 +64,7 @@ export default function PaymentsPage() {
   const paramFilter = parseValidFilter(searchParams.get("filter") || searchParams.get("status"));
   const paramPeriod = searchParams.get("period");
   const paramPlaceId = searchParams.get("placeId");
+  const openObligationId = searchParams.get("open");
 
   const [payments, setPayments] = useState<Payment[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -90,6 +91,7 @@ export default function PaymentsPage() {
   const [modalDate, setModalDate] = useState(() => bahiaTodayIso());
   const [modalError, setModalError] = useState("");
   const [modalSaving, setModalSaving] = useState(false);
+  const autoOpenedRef = useRef(false);
 
   // Inline general form state (for backward compatibility & accessibility)
   const [inlineShiftId, setInlineShiftId] = useState("");
@@ -199,6 +201,21 @@ export default function PaymentsPage() {
   const selectedInline = rows.find(({ shift }) => shift.id === inlineShiftId);
   const inlineRemaining = selectedInline?.balance ?? 0;
   const registered = payments.filter((p) => p.status === "registrado");
+
+  useEffect(() => {
+    if (loading || autoOpenedRef.current || !openObligationId) return;
+    const target = rows.find(({ obligation }) => obligation.id === openObligationId);
+    if (!target) return;
+
+    autoOpenedRef.current = true;
+    const timer = window.setTimeout(() => {
+      setModalRow(target);
+      setModalAmount(target.balance > 0 ? target.balance.toFixed(2) : "");
+      setModalDate(bahiaTodayIso());
+      setModalError("");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, openObligationId, rows]);
 
   // Modal actions
   function openPaymentModal(row: Row) {
