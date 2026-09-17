@@ -24,7 +24,7 @@ export function HeroSection() {
         {/* Main Title */}
         <h1 className="text-4xl font-extrabold tracking-tight text-foreground sm:text-5xl md:text-6xl lg:leading-[1.1]">
           Controle financeiro inteligente para quem{" "}
-          <span className="text-emerald-600 underline decoration-emerald-300 decoration-wavy decoration-2 underline-offset-8">
+          <span className="text-emerald-600">
             vive de plantão
           </span>
           .
