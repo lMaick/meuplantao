@@ -1,0 +1,6 @@
+{
+  "apiKey": "YOUR_POSTIZ_API_KEY_HERE",
+  "defaultIntegrationId": "YOUR_INTEGRATION_ID_HERE",
+  "defaultChannelName": "MeuPlantão.App (@meuplantao.pro)",
+  "storageBaseUrl": "https://pub-your-bucket-id.r2.dev"
+}

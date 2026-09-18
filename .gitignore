@@ -14,9 +14,11 @@
 /supabase/.branches
 /supabase/.temp
 
-# Env
+# Env & Secrets
 .env
 .env*.local
+ops/marketing/postiz-config.json
+postiz-config.json
 
 # Misc
 .DS_Store
