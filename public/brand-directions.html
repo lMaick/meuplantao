@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeuPlantão — 3 Direções de Identidade Visual</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=JetBrains+Mono:wght@500;700&family=Manrope:wght@500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,700;1,6..72,600&family=Outfit:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+    /* Neutral Page Chrome */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #0F1115;
+      color: #9CA3AF;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 0;
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    /* Top Strip */
+    .top-strip {
+      background: #181B21;
+      border-bottom: 1px solid #282C34;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .top-strip h1 { font-size: 15px; font-weight: 700; color: #F3F4F6; letter-spacing: -0.2px; }
+    .top-strip p { font-size: 13px; color: #9CA3AF; }
+    .badge-bar { display: flex; gap: 8px; }
+    .badge-item { background: #22262F; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; color: #E5E7EB; }
+
+    /* Comparison Grid */
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      min-height: calc(100vh - 65px);
+      border-bottom: 1px solid #282C34;
+    }
+    @media (max-width: 1100px) {
+      .comparison-grid { grid-template-columns: 1fr; }
+    }
+
+    .direction-col {
+      padding: 40px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      border-right: 1px solid #282C34;
+      transition: background 0.2s ease;
+    }
+    .direction-col:last-child { border-right: none; }
+
+    /* Section Headings inside column */
+    .dir-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .panel-block {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .panel-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: 700;
+      opacity: 0.55;
+    }
+
+    /* Swatches */
+    .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+    .swatch {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      border: 1px solid rgba(0,0,0,0.06);
+    }
+    .swatch-chip { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.1); }
+
+    /* =========================================================
+       DIRECTION A: QUIET LEDGER (Swiss Fintech & Precision)
+       ========================================================= */
+    .dir-a {
+      --paper: #F8FAFC;
+      --card: #FFFFFF;
+      --ink: #0F172A;
+      --muted: #64748B;
+      --line: #E2E8F0;
+      --primary: #0F766E;
+      --primary-hover: #115E59;
+      --accent: #10B981;
+      --danger: #DC2626;
+      --radius: 4px;
+      background-color: var(--paper);
+      color: var(--ink);
+    }
+    .dir-a .wordmark {
+      font-family: 'Bricolage Grotesque', sans-serif;
+      font-size: 34px;
+      font-weight: 800;
+      color: var(--ink);
+      letter-spacing: -1.2px;
+    }
+    .dir-a .wordmark span { color: var(--primary); }
+    .dir-a .type-display {
+      font-family: 'Bricolage Grotesque', sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.25;
+      letter-spacing: -0.5px;
+    }
+    .dir-a .type-body {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    .dir-a .btn-primary {
+      background: var(--ink);
+      color: #FFF;
+      border: none;
+      padding: 10px 18px;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .dir-a .btn-secondary {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 9px 16px;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .dir-a .input-box {
+      border: 1px solid var(--line);
+      background: var(--card);
+      padding: 9px 12px;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--ink);
+      width: 100%;
+    }
+    .dir-a .domain-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .dir-a .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 2px;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      background: #FEE2E2;
+      color: var(--danger);
+      width: fit-content;
+    }
+
+    /* =========================================================
+       DIRECTION B: WARM SIGNAL (Editorial, Humanist & Calm Care)
+       ========================================================= */
+    .dir-b {
+      --paper: #FBF9F5;
+      --card: #FFFFFF;
+      --ink: #1C1917;
+      --muted: #78716C;
+      --line: #E7E5E4;
+      --primary: #0F5148;
+      --primary-hover: #0A3A34;
+      --accent: #D97706;
+      --danger: #B91C1C;
+      --radius: 12px;
+      background-color: var(--paper);
+      color: var(--ink);
+    }
+    .dir-b .wordmark {
+      font-family: 'Newsreader', serif;
+      font-size: 36px;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.5px;
+    }
+    .dir-b .wordmark em {
+      font-style: italic;
+      color: var(--primary);
+      font-weight: 600;
+    }
+    .dir-b .type-display {
+      font-family: 'Newsreader', serif;
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.25;
+      color: var(--ink);
+    }
+    .dir-b .type-body {
+      font-family: 'Outfit', sans-serif;
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    .dir-b .btn-primary {
+      background: var(--primary);
+      color: #FFF;
+      border: none;
+      padding: 11px 20px;
+      border-radius: var(--radius);
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(15, 81, 72, 0.15);
+    }
+    .dir-b .btn-secondary {
+      background: #F5F3EF;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 10px 18px;
+      border-radius: var(--radius);
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .dir-b .input-box {
+      border: 1px solid var(--line);
+      background: #FFFFFF;
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      color: var(--ink);
+      width: 100%;
+    }
+    .dir-b .domain-card {
+      background: #FFFFFF;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 4px 12px rgba(28, 25, 23, 0.03);
+    }
+    .dir-b .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 600;
+      background: #FEF3C7;
+      color: #92400E;
+      width: fit-content;
+    }
+
+    /* =========================================================
+       DIRECTION C: SHIFT VELOCITY (High-Contrast Night & Electric)
+       ========================================================= */
+    .dir-c {
+      --paper: #080D1A;
+      --card: #111A2E;
+      --ink: #FFFFFF;
+      --muted: #94A3B8;
+      --line: #1E293B;
+      --primary: #00F0FF;
+      --primary-hover: #38BDF8;
+      --accent: #10B981;
+      --danger: #F43F5E;
+      --radius: 8px;
+      background-color: var(--paper);
+      color: var(--ink);
+    }
+    .dir-c .wordmark {
+      font-family: 'Syne', sans-serif;
+      font-size: 32px;
+      font-weight: 800;
+      color: #FFF;
+      letter-spacing: -1px;
+      text-transform: uppercase;
+    }
+    .dir-c .wordmark span { color: var(--primary); }
+    .dir-c .type-display {
+      font-family: 'Syne', sans-serif;
+      font-size: 21px;
+      font-weight: 800;
+      line-height: 1.25;
+      letter-spacing: -0.5px;
+      color: #FFF;
+    }
+    .dir-c .type-body {
+      font-family: 'Manrope', sans-serif;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    .dir-c .btn-primary {
+      background: var(--primary);
+      color: #080D1A;
+      border: none;
+      padding: 10px 18px;
+      border-radius: var(--radius);
+      font-family: 'Manrope', sans-serif;
+      font-size: 12.5px;
+      font-weight: 800;
+      cursor: pointer;
+      letter-spacing: 0.3px;
+    }
+    .dir-c .btn-secondary {
+      background: #182238;
+      color: #E2E8F0;
+      border: 1px solid var(--line);
+      padding: 9px 16px;
+      border-radius: var(--radius);
+      font-family: 'Manrope', sans-serif;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .dir-c .input-box {
+      border: 1px solid var(--line);
+      background: #0E1627;
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      font-family: 'Manrope', sans-serif;
+      font-size: 13px;
+      color: #FFF;
+      width: 100%;
+    }
+    .dir-c .domain-card {
+      background: var(--card);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .dir-c .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: 'Manrope', sans-serif;
+      font-weight: 800;
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      width: fit-content;
+    }
+
+    /* Common Card Details */
+    .card-row { display: flex; justify-content: space-between; align-items: baseline; }
+    .card-hospital { font-size: 14px; font-weight: 700; }
+    .card-meta { font-size: 11.5px; opacity: 0.7; }
+    .card-val { font-size: 19px; font-weight: 800; }
+
+    /* Safe/Risk Box */
+    .note-box {
+      border-top: 1px dashed rgba(120, 120, 120, 0.25);
+      padding-top: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .note-safe strong { color: #10B981; }
+    .note-risk strong { color: #F59E0B; }
+  </style>
+</head>
+<body>
+
+  <!-- Top Strip -->
+  <div class="top-strip">
+    <div>
+      <h1>MeuPlantão — Escolha sua Identidade Visual (Show 3, Pick 1)</h1>
+      <p>Compare as três direções lado a lado em telas reais e escolha no chat.</p>
+    </div>
+    <div class="badge-bar">
+      <span class="badge-item">A · Quiet Ledger</span>
+      <span class="badge-item">B · Warm Signal</span>
+      <span class="badge-item">C · Shift Velocity</span>
+    </div>
+  </div>
+
+  <!-- Comparison Grid -->
+  <div class="comparison-grid">
+
+    <!-- ==================== DIRECTION A ==================== -->
+    <div class="direction-col dir-a">
+      <div class="dir-label" style="color: #0F766E;">Direção A · Suíça & Precisão Tabular</div>
+      
+      <!-- Wordmark -->
+      <div class="panel-block">
+        <div class="panel-title">01 · Wordmark</div>
+        <div class="wordmark">Meu<span>Plantão</span></div>
+      </div>
+
+      <!-- Color Swatches -->
+      <div class="panel-block">
+        <div class="panel-title">02 · Paleta de Cores</div>
+        <div class="swatches">
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#0F172A;"></div> Ink #0F172A</div>
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#0F766E;"></div> Teal #0F766E</div>
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#10B981;"></div> Mint #10B981</div>
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#F8FAFC;"></div> Paper #F8FAFC</div>
+        </div>
+      </div>
+
+      <!-- Type Specimen -->
+      <div class="panel-block">
+        <div class="panel-title">03 · Tipografia (Bricolage + JetBrains Mono)</div>
+        <div class="type-display">R$ 14.850,00 a receber em 4 hospitais.</div>
+        <div class="type-body">Saldo calculado em tempo real a partir dos plantões cumpridos e repasses parciais registrados.</div>
+      </div>
+
+      <!-- Components -->
+      <div class="panel-block">
+        <div class="panel-title">04 · Componentes de UI</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-primary">+ Novo Plantão</button>
+          <button class="btn-secondary">Exportar Relatório</button>
+        </div>
+        <input class="input-box" type="text" value="Buscar hospital ou escala..." readonly>
+      </div>
+
+      <!-- In-Use Real Domain Card -->
+      <div class="panel-block">
+        <div class="panel-title">05 · Card de Plantão Real</div>
+        <div class="domain-card">
+          <div class="card-row">
+            <div>
+              <div class="card-hospital">UTI Geral — Hospital Aliança</div>
+              <div class="card-meta">12h · Noturno · Previsto: 25/Set</div>
+            </div>
+            <div class="status-badge">Atrasado (14 dias)</div>
+          </div>
+          <div class="card-row" style="border-top:1px solid #E2E8F0; padding-top:10px;">
+            <span class="card-meta">Saldo Devedor</span>
+            <span class="card-val" style="font-family:'JetBrains Mono'; color:#DC2626;">R$ 2.100,00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Safe / Risk Note -->
+      <div class="note-box">
+        <div class="note-safe"><strong>Safe:</strong> Preto, branco e números mono limpos; passa total autoridade contábil e seriedade bancária.</div>
+        <div class="note-risk"><strong>Risk:</strong> Quase nenhuma ornamentação decorativa — o rigor é a própria marca.</div>
+      </div>
+    </div>
+
+
+    <!-- ==================== DIRECTION B ==================== -->
+    <div class="direction-col dir-b">
+      <div class="dir-label" style="color: #0F5148;">Direção B · Editorial, Calma & Cuidado</div>
+      
+      <!-- Wordmark -->
+      <div class="panel-block">
+        <div class="panel-title">01 · Wordmark</div>
+        <div class="wordmark">Meu<em>Plantão</em></div>
+      </div>
+
+      <!-- Color Swatches -->
+      <div class="panel-block">
+        <div class="panel-title">02 · Paleta de Cores</div>
+        <div class="swatches">
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#1C1917;"></div> Stone #1C1917</div>
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#0F5148;"></div> Pine #0F5148</div>
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#D97706;"></div> Amber #D97706</div>
+          <div class="swatch" style="background:#FFF;"><div class="swatch-chip" style="background:#FBF9F5;"></div> Cream #FBF9F5</div>
+        </div>
+      </div>
+
+      <!-- Type Specimen -->
+      <div class="panel-block">
+        <div class="panel-title">03 · Tipografia (Newsreader + Outfit)</div>
+        <div class="type-display">Você trabalhou 144 horas este mês.</div>
+        <div class="type-body">A rotina de plantão já é exaustiva por si só. Seus recebimentos não precisam ser mais uma dor de cabeça.</div>
+      </div>
+
+      <!-- Components -->
+      <div class="panel-block">
+        <div class="panel-title">04 · Componentes de UI</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-primary">Registrar Plantão</button>
+          <button class="btn-secondary">Filtrar por Mês</button>
+        </div>
+        <input class="input-box" type="text" value="Buscar plantão ou repasse..." readonly>
+      </div>
+
+      <!-- In-Use Real Domain Card -->
+      <div class="panel-block">
+        <div class="panel-title">05 · Card de Plantão Real</div>
+        <div class="domain-card">
+          <div class="card-row">
+            <div>
+              <div class="card-hospital">Emergência Adulto — Hosp. Português</div>
+              <div class="card-meta">24h · 18/Set · Pagamento Parcial Feito</div>
+            </div>
+            <div class="status-badge">Próximo ao Vencimento</div>
+          </div>
+          <div class="card-row" style="border-top:1px solid #E7E5E4; padding-top:10px;">
+            <span class="card-meta">Saldo Restante</span>
+            <span class="card-val" style="font-family:'Newsreader'; color:#0F5148;">R$ 1.850,00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Safe / Risk Note -->
+      <div class="note-box">
+        <div class="note-safe"><strong>Safe:</strong> Tons acolhedores de papel nobre e tipografia suave reduzem a sobrecarga cognitiva do médico cansado.</div>
+        <div class="note-risk"><strong>Risk:</strong> Usa serif editorial no display — foge do clichê padrão de startups de tecnologia, trazendo prestígio.</div>
+      </div>
+    </div>
+
+
+    <!-- ==================== DIRECTION C ==================== -->
+    <div class="direction-col dir-c">
+      <div class="dir-label" style="color: #00F0FF;">Direção C · Shift Velocity (Alta Fintech Noturna)</div>
+      
+      <!-- Wordmark -->
+      <div class="panel-block">
+        <div class="panel-title">01 · Wordmark</div>
+        <div class="wordmark">MEU<span>PLANTÃO</span></div>
+      </div>
+
+      <!-- Color Swatches -->
+      <div class="panel-block">
+        <div class="panel-title">02 · Paleta de Cores</div>
+        <div class="swatches">
+          <div class="swatch" style="background:#111A2E; color:#FFF;"><div class="swatch-chip" style="background:#00F0FF;"></div> Cyan #00F0FF</div>
+          <div class="swatch" style="background:#111A2E; color:#FFF;"><div class="swatch-chip" style="background:#080D1A;"></div> Void #080D1A</div>
+          <div class="swatch" style="background:#111A2E; color:#FFF;"><div class="swatch-chip" style="background:#10B981;"></div> Pulse #10B981</div>
+          <div class="swatch" style="background:#111A2E; color:#FFF;"><div class="swatch-chip" style="background:#F43F5E;"></div> Alert #F43F5E</div>
+        </div>
+      </div>
+
+      <!-- Type Specimen -->
+      <div class="panel-block">
+        <div class="panel-title">03 · Tipografia (Syne + Manrope)</div>
+        <div class="type-display">FLUXO DE CAIXA: +R$ 22.400 PREVISTOS</div>
+        <div class="type-body">Controle total dos seus turnos, repasses de PJ e recibos. Nenhuma hora trabalhada fica esquecida para trás.</div>
+      </div>
+
+      <!-- Components -->
+      <div class="panel-block">
+        <div class="panel-title">04 · Componentes de UI</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-primary">CHECK-IN PLANTÃO</button>
+          <button class="btn-secondary">VER HISTÓRICO</button>
+        </div>
+        <input class="input-box" type="text" value="Procurar escala rápida..." readonly>
+      </div>
+
+      <!-- In-Use Real Domain Card -->
+      <div class="panel-block">
+        <div class="panel-title">05 · Card de Plantão Real</div>
+        <div class="domain-card">
+          <div class="card-row">
+            <div>
+              <div class="card-hospital">Cardio Intensiva — São Rafael</div>
+              <div class="card-meta">12h · Diurno · Repasse via Cooperativa</div>
+            </div>
+            <div class="status-badge">ATRASO CRÍTICO (21D)</div>
+          </div>
+          <div class="card-row" style="border-top:1px solid #1E293B; padding-top:10px;">
+            <span class="card-meta">A Cobrar</span>
+            <span class="card-val" style="font-family:'Syne'; color:#00F0FF;">R$ 2.400,00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Safe / Risk Note -->
+      <div class="note-box">
+        <div class="note-safe"><strong>Safe:</strong> Modo escuro nativo perfeito para plantões noturnos em quartos com pouca luz; alto contraste.</div>
+        <div class="note-risk"><strong>Risk:</strong> O visual em ciano elétrico é ousado e enérgico — posiciona o app como software de alta performance.</div>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

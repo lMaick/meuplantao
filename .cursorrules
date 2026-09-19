@@ -1,0 +1,9 @@
+# Cursor Rules — MeuPlantão
+
+> As regras canônicas do projeto estão em **AGENTS.md**. Leia esse arquivo antes de qualquer tarefa.
+
+## Contratos obrigatórios (resumo)
+
+1. ISSUES E PR: Toda tarefa tem uma Issue no GitHub. Desenvolva em branch dedicada. Todo deploy vai via PR para `main`. Mencione a Issue no PR (ex: "Fixes #123"). Nunca faça merge ou deploy direto.
+2. UI E MOTION: Toda interface exige skeletons, lazy loading, smooth animations (entrada < 300ms, saída < 200ms), respeito a `prefers-reduced-motion` e touch targets 44×44px.
+3. QUALIDADE E TESTES: DAL em `src/lib/<modulo>/` (componentes nunca fazem query diretas), Biome, Commitlint, Playwright E2E, Codecov.
