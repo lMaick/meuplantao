@@ -198,9 +198,9 @@ export function Dashboard() {
   ] as const;
 
   return (
-    // MAI-115: wrapper <div> (sem <main> duplicado — o AppShell já provê o <main> global
-    // com min-w-0 para o cálculo correto de largura no desktop).
-    <div className="mx-auto w-full min-w-0 max-w-6xl space-y-6 overflow-x-hidden bg-background px-4 py-6 text-foreground sm:px-8">
+    // MAI-115: wrapper <div> fluido (sem <main> duplicado — o AppShell já provê o
+    // <main> global). max-w-7xl adapta-se com elegância a monitores grandes/ultrawide.
+    <div className="w-full min-w-0 max-w-7xl mx-auto px-4 py-6 text-foreground sm:px-8 space-y-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
@@ -289,13 +289,13 @@ export function Dashboard() {
                 key={label}
                 label={label}
                 value={
-                  <span className="flex items-center justify-between">
-                    <span className={cn(isOverdueKpi ? "text-destructive" : "text-foreground")}>
+                  <span className="flex min-w-0 items-center justify-between gap-2">
+                    <span className={cn("min-w-0 break-words", isOverdueKpi ? "text-destructive" : "text-foreground")}>
                       {label === "Próximos 7 dias" ? value : money.format(Number(value))}
                     </span>
                     <span
                       className={cn(
-                        "rounded-xl p-2 shadow-xs",
+                        "rounded-xl p-2 shadow-xs shrink-0",
                         isOverdueKpi
                           ? "bg-destructive/10 text-destructive ring-1 ring-destructive/20"
                           : isReceivedKpi

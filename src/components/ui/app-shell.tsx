@@ -116,7 +116,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="min-h-screen bg-muted/30">
+    // MAI-115: o offset da sidebar (256px) vive como padding no container raiz.
+    // O <main> em fluxo normal ocupa exatamente a largura disponível — sem o
+    // cálculo quebrado de lg:ml-64 + w-full (100vw + 256px) que cortava a direita.
+    <div className="min-h-screen bg-muted/30 lg:pl-64">
       {/* Desktop Sidebar (z-30) */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-border/80 bg-background/95 backdrop-blur-md px-4 py-6 lg:flex">
         <Link
@@ -264,7 +267,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       )}
 
       {/* Main Container (pb-28 lg:pb-8 prevents bottom bar occlusion) */}
-      <main className="min-h-screen w-full max-w-full min-w-0 flex-1 overflow-x-hidden pb-28 lg:ml-64 lg:pb-8">
+      <main className="min-h-screen w-full min-w-0 flex-1 pb-28 lg:pb-8">
         {children}
       </main>
 
