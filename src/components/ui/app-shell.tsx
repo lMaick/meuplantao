@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { LogoutButton } from "@/lib/auth/logout-button";
 import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { TrialBadge, TrialBadgeMobile } from "@/components/subscription";
 
 const primary = [
   { href: "/dashboard", label: "Início", short: "Início", icon: House },
@@ -124,10 +125,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-border/80 bg-background/95 backdrop-blur-md px-4 py-6 lg:flex">
         <Link
           href="/dashboard"
-          className="mb-8 flex min-w-0 items-center gap-3 px-3 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group"
+          className="mb-4 flex min-w-0 items-center gap-3 px-3 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group"
         >
           <BrandLogo priority />
         </Link>
+        <div className="mb-5 px-1">
+          <TrialBadge />
+        </div>
         <nav className="flex flex-1 flex-col gap-1.5" aria-label="Navegação principal">
           <Link
             href="/calendario?novo=1"
@@ -186,7 +190,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <BrandLogo priority />
         </Link>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <TrialBadgeMobile />
           <ThemeToggle compact />
           <Button
           size="icon"
