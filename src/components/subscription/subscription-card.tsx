@@ -15,6 +15,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSubscription } from "@/lib/subscription";
+import { getSubscriptionPeriod, type SubscriptionMonths } from "@/lib/subscription/types";
+import { PlanPeriodSelector } from "./plan-period-selector";
 import { cn } from "cn";
 
 interface SubscriptionCardProps {
@@ -29,6 +31,8 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
   const [isSyncing, setIsSyncing] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [feedbackType, setFeedbackType] = useState<"info" | "success" | "error">("info");
+  const [selectedMonths, setSelectedMonths] = useState<SubscriptionMonths>(1);
+  const selectedPeriod = getSubscriptionPeriod(selectedMonths) ?? getSubscriptionPeriod(1)!;
 
   useEffect(() => {
     if (payment !== "success" || !paymentId) return;
@@ -74,7 +78,11 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
     setFeedbackMessage(null);
 
     try {
-      const response = await fetch("/api/mercadopago/checkout", { method: "POST", headers: { Accept: "application/json" } });
+      const response = await fetch("/api/mercadopago/checkout", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ months: selectedMonths }),
+      });
       const payload = (await response.json()) as { init_point?: string; error?: string };
       if (!response.ok || !payload.init_point) throw new Error(payload.error || "Nao foi possivel iniciar o checkout.");
       window.location.href = payload.init_point;
@@ -278,10 +286,10 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
 
           <div className="flex items-baseline gap-1 bg-background/80 px-4 py-2.5 rounded-xl border border-border/60 shadow-2xs">
             <span className="text-xs font-semibold text-muted-foreground">R$</span>
-            <span className="text-3xl font-extrabold text-foreground font-mono tracking-tight">
-              12,90
+            <span data-default-price="12,90" className="text-3xl font-extrabold text-foreground font-mono tracking-tight">
+              {selectedPeriod.price.toFixed(2).replace(".", ",")}
             </span>
-            <span className="text-xs font-medium text-muted-foreground">/ mês</span>
+            <span className="text-xs font-medium text-muted-foreground">/ {selectedPeriod.label.toLowerCase()}</span>
           </div>
         </div>
 
@@ -316,6 +324,8 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
           </div>
         </div>
 
+        <PlanPeriodSelector value={selectedMonths} onChange={setSelectedMonths} disabled={isProcessing || isSyncing || (trial?.isActive ?? false)} />
+
         {/* Action Button & Feedback */}
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap">
           <Button
@@ -337,7 +347,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
             ) : (
               <span className="flex items-center gap-2">
                 <Zap className="size-4 fill-white" />
-                Assinar MeuPlantão Pro — R$ 12,90/mês
+                Assinar MeuPlantão Pro — plano {selectedPeriod.label}, R$ {selectedPeriod.price.toFixed(2).replace(".", ",")}
                 <ArrowRight className="size-4" />
               </span>
             )}

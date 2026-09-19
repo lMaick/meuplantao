@@ -5,6 +5,14 @@ import { calculateCumulativePeriodEnd, DAYS_PER_PRO_PAYMENT, MS_PER_DAY } from "
 
 export const runtime = "nodejs";
 
+const validityDaysByMonths = new Map([[1, 30], [3, 90], [6, 180], [12, 365]]);
+
+function addValidity(start: Date, days: number): Date {
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + days);
+  return end;
+}
+
 function isUserId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
 }
@@ -118,62 +126,77 @@ async function handleWebhook(request: Request, rawBody: string) {
       date_created?: string;
       date_approved?: string;
       transaction_amount?: number;
-      metadata?: { user_id?: string; userId?: string };
+      metadata?: { user_id?: string; userId?: string; months?: number };
     };
 
     if (payment.status !== "approved") {
       return Response.json({ received: true, ignored: true, status: payment.status ?? "unknown" }, { status: 200 });
     }
 
-    const userId = payment.external_reference || payment.metadata?.user_id || payment.metadata?.userId;
+    const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
+    const userId = externalUserId || payment.metadata?.user_id || payment.metadata?.userId;
+    const months = Number(payment.metadata?.months || externalMonths || 1);
+    const validityDays = validityDaysByMonths.get(months) ?? validityDaysByMonths.get(1)!;
+    const isMultiPeriodPayment = Boolean(payment.metadata?.months || externalMonths);
     if (!isUserId(userId)) {
       return Response.json({ received: true, ignored: true, error: "Pagamento sem usuario valido associado" }, { status: 200 });
     }
 
-    // MAI-126: vigência cumulativa — contabiliza TODOS os pagamentos aprovados
-    // do usuário (30 dias por pagamento). Busca o histórico e deriva o
-    // current_period_end de forma idempotente; em falha da busca, aplica
-    // +30 dias a partir do pagamento atual como fallback seguro.
+    const admin = createAdminClient();
     let currentPeriodEnd: string | null = null;
-    try {
-      const searchResponse = await fetch(
-        `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(userId)}&sort=date_created&criteria=desc&limit=50`,
-        { headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` } },
-      );
-      if (searchResponse.ok) {
-        const searchData = (await searchResponse.json()) as {
-          results?: Array<{
-            status?: string;
-            date_created?: string;
-            date_approved?: string;
-            transaction_amount?: number;
-            external_reference?: string;
-            metadata?: { user_id?: string; userId?: string };
-          }>;
-        };
-        const history = (searchData.results || []).filter((p) => p.status === "approved");
-        // Garante que o pagamento que originou o webhook participe do cálculo
-        // mesmo quando a busca ainda não o indexou (eventual consistency).
-        const seen = history.some(
-          (p) =>
-            (p.date_created ?? p.date_approved) ===
-            (payment.date_created ?? payment.date_approved),
+
+    if (isMultiPeriodPayment) {
+      const subscriptionTable = admin.from("subscriptions");
+      const { data: currentSubscription } = await subscriptionTable.select("current_period_end").eq("user_id", userId).maybeSingle();
+      const currentEnd = currentSubscription?.current_period_end ? new Date(currentSubscription.current_period_end) : new Date();
+      const start = currentEnd > new Date() ? currentEnd : new Date();
+      currentPeriodEnd = addValidity(start, validityDays).toISOString();
+    } else {
+      // Vigência cumulativa para pagamentos padrão — busca histórico e deriva current_period_end
+      try {
+        const searchResponse = await fetch(
+          `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(userId)}&sort=date_created&criteria=desc&limit=50`,
+          { headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` } },
         );
-        const pool = seen ? history : [...history, payment];
-        currentPeriodEnd = calculateCumulativePeriodEnd(pool, new Date());
+        if (searchResponse.ok) {
+          const searchData = (await searchResponse.json()) as {
+            results?: Array<{
+              status?: string;
+              date_created?: string;
+              date_approved?: string;
+              transaction_amount?: number;
+              external_reference?: string;
+              metadata?: { user_id?: string; userId?: string };
+            }>;
+          };
+          const history = (searchData.results || []).filter((p) => p.status === "approved");
+          const seen = history.some(
+            (p) =>
+              (p.date_created ?? p.date_approved) ===
+              (payment.date_created ?? payment.date_approved),
+          );
+          const pool = seen ? history : [...history, payment];
+          currentPeriodEnd = calculateCumulativePeriodEnd(pool, new Date());
+        }
+      } catch {
+        currentPeriodEnd = null;
       }
-    } catch {
-      currentPeriodEnd = null;
-    }
-    if (!currentPeriodEnd) {
-      const anchor = payment.date_approved ?? payment.date_created ?? new Date().toISOString();
-      const anchorTime = new Date(anchor).getTime();
-      const base = Number.isNaN(anchorTime) ? Date.now() : Math.max(anchorTime, Date.now());
-      currentPeriodEnd = new Date(base + DAYS_PER_PRO_PAYMENT * MS_PER_DAY).toISOString();
+      if (!currentPeriodEnd) {
+        const anchor = payment.date_approved ?? payment.date_created ?? new Date().toISOString();
+        const anchorTime = new Date(anchor).getTime();
+        const base = Number.isNaN(anchorTime) ? Date.now() : Math.max(anchorTime, Date.now());
+        currentPeriodEnd = new Date(base + DAYS_PER_PRO_PAYMENT * MS_PER_DAY).toISOString();
+      }
     }
 
-    const { error } = await createAdminClient().from("subscriptions").upsert(
-      { user_id: userId, status: "active", current_period_end: currentPeriodEnd },
+    const subscriptionPayload = {
+      user_id: userId,
+      status: "active" as const,
+      ...(currentPeriodEnd ? { current_period_end: currentPeriodEnd } : {}),
+    };
+
+    const { error } = await admin.from("subscriptions").upsert(
+      subscriptionPayload,
       { onConflict: "user_id" },
     );
     if (error) throw error;
