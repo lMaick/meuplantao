@@ -47,7 +47,7 @@ export function DashboardSkeleton() {
       aria-label="Carregando resumo financeiro..."
       className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-8"
     >
-      <div className="mx-auto max-w-6xl space-y-8">
+      <div className="mx-auto max-w-6xl space-y-6">
         {/* Header */}
         <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-2">

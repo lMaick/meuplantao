@@ -176,7 +176,7 @@ export function Dashboard() {
 
   if (error) {
     return (
-      <main className="mx-auto flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-foreground">
+      <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col items-center justify-center gap-4 bg-background px-4 py-6 text-foreground sm:px-8">
         <div className="rounded-full bg-destructive/10 p-3 text-destructive">
           <CircleAlert className="size-6" />
         </div>
@@ -186,7 +186,7 @@ export function Dashboard() {
         <Button variant="outline" onClick={() => void load()}>
           Tentar novamente
         </Button>
-      </main>
+      </div>
     );
   }
 
@@ -198,8 +198,9 @@ export function Dashboard() {
   ] as const;
 
   return (
-    <main className="min-h-screen w-full max-w-full min-w-0 overflow-x-hidden bg-background px-4 py-6 text-foreground sm:px-8">
-      <div className="mx-auto w-full max-w-6xl min-w-0 space-y-8">
+    // MAI-115: wrapper <div> (sem <main> duplicado — o AppShell já provê o <main> global
+    // com min-w-0 para o cálculo correto de largura no desktop).
+    <div className="mx-auto w-full min-w-0 max-w-6xl space-y-6 overflow-x-hidden bg-background px-4 py-6 text-foreground sm:px-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
@@ -473,7 +474,6 @@ export function Dashboard() {
             )}
           </Card>
         </section>
-      </div>
-    </main>
+    </div>
   );
 }

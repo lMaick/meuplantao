@@ -39,6 +39,54 @@ const secondary = [
   { href: "/configuracoes", label: "Configurações", icon: Settings },
 ];
 
+const BRAND_LOGO_SRC = "/brand/meuplantao-simbolo-oficial.png";
+
+/**
+ * BrandLogo (MAI-115): lockup único do símbolo oficial + texto + pulso de status.
+ * Usado de forma consistente na sidebar desktop, no header mobile e no drawer,
+ * com `shrink-0` para nunca desaparecer/comprimir no resize.
+ */
+function BrandLogo({
+  size = "md",
+  label = "MeuPlantão",
+  showStatus = true,
+  priority = false,
+}: {
+  size?: "sm" | "md";
+  label?: string;
+  showStatus?: boolean;
+  priority?: boolean;
+}) {
+  const markSize = size === "sm" ? "size-8" : "size-9";
+  const pixels = size === "sm" ? 32 : 36;
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      <span
+        className={cn(
+          "grid shrink-0 place-items-center overflow-hidden rounded-xl bg-white shadow-md shadow-emerald-500/20 ring-1 ring-border/60",
+          markSize
+        )}
+      >
+        <Image
+          src={BRAND_LOGO_SRC}
+          alt="MeuPlantão"
+          width={pixels}
+          height={pixels}
+          sizes={`${pixels}px`}
+          className={cn(markSize, "object-contain")}
+          priority={priority}
+        />
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5 font-bold tracking-tight text-foreground">
+        {label}
+        {showStatus && (
+          <span className="size-1.5 shrink-0 rounded-full bg-emerald-500 inline-block animate-pulse" />
+        )}
+      </span>
+    </span>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -73,23 +121,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-border/80 bg-background/95 backdrop-blur-md px-4 py-6 lg:flex">
         <Link
           href="/dashboard"
-          className="mb-8 flex items-center gap-3 px-3 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group"
+          className="mb-8 flex min-w-0 items-center gap-3 px-3 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group"
         >
-          <span className="grid size-9 place-items-center overflow-hidden rounded-xl bg-white shadow-md shadow-emerald-500/20 ring-1 ring-border/60 transition-transform group-hover:scale-105">
-            <Image
-              src="/brand/meuplantao-simbolo-oficial.png"
-              alt="MeuPlantão"
-              width={36}
-              height={36}
-              sizes="36px"
-              className="size-9 object-contain"
-              priority
-            />
-          </span>
-          <span className="flex items-center gap-1.5">
-            MeuPlantão
-            <span className="size-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
-          </span>
+          <BrandLogo priority />
         </Link>
         <nav className="flex flex-1 flex-col gap-1.5" aria-label="Navegação principal">
           <Link
@@ -145,17 +179,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border/80 bg-background/95 px-4 pt-[env(safe-area-inset-top,0px)] backdrop-blur-md lg:hidden">
         <Link
           href="/dashboard"
-          className="flex min-h-[44px] items-center gap-2.5 font-bold tracking-tight text-foreground group"
+          className="flex min-h-[44px] min-w-0 items-center gap-2.5 font-bold tracking-tight text-foreground group"
         >
-          <span className="grid size-9 place-items-center rounded-xl bg-gradient-to-br from-emerald-600 to-teal-700 font-bold text-white shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
-            M
-          </span>
-          <span className="text-base font-bold flex items-center gap-1.5">
-            MeuPlantão
-            <span className="size-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
-          </span>
+          <BrandLogo priority />
         </Link>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <ThemeToggle compact />
           <Button
           size="icon"
@@ -184,19 +212,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             className="motion-drawer-in ml-auto flex h-full w-80 max-w-[85vw] flex-col bg-background p-6 shadow-2xl transition-transform duration-300 ease-out pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-border/80 pb-4">
-              <div className="flex items-center gap-2.5">
-                <span className="grid size-8 place-items-center overflow-hidden rounded-lg bg-white shadow-xs ring-1 ring-border/60">
-                  <Image
-                    src="/brand/meuplantao-simbolo-oficial.png"
-                    alt="MeuPlantão"
-                    width={32}
-                    height={32}
-                    sizes="32px"
-                    className="size-8 object-contain"
-                  />
-                </span>
-                <span className="font-semibold text-foreground">Menu</span>
+            <div className="flex min-w-0 items-center justify-between border-b border-border/80 pb-4">
+              <div className="flex min-w-0 items-center">
+                <BrandLogo size="sm" label="Menu" showStatus={false} />
               </div>
               <Button
                 size="icon"
