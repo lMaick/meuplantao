@@ -3,7 +3,16 @@ import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { SubscriptionCard } from "@/components/subscription";
 
-export default function SettingsPage() {
+interface SettingsPageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function SettingsPage({ searchParams }: SettingsPageProps) {
+  const params = await searchParams;
+  const payment = typeof params.payment === "string" ? params.payment : null;
+  const paymentId = typeof params.payment_id === "string" ? params.payment_id : null;
+  const collectionId = typeof params.collection_id === "string" ? params.collection_id : null;
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-5 py-6">
       <PageHeader
@@ -12,7 +21,7 @@ export default function SettingsPage() {
       />
 
       {/* Subscription & Plan Section */}
-      <SubscriptionCard />
+      <SubscriptionCard payment={payment} paymentId={paymentId ?? collectionId} />
 
       {/* App Preferences */}
       <Card className="p-5 sm:p-6">
