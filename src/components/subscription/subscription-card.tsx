@@ -31,8 +31,9 @@ export function SubscriptionCard({ className }: { className?: string }) {
       if (!response.ok || !payload.init_point) throw new Error(payload.error || "Nao foi possivel iniciar o checkout.");
       window.location.href = payload.init_point;
       return;
-    } catch {
-      setFeedbackMessage("Nao foi possivel iniciar o checkout no momento. Tente novamente.");
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "Nao foi possivel iniciar o checkout no momento. Tente novamente.";
+      setFeedbackMessage(message);
       setIsProcessing(false);
       return;
     }

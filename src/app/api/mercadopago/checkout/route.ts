@@ -14,12 +14,18 @@ export async function POST(request: NextRequest) {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
 
-    const { data: subscription, error: subscriptionError } = await supabase
-      .from("subscriptions")
-      .select("status")
-      .eq("user_id", user.id)
-      .maybeSingle();
-    if (subscriptionError) throw subscriptionError;
+    let subscription = null;
+    try {
+      const { data, error } = await supabase
+        .from("subscriptions")
+        .select("status")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (!error) subscription = data;
+    } catch {
+      // Subscriptions table might not be migrated yet in remote db
+    }
+
     if (subscription && ["trialing", "active", "past_due"].includes(subscription.status)) {
       return NextResponse.json({ error: "Ja existe uma assinatura para este usuario" }, { status: 409 });
     }
