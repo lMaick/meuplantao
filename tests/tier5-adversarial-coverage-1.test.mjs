@@ -83,6 +83,14 @@ function loadTsxModule(relativeFilePath) {
           TrialBadge: () => null,
           TrialBadgeMobile: () => null,
           SubscriptionCard: () => null,
+          PaywallModal: () => null,
+        };
+      }
+      if (id === "@/lib/subscription") {
+        return {
+          SubscriptionProvider: ({ children }) => React.createElement(React.Fragment, null, children),
+          useSubscription: () => ({ trial: null, isLoading: false, error: null, refresh: async () => {} }),
+          canCreateShift: () => true,
         };
       }
       if (id === "@/components/ui/primitives" || id === "./primitives") {

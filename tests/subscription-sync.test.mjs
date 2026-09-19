@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import test from "node:test";
 
+const __syncTestFile = fileURLToPath(import.meta.url);
+const __syncTrialUrl = pathToFileURL(path.join(path.dirname(__syncTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@/lib/subscription/trial") {
+      return { url: __syncTrialUrl, shortCircuit: true };
+    }
     if (specifier === "@/lib/mercadopago/config") {
       return {
         url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';",
@@ -72,16 +80,19 @@ test("sync route activates subscription when approved payment is found", async (
 
   const response = await syncRoute(createMockRequest());
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { synced: true, status: "active" });
+  const syncedJson = await response.json();
+  assert.equal(syncedJson.synced, true);
+  assert.equal(syncedJson.status, "active");
+  assert.ok(syncedJson.current_period_end, "MAI-126: sync deve retornar current_period_end cumulativo");
 
   assert.equal(
     calls[0].url,
-    `https://api.mercadopago.test/v1/payments/search?external_reference=${testUserId}&sort=date_created&criteria=desc&limit=5`,
+    `https://api.mercadopago.test/v1/payments/search?external_reference=${testUserId}&sort=date_created&criteria=desc&limit=50`,
   );
-  assert.deepEqual(calls[1], {
-    row: { user_id: testUserId, status: "active" },
-    options: { onConflict: "user_id" },
-  });
+  assert.equal(calls[1].row.user_id, testUserId);
+  assert.equal(calls[1].row.status, "active");
+  assert.equal(calls[1].options.onConflict, "user_id");
+  assert.ok(calls[1].row.current_period_end, "MAI-126: upsert deve gravar current_period_end");
 });
 
 test("sync route returns synced: false and status: trialing when no approved payment found", async () => {

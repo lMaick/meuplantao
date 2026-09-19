@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import test from "node:test";
 
+const __mpRoutesFile = fileURLToPath(import.meta.url);
+const __mpTrialUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "subscription", "trial.ts")).href;
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@/lib/subscription/trial") {
+      return { url: __mpTrialUrl, shortCircuit: true };
+    }
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';", shortCircuit: true };
     if (specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
     if (specifier === "next/server") return nextResolve("next/server.js", context);
@@ -69,7 +77,15 @@ test("approved payment activates the user's subscription", async () => {
     method: "POST",
     body: JSON.stringify({ type: "payment", data: { id: "payment-1" } }),
   }));
-  assert.deepEqual(await response.json(), { received: true, processed: true });
+  const webhookJson = await response.json();
+  assert.equal(webhookJson.received, true);
+  assert.equal(webhookJson.processed, true);
+  assert.ok(webhookJson.current_period_end, "MAI-126: webhook deve retornar current_period_end");
   assert.equal(calls[0], "https://api.mercadopago.test/v1/payments/payment-1");
-  assert.deepEqual(calls[1], { row: { user_id: userId, status: "active" }, options: { onConflict: "user_id" } });
+  const upsertCall = calls.find((c) => c && c.row);
+  assert.ok(upsertCall, "webhook deve fazer upsert da assinatura");
+  assert.equal(upsertCall.row.user_id, userId);
+  assert.equal(upsertCall.row.status, "active");
+  assert.equal(upsertCall.options.onConflict, "user_id");
+  assert.ok(upsertCall.row.current_period_end, "MAI-126: upsert deve gravar current_period_end");
 });
