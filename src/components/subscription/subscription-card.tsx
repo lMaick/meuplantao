@@ -25,17 +25,19 @@ export function SubscriptionCard({ className }: { className?: string }) {
     setIsProcessing(true);
     setFeedbackMessage(null);
 
-    // Simulated checkout flow transition
     try {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      setFeedbackMessage(
-        "Ambiente de checkout seguro em inicialização. Integração com meio de pagamento pronta para produção."
-      );
+      const response = await fetch("/api/mercadopago/checkout", { method: "POST", headers: { Accept: "application/json" } });
+      const payload = await response.json() as { init_point?: string; error?: string };
+      if (!response.ok || !payload.init_point) throw new Error(payload.error || "Nao foi possivel iniciar o checkout.");
+      window.location.href = payload.init_point;
+      return;
     } catch {
-      setFeedbackMessage("Não foi possível iniciar o checkout no momento. Tente novamente.");
-    } finally {
+      setFeedbackMessage("Nao foi possivel iniciar o checkout no momento. Tente novamente.");
       setIsProcessing(false);
+      return;
     }
+
+    setIsProcessing(false);
   };
 
   if (isLoading) {
