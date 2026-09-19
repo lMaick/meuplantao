@@ -1,0 +1,3 @@
+[submodule ".agents/skills-hub"]
+	path = .agents/skills-hub
+	url = https://github.com/lMaick/agent-skills.git
