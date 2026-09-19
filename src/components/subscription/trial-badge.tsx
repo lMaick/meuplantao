@@ -22,18 +22,31 @@ export function TrialBadge({ className }: { className?: string }) {
   if (!trial) return null;
 
   if (trial.isActive) {
+    const vigEnd = trial.proEndsAt ?? trial.currentPeriodEnd ?? trial.trialEndsAt;
+    const vigDate = (() => {
+      try {
+        return new Date(vigEnd).toLocaleDateString("pt-BR", { timeZone: "America/Bahia" });
+      } catch {
+        return null;
+      }
+    })();
+    const vigLabel =
+      trial.proDaysRemaining > 0 && vigDate
+        ? `Plano Pro Ativo — ${trial.proDaysRemaining === 1 ? "1 dia restante" : `${trial.proDaysRemaining} dias restantes`} (até ${vigDate})`
+        : "Plano Pro Ativo";
     return (
       <Link
         href="/configuracoes"
         className={cn(
-          "group inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all duration-200",
+          "group inline-flex min-h-[36px] items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all duration-200",
           "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400 border border-emerald-500/20",
           className
         )}
-        title="Assinatura Pro ativa"
+        title={vigLabel}
+        aria-label={vigLabel}
       >
         <Sparkles className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-        <span className="font-semibold">Plano Pro Ativo</span>
+        <span className="font-semibold truncate max-w-[260px]">{vigLabel}</span>
       </Link>
     );
   }
@@ -98,6 +111,19 @@ export function TrialBadgeMobile({ className }: { className?: string }) {
   if (!trial) return null;
 
   if (trial.isActive) {
+    const vigEnd = trial.proEndsAt ?? trial.currentPeriodEnd ?? trial.trialEndsAt;
+    const vigShort = (() => {
+      try {
+        const d = new Date(vigEnd).toLocaleDateString("pt-BR", { timeZone: "America/Bahia" });
+        return trial.proDaysRemaining > 0 ? `Pro • ${trial.proDaysRemaining}d (até ${d})` : "Pro";
+      } catch {
+        return "Pro";
+      }
+    })();
+    const vigTitle =
+      trial.proDaysRemaining > 0
+        ? `Plano Pro Ativo — ${trial.proDaysRemaining} dias restantes`
+        : "Plano Pro Ativo";
     return (
       <Link
         href="/configuracoes"
@@ -106,11 +132,11 @@ export function TrialBadgeMobile({ className }: { className?: string }) {
           "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/20",
           className
         )}
-        title="Plano Pro Ativo"
-        aria-label="Plano Pro Ativo"
+        title={vigTitle}
+        aria-label={vigTitle}
       >
         <Sparkles className="size-3 text-emerald-600 dark:text-emerald-400" />
-        <span>Pro</span>
+        <span className="truncate max-w-[150px]">{vigShort}</span>
       </Link>
     );
   }

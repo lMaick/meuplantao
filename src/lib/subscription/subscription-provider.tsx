@@ -1,47 +1,39 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect -- initial data load is asynchronous */
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { calculateTrial } from "./trial";
 import type { TrialInfo } from "./types";
-import { useSubscriptionContext } from "./subscription-provider";
 
 interface SubscriptionRow {
   status: string | null;
   current_period_end: string | null;
 }
 
-export interface SubscriptionState {
+export interface SubscriptionContextValue {
   trial: TrialInfo | null;
   isLoading: boolean;
   error: Error | null;
   refresh: () => Promise<void>;
 }
 
+const SubscriptionContext = createContext<SubscriptionContextValue | null>(null);
+
 /**
- * Hook de assinatura (MAI-126): quando montado dentro do SubscriptionProvider
- * (AppShell), retorna o estado global reativo compartilhado — sidebar, header
- * e card atualizam no mesmo milissegundo. Fora do provider, mantém busca
- * própria + Realtime dedicado (compatibilidade com páginas isoladas/testes).
+ * SubscriptionProvider (MAI-126): instância única de busca + Realtime no AppShell.
+ * TrialBadge (desktop), TrialBadgeMobile e SubscriptionCard consomem o mesmo
+ * contexto e atualizam no mesmo milissegundo após sync/webhook, sem F5.
  */
-export function useSubscription(): SubscriptionState {
-  const shared = useSubscriptionContext();
+export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const [trial, setTrial] = useState<TrialInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
-  // Identificador único por instância do hook: evita colisão de canais
-  // Realtime quando TrialBadge e TrialBadgeMobile montam simultaneamente
-  // fora do provider (Supabase retorna a mesma instância de canal já assinado
-  // e lança "cannot add 'postgres_changes' callbacks ... after 'subscribe()'").
-  // useId() é puro (lint-safe) e estável por instância.
-  const rawInstanceId = useId().replace(/:/g, "-");
-  const channelName = userId ? `subscription-status:${userId}:${rawInstanceId}` : null;
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
 
   const fetchSubscription = useCallback(async () => {
     setIsLoading(true);
-
     try {
       setError(null);
       const supabase = createClient();
@@ -49,6 +41,7 @@ export function useSubscription(): SubscriptionState {
 
       if (userError || !data.user) {
         setUserId(null);
+        setCreatedAt(null);
         setTrial(calculateTrial(new Date().toISOString(), null));
         if (userError) setError(userError);
         return;
@@ -63,67 +56,57 @@ export function useSubscription(): SubscriptionState {
       if (subscriptionError) throw subscriptionError;
 
       setUserId(data.user.id);
+      setCreatedAt(data.user.created_at ?? null);
       setTrial(calculateTrial(data.user.created_at, subscription?.status, new Date(), subscription?.current_period_end));
     } catch (err) {
       setError(err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura"));
-      setTrial(calculateTrial(new Date().toISOString(), null));
+      setTrial((prev) => prev ?? calculateTrial(createdAt ?? new Date().toISOString(), null));
     } finally {
       setIsLoading(false);
     }
+  }, [createdAt]);
+
+  useEffect(() => {
+    void fetchSubscription();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- carga inicial única; refresh manual via contexto
   }, []);
 
+  // Canal Realtime único por provider: qualquer UPDATE/INSERT na linha do
+  // usuário recarrega o estado e propaga para todos os consumidores.
   useEffect(() => {
-    if (shared) return;
-    void fetchSubscription();
-  }, [fetchSubscription, shared]);
-
-  useEffect(() => {
-    if (shared || !userId || !channelName) return;
-
+    if (!userId) return;
     const supabase = createClient();
-
     try {
       const channel = supabase
-        .channel(channelName)
+        .channel(`subscription-status:${userId}:provider`)
         .on(
           "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "subscriptions",
-            filter: `user_id=eq.${userId}`,
-          },
+          { event: "*", schema: "public", table: "subscriptions", filter: `user_id=eq.${userId}` },
           () => void fetchSubscription(),
         )
         .subscribe();
-
       return () => {
         try {
           void supabase.removeChannel(channel);
         } catch (cleanupError) {
-          console.warn(
-            "[useSubscription] Falha ao remover canal Realtime (degradação graciosa):",
-            cleanupError,
-          );
+          console.warn("[SubscriptionProvider] Falha ao remover canal Realtime:", cleanupError);
         }
       };
     } catch (realtimeError) {
-      // Degradação graciosa: falha no Realtime nunca deve derrubar a
-      // aplicação nem acionar o Global Error Boundary (React 19).
-      console.warn(
-        "[useSubscription] Realtime indisponível, seguindo sem assinatura (degradação graciosa):",
-        realtimeError,
-      );
+      console.warn("[SubscriptionProvider] Realtime indisponível (degradação graciosa):", realtimeError);
       return;
     }
-  }, [channelName, fetchSubscription, userId, shared]);
+  }, [fetchSubscription, userId]);
 
-  if (shared) return shared;
+  const value = useMemo<SubscriptionContextValue>(
+    () => ({ trial, isLoading, error, refresh: fetchSubscription }),
+    [trial, isLoading, error, fetchSubscription],
+  );
 
-  return {
-    trial,
-    isLoading,
-    error,
-    refresh: fetchSubscription,
-  };
+  return <SubscriptionContext.Provider value={value}>{children}</SubscriptionContext.Provider>;
+}
+
+/** Acesso ao estado global. Fora do provider retorna null (hook legado assume). */
+export function useSubscriptionContext(): SubscriptionContextValue | null {
+  return useContext(SubscriptionContext);
 }

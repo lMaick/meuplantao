@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/stripe/supabase";
+import { calculateCumulativePeriodEnd } from "@/lib/subscription/trial";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,8 @@ interface MercadoPagoSearchResult {
     status?: string;
     external_reference?: string;
     date_created?: string;
+    date_approved?: string;
+    transaction_amount?: number;
     metadata?: { user_id?: string; userId?: string };
   }>;
 }
@@ -28,7 +31,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
     }
 
-    const searchUrl = `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=5`;
+    const searchUrl = `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=50`;
     const paymentResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
     });
@@ -41,16 +44,25 @@ export async function POST(request: NextRequest) {
     }
 
     const searchData = (await paymentResponse.json()) as MercadoPagoSearchResult;
-    const approvedPayment = (searchData.results || []).find((p) => p.status === "approved");
+    const userPayments = (searchData.results || []).filter((p) => {
+      if (p.status !== "approved") return false;
+      const ref = p.external_reference || p.metadata?.user_id || p.metadata?.userId;
+      // Aceita pagamentos sem referência quando a busca já filtrou por external_reference,
+      // e pagamentos cuja referência/metadata pertence ao usuário autenticado.
+      return !ref || ref === user.id;
+    });
 
-    if (approvedPayment) {
+    // MAI-126: vigência cumulativa — cada pagamento aprovado de R$ 12,90 = +30 dias.
+    const currentPeriodEnd = calculateCumulativePeriodEnd(userPayments, new Date());
+
+    if (currentPeriodEnd) {
       const { error: subError } = await createAdminClient().from("subscriptions").upsert(
-        { user_id: user.id, status: "active" },
+        { user_id: user.id, status: "active", current_period_end: currentPeriodEnd },
         { onConflict: "user_id" },
       );
       if (subError) throw subError;
 
-      return NextResponse.json({ synced: true, status: "active" });
+      return NextResponse.json({ synced: true, status: "active", current_period_end: currentPeriodEnd });
     }
 
     // Se nenhum pagamento aprovado foi encontrado, consulta o status atual

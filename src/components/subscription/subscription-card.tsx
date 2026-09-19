@@ -201,6 +201,25 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         )}
       </div>
 
+      {/* Pro Vigência Banner (MAI-126: dias restantes + vencimento cumulativo) */}
+      {trial?.isActive && (
+        <div className="mt-5 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-sm text-emerald-900 dark:text-emerald-200">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <div>
+              <p className="font-semibold">
+                {trial.proDaysRemaining > 0 && (trial.proEndsAt ?? trial.currentPeriodEnd)
+                  ? `Plano Pro Ativo — ${trial.proDaysRemaining === 1 ? "1 dia restante" : `${trial.proDaysRemaining} dias restantes`} (até ${new Date((trial.proEndsAt ?? trial.currentPeriodEnd) as string).toLocaleDateString("pt-BR", { timeZone: "America/Bahia" })})`
+                  : "Plano Pro Ativo"}
+              </p>
+              <p className="mt-0.5 text-xs opacity-90">
+                Cada pagamento aprovado de R$ 12,90 adiciona 30 dias automaticamente à sua vigência.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Trial Status Banner */}
       {trial && !trial.isActive && (
         <div
