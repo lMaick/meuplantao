@@ -11,21 +11,21 @@
 
 ![Criativo MAI-113](./assets/mai-113-repasses-em-atraso.jpg)
 
-### Especificações da Arte (v2 final — alinhada ao app):
+### Especificações da Arte (v3 final — logo oficial):
 - **Formato:** Imagem quadrada (1080 × 1080 px, proporção 1:1, JPG alta nitidez)
 - **Headline na Arte (aprovada, mantida):** *"Plantão feito não é plantão recebido."*
-- **Paleta oficial do app (src/app/globals.css + DESIGN.md):**
-  - Hero dark cirúrgico: gradiente `#0B1220 → #022C22` (slate-950 → emerald-950, cf. landing-footer emerald-900→slate-900)
-  - Primário CTA: `#059669 → #0D9488` (emerald-600 → teal-600, cf. app-shell/dashboard)
-  - Verde financeiro: `#059669` / fundo `#D1FAE5` / texto `#047857` (badge EM DIA, cf. primitives success)
-  - Coral atraso: `#DC2626` / fundo `#FEE2E2` (badge ATRASADO, cf. destructive)
-  - Fundo: `#F7F9FA` (oklch 0.99 0.005 240, sem branco estourado)
-  - Texto: `#0F172A` (ink) / `#64748B` (muted)
-- **Tipografia fiel ao app:** Headline extrabold tracking apertado (Geist/800), valores em mono tabular (font-mono contábil), badges 13px semibold uppercase em pill rounded-full com ring
-- **Marca d'água:** logo oficial `public/brand/meuplantao-avatar-instagram-1080.png` aplicado sutil no hero (faint circular, ~15% opacidade, canto superior direito, sem poluir headline) + lockup "M+ MeuPlantão / GESTÃO MÉDICA" no topo + crédito "MeuPlantão • controle financeiro de plantões"
-  - Nota: `meuplantao-pulse-mark.svg` / `meuplantao-pulse-logo.svg` citados no feedback não existem no repo — usado o asset oficial disponível (`public/brand/`). Se os SVGs forem adicionados, itero a marca d'água vetorial.
-- **Composição:** Hero dark com headline + 2 cards brancos rounded-2xl border `#E2E8F0` idênticos ao dashboard (barra lateral de status, badge pill, valor mono) + CTA gradiente meuplantao.pro
-- **Arquivo salvo no repositório:** `docs/marketing/assets/mai-113-repasses-em-atraso.jpg` (substituído na v2)
+- **Logos oficiais usados diretamente do repo (PNG transparente HD):**
+  - Topo (nítido sobre dark): `public/brand/meuplantao-logo-oficial-white.png` (1020x270)
+  - Rodapé (nítido sobre branco): `public/brand/meuplantao-logo-oficial-horizontal.png` (1020x270)
+  - Marca d'água: `public/brand/meuplantao-simbolo-oficial.png` (512x512) a ~20% de opacidade no hero (15–25% conforme diretriz)
+- **Paleta oficial do app:**
+  - Hero dark: gradiente `#033B5C → #081C2A` (azul institucional)
+  - Primária: `#008A4B` / `#10B981` (verde esmeralda cirúrgico)
+  - Status: `#EF4444` (atrasado) / esmeralda (em dia)
+  - Fundo: `#F8FAFB` ultra-clean / Texto `#0F172A` / Muted `#64748B`
+- **Tipografia fiel ao app:** Headline extrabold, valores em mono tabular, badges pill rounded-full uppercase
+- **Arquivo salvo no repositório:** `docs/marketing/assets/mai-113-repasses-em-atraso.jpg` (substituído na v3)
+- **Composição:** Hero dark com headline + 2 cards brancos rounded-2xl border `#E2E8F0` idênticos ao dashboard + rodapé branco com logo oficial colorido + meuplantao.pro
 
 ### Variações de Headline (para escolha do Maick):
 - **H1 (usada na arte):** Plantão feito não é plantão recebido.
