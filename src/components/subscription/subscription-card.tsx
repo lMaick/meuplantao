@@ -10,6 +10,7 @@ import {
   ArrowRight,
   Clock,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -25,7 +26,9 @@ interface SubscriptionCardProps {
 export function SubscriptionCard({ className, payment, paymentId }: SubscriptionCardProps) {
   const { trial, isLoading, refresh } = useSubscription();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [feedbackType, setFeedbackType] = useState<"info" | "success" | "error">("info");
 
   useEffect(() => {
     if (payment !== "success" || !paymentId) return;
@@ -33,23 +36,29 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
     let cancelled = false;
     const verifyPayment = async () => {
       setFeedbackMessage("Confirmando seu pagamento com o Mercado Pago...");
+      setFeedbackType("info");
       try {
         const response = await fetch(`/api/mercadopago/verify?payment_id=${encodeURIComponent(paymentId)}`, {
           headers: { Accept: "application/json" },
         });
-        const payload = await response.json() as { activated?: boolean; error?: string };
+        const payload = (await response.json()) as { activated?: boolean; error?: string };
         if (cancelled) return;
         if (!response.ok) throw new Error(payload.error || "Nao foi possivel confirmar o pagamento.");
 
         if (payload.activated) {
           await refresh();
-          if (!cancelled) setFeedbackMessage("Pagamento confirmado. Seu plano Pro já está ativo.");
+          if (!cancelled) {
+            setFeedbackMessage("Pagamento confirmado. Seu plano Pro já está ativo.");
+            setFeedbackType("success");
+          }
         } else {
           setFeedbackMessage("Pagamento recebido e ainda em processamento. Atualizaremos seu plano assim que o Mercado Pago confirmar.");
+          setFeedbackType("info");
         }
       } catch (err) {
         if (!cancelled) {
           setFeedbackMessage(err instanceof Error ? err.message : "Nao foi possivel confirmar o pagamento agora.");
+          setFeedbackType("error");
         }
       }
     };
@@ -66,18 +75,56 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
 
     try {
       const response = await fetch("/api/mercadopago/checkout", { method: "POST", headers: { Accept: "application/json" } });
-      const payload = await response.json() as { init_point?: string; error?: string };
+      const payload = (await response.json()) as { init_point?: string; error?: string };
       if (!response.ok || !payload.init_point) throw new Error(payload.error || "Nao foi possivel iniciar o checkout.");
       window.location.href = payload.init_point;
       return;
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : "Nao foi possivel iniciar o checkout no momento. Tente novamente.";
       setFeedbackMessage(message);
+      setFeedbackType("error");
       setIsProcessing(false);
       return;
     }
 
     setIsProcessing(false);
+  };
+
+  const handleSync = async () => {
+    setIsSyncing(true);
+    setFeedbackMessage("Consultando pagamentos recentes no Mercado Pago...");
+    setFeedbackType("info");
+
+    try {
+      const response = await fetch("/api/mercadopago/sync", {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const payload = (await response.json()) as {
+        synced?: boolean;
+        status?: string;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Não foi possível verificar seu pagamento no momento.");
+      }
+
+      if (payload.synced) {
+        await refresh();
+        setFeedbackMessage("Assinatura sincronizada e ativada com sucesso! Seu plano Pro já está liberado.");
+        setFeedbackType("success");
+      } else {
+        setFeedbackMessage("Nenhum pagamento aprovado foi identificado ainda. Se você pagou via PIX, aguarde alguns instantes e tente novamente.");
+        setFeedbackType("info");
+      }
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "Não foi possível verificar seu pagamento no momento. Tente novamente.";
+      setFeedbackMessage(message);
+      setFeedbackType("error");
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   if (isLoading) {
@@ -141,7 +188,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
                   "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold border",
                   isWarning
                     ? "bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/30"
-                    : "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-500/30"
+                    : "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-500/30",
                 )}
               >
                 <Clock className="size-3.5" />
@@ -163,7 +210,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
               ? "bg-destructive/10 border-destructive/25 text-destructive dark:text-red-300"
               : isWarning
               ? "bg-amber-500/10 border-amber-500/25 text-amber-900 dark:text-amber-200"
-              : "bg-emerald-500/10 border-emerald-500/25 text-emerald-900 dark:text-emerald-200"
+              : "bg-emerald-500/10 border-emerald-500/25 text-emerald-900 dark:text-emerald-200",
           )}
         >
           <div className="flex items-start gap-3">
@@ -173,7 +220,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
               <Clock
                 className={cn(
                   "size-5 shrink-0 mt-0.5",
-                  isWarning ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"
+                  isWarning ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400",
                 )}
               />
             )}
@@ -251,12 +298,12 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         </div>
 
         {/* Action Button & Feedback */}
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap">
           <Button
             onClick={handleSubscribe}
-            disabled={isProcessing || (trial?.isActive ?? false)}
+            disabled={isProcessing || isSyncing || (trial?.isActive ?? false)}
             size="lg"
-            className="w-full sm:w-auto min-h-[44px] bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold shadow-md shadow-emerald-700/20 text-sm gap-2 active:scale-[0.99] transition-all"
+            className="w-full sm:w-auto min-h-[44px] bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold shadow-md shadow-emerald-700/20 text-sm gap-2 active:scale-[0.99] transition-all touch-manipulation cursor-pointer"
           >
             {isProcessing ? (
               <span className="flex items-center gap-2">
@@ -277,6 +324,30 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
             )}
           </Button>
 
+          {/* Sincronizar assinatura ativa */}
+          {!trial?.isActive && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleSync}
+              disabled={isSyncing || isProcessing}
+              size="lg"
+              className="w-full sm:w-auto min-h-[44px] border-border/80 hover:bg-muted/50 text-foreground font-semibold text-xs sm:text-sm gap-2 active:scale-[0.99] transition-all touch-manipulation cursor-pointer"
+            >
+              {isSyncing ? (
+                <span className="flex items-center gap-2">
+                  <RefreshCw className="size-4 animate-spin text-primary" />
+                  Sincronizando...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <RefreshCw className="size-4 text-muted-foreground" />
+                  Já fez o pagamento? Sincronizar assinatura
+                </span>
+              )}
+            </Button>
+          )}
+
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CreditCard className="size-4 text-muted-foreground shrink-0" />
             <span>PIX ou Cartão • Cobrança mensal sem surpresas</span>
@@ -284,7 +355,16 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         </div>
 
         {feedbackMessage && (
-          <div className="mt-4 rounded-xl bg-primary/10 border border-primary/20 p-3 text-xs text-primary font-medium animate-in fade-in duration-200">
+          <div
+            className={cn(
+              "mt-4 rounded-xl border p-3 text-xs font-medium animate-in fade-in duration-200",
+              feedbackType === "success"
+                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-300"
+                : feedbackType === "error"
+                ? "bg-destructive/10 border-destructive/20 text-destructive dark:text-red-300"
+                : "bg-primary/10 border-primary/20 text-primary",
+            )}
+          >
             {feedbackMessage}
           </div>
         )}
