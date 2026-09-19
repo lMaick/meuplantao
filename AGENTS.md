@@ -35,6 +35,13 @@ Regras para qualquer agente de IA trabalhando neste repositório.
 - **NÃO faça merge do próprio PR** — deixe para revisão humana.
 - Ao terminar, escreva um relatório curto: o que foi feito, arquivos tocados, testes rodados, e se algo ficou pendente.
 
+## Skills de IA & Hub Central
+
+O repositório consome o hub central de skills via Git Submodule em `.agents/skills-hub`:
+- **42 Skills Universais**: localizadas em `.agents/skills-hub/skills/<setor>/<skill-nome>/` (frontend, backend, marketing, qa, product, devops).
+- **Configurações Específicas do MeuPlantão**: localizadas em `.agents/skills/` (branding, personas, tom de voz clínico).
+- **Atualização**: para sincronizar com a versão mais recente do hub central, execute `git submodule update --remote --merge`.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know
