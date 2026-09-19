@@ -4,7 +4,12 @@ import { createAuthenticatedClient } from "@/lib/stripe/supabase";
 
 export const runtime = "nodejs";
 
-const PLAN_PRICE = 12.9;
+const periods = new Map([
+  [1, { months: 1, label: "Mensal", price: 12.9, validityDays: 30 }],
+  [3, { months: 3, label: "Trimestral", price: 38.7, validityDays: 90 }],
+  [6, { months: 6, label: "Semestral", price: 69.9, validityDays: 180 }],
+  [12, { months: 12, label: "Anual", price: 129.9, validityDays: 365 }],
+]);
 
 export async function POST(request: NextRequest) {
   const response = NextResponse.json({ error: "Nao foi possivel iniciar o checkout" }, { status: 500 });
@@ -30,14 +35,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Ja existe uma assinatura para este usuario" }, { status: 409 });
     }
 
+    let months = 1;
+    let requestedPeriod = false;
+    try {
+      const body = (await request.json()) as { months?: number };
+      requestedPeriod = body.months !== undefined;
+      months = body.months ?? 1;
+    } catch {
+      months = 1;
+    }
+    const period = periods.get(months);
+    if (!period) return NextResponse.json({ error: "Periodo de assinatura invalido" }, { status: 400 });
+
     const origin = getApplicationOrigin(request.url);
     const isHttps = origin.startsWith("https://");
     const mercadoPagoResponse = await fetch(`${getMercadoPagoApiUrl()}/checkout/preferences`, {
       method: "POST",
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        items: [{ id: "meuplantao-pro", title: "MeuPlantão Pro", description: "Assinatura mensal do MeuPlantão Pro", quantity: 1, currency_id: "BRL", unit_price: PLAN_PRICE }],
-        external_reference: user.id,
+        items: [{ id: `meuplantao-pro-${period.months}`, title: `MeuPlantão Pro — ${period.label}`, description: `Assinatura do MeuPlantão Pro por ${period.validityDays} dias`, quantity: 1, currency_id: "BRL", unit_price: period.price }],
+        external_reference: requestedPeriod ? `${user.id}#${period.months}` : user.id,
+        metadata: { user_id: user.id, months: period.months },
         payer: user.email ? { email: user.email } : undefined,
         back_urls: {
           success: `${origin}/configuracoes?payment=success`,

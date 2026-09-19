@@ -5,6 +5,14 @@ import { calculateCumulativePeriodEnd } from "@/lib/subscription/trial";
 
 export const runtime = "nodejs";
 
+const validityDaysByMonths = new Map([[1, 30], [3, 90], [6, 180], [12, 365]]);
+
+function addValidity(start: Date, days: number): Date {
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + days);
+  return end;
+}
+
 interface MercadoPagoSearchResult {
   results?: Array<{
     id?: string | number;
@@ -13,7 +21,7 @@ interface MercadoPagoSearchResult {
     date_created?: string;
     date_approved?: string;
     transaction_amount?: number;
-    metadata?: { user_id?: string; userId?: string };
+    metadata?: { user_id?: string; userId?: string; months?: number };
   }>;
 }
 
@@ -43,21 +51,52 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const searchData = (await paymentResponse.json()) as MercadoPagoSearchResult;
-    const userPayments = (searchData.results || []).filter((p) => {
+    const matchesUser = (p: NonNullable<MercadoPagoSearchResult["results"]>[number]) => {
       if (p.status !== "approved") return false;
+      const [paymentUserId] = (p.external_reference || "").split("#");
       const ref = p.external_reference || p.metadata?.user_id || p.metadata?.userId;
-      // Aceita pagamentos sem referência quando a busca já filtrou por external_reference,
-      // e pagamentos cuja referência/metadata pertence ao usuário autenticado.
-      return !ref || ref === user.id;
-    });
+      return !ref || ref === user.id || paymentUserId === user.id || p.metadata?.user_id === user.id || p.metadata?.userId === user.id;
+    };
 
-    // MAI-126: vigência cumulativa — cada pagamento aprovado de R$ 12,90 = +30 dias.
-    const currentPeriodEnd = calculateCumulativePeriodEnd(userPayments, new Date());
+    let searchData = (await paymentResponse.json()) as MercadoPagoSearchResult;
+    let userPayments = (searchData.results || []).filter(matchesUser);
 
-    if (currentPeriodEnd) {
-      const { error: subError } = await createAdminClient().from("subscriptions").upsert(
-        { user_id: user.id, status: "active", current_period_end: currentPeriodEnd },
+    if (userPayments.length === 0) {
+      const packageSearchResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/search?sort=date_created&criteria=desc&limit=50`, {
+        headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
+      });
+      if (packageSearchResponse.ok) {
+        searchData = (await packageSearchResponse.json()) as MercadoPagoSearchResult;
+        userPayments = (searchData.results || []).filter(matchesUser);
+      }
+    }
+
+    if (userPayments.length > 0) {
+      const latestPayment = userPayments[0];
+      const months = Number(latestPayment.metadata?.months || latestPayment.external_reference?.split("#")[1] || 1);
+      const isMultiPeriodPayment = Boolean(latestPayment.metadata?.months || latestPayment.external_reference?.includes("#"));
+      const admin = createAdminClient();
+
+      let currentPeriodEnd: string | null = null;
+      if (isMultiPeriodPayment) {
+        const validityDays = validityDaysByMonths.get(months) ?? validityDaysByMonths.get(1)!;
+        const subscriptionTable = admin.from("subscriptions");
+        const { data: currentSubscription } = await subscriptionTable.select("current_period_end").eq("user_id", user.id).maybeSingle();
+        const currentEnd = currentSubscription?.current_period_end ? new Date(currentSubscription.current_period_end) : new Date();
+        const start = currentEnd > new Date() ? currentEnd : new Date();
+        currentPeriodEnd = addValidity(start, validityDays).toISOString();
+      } else {
+        currentPeriodEnd = calculateCumulativePeriodEnd(userPayments, new Date());
+      }
+
+      const subscriptionPayload = {
+        user_id: user.id,
+        status: "active" as const,
+        ...(currentPeriodEnd ? { current_period_end: currentPeriodEnd } : {}),
+      };
+
+      const { error: subError } = await admin.from("subscriptions").upsert(
+        subscriptionPayload,
         { onConflict: "user_id" },
       );
       if (subError) throw subError;
