@@ -87,7 +87,8 @@ test("non-approved payment is reported without changing the subscription", async
 test("subscription hook reads the RLS-protected row and subscribes to changes", () => {
   const source = fs.readFileSync(path.join(ROOT, "src/lib/subscription/use-subscription.ts"), "utf8");
   assert.match(source, /from\("subscriptions"\)/);
-  assert.match(source, /select\("status"\)/);
+  assert.match(source, /select\(.*status.*\)/);
+  assert.match(source, /current_period_end/);
   assert.match(source, /eq\("user_id", data\.user\.id\)/);
   assert.match(source, /postgres_changes/);
   assert.match(source, /filter: `user_id=eq\.\$\{userId\}`/);

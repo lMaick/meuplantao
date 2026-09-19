@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
 import { createAdminClient } from "@/lib/stripe/supabase";
+import { calculateCumulativePeriodEnd, DAYS_PER_PRO_PAYMENT, MS_PER_DAY } from "@/lib/subscription/trial";
 
 export const runtime = "nodejs";
 
@@ -114,6 +115,9 @@ async function handleWebhook(request: Request, rawBody: string) {
     const payment = (await paymentResponse.json()) as {
       status?: string;
       external_reference?: string;
+      date_created?: string;
+      date_approved?: string;
+      transaction_amount?: number;
       metadata?: { user_id?: string; userId?: string };
     };
 
@@ -126,13 +130,55 @@ async function handleWebhook(request: Request, rawBody: string) {
       return Response.json({ received: true, ignored: true, error: "Pagamento sem usuario valido associado" }, { status: 200 });
     }
 
+    // MAI-126: vigência cumulativa — contabiliza TODOS os pagamentos aprovados
+    // do usuário (30 dias por pagamento). Busca o histórico e deriva o
+    // current_period_end de forma idempotente; em falha da busca, aplica
+    // +30 dias a partir do pagamento atual como fallback seguro.
+    let currentPeriodEnd: string | null = null;
+    try {
+      const searchResponse = await fetch(
+        `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(userId)}&sort=date_created&criteria=desc&limit=50`,
+        { headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` } },
+      );
+      if (searchResponse.ok) {
+        const searchData = (await searchResponse.json()) as {
+          results?: Array<{
+            status?: string;
+            date_created?: string;
+            date_approved?: string;
+            transaction_amount?: number;
+            external_reference?: string;
+            metadata?: { user_id?: string; userId?: string };
+          }>;
+        };
+        const history = (searchData.results || []).filter((p) => p.status === "approved");
+        // Garante que o pagamento que originou o webhook participe do cálculo
+        // mesmo quando a busca ainda não o indexou (eventual consistency).
+        const seen = history.some(
+          (p) =>
+            (p.date_created ?? p.date_approved) ===
+            (payment.date_created ?? payment.date_approved),
+        );
+        const pool = seen ? history : [...history, payment];
+        currentPeriodEnd = calculateCumulativePeriodEnd(pool, new Date());
+      }
+    } catch {
+      currentPeriodEnd = null;
+    }
+    if (!currentPeriodEnd) {
+      const anchor = payment.date_approved ?? payment.date_created ?? new Date().toISOString();
+      const anchorTime = new Date(anchor).getTime();
+      const base = Number.isNaN(anchorTime) ? Date.now() : Math.max(anchorTime, Date.now());
+      currentPeriodEnd = new Date(base + DAYS_PER_PRO_PAYMENT * MS_PER_DAY).toISOString();
+    }
+
     const { error } = await createAdminClient().from("subscriptions").upsert(
-      { user_id: userId, status: "active" },
+      { user_id: userId, status: "active", current_period_end: currentPeriodEnd },
       { onConflict: "user_id" },
     );
     if (error) throw error;
 
-    return Response.json({ received: true, processed: true }, { status: 200 });
+    return Response.json({ received: true, processed: true, current_period_end: currentPeriodEnd }, { status: 200 });
   } catch (error) {
     console.error("Mercado Pago webhook processing error", error instanceof Error ? error.message : "unknown");
     return Response.json({ error: "Nao foi possivel processar o evento Mercado Pago" }, { status: 500 });

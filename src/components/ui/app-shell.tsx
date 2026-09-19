@@ -19,12 +19,15 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { LogoutButton } from "@/lib/auth/logout-button";
 import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
-import { TrialBadge, TrialBadgeMobile } from "@/components/subscription";
+import { TrialBadge, TrialBadgeMobile, PaywallModal } from "@/components/subscription";
+import { SubscriptionProvider, useSubscription, canCreateShift } from "@/lib/subscription";
 
 const primary = [
   { href: "/dashboard", label: "Início", short: "Início", icon: House },
@@ -89,10 +92,50 @@ function BrandLogo({
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <SubscriptionProvider>
+      <Suspense fallback={<>{children}</>}>
+        <AppShellInner>{children}</AppShellInner>
+      </Suspense>
+    </SubscriptionProvider>
+  );
+}
+
+function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { trial } = useSubscription();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [paywallOpen, setPaywallOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
   useFocusTrap(drawerOpen, drawerRef);
+
+  const blocked = trial ? !canCreateShift(trial) : false;
+
+  // MAI-126: intercepta a rota /calendario?novo=1 quando o trial expirou sem Pro.
+  useEffect(() => {
+    if (!trial) return;
+    if (pathname === "/calendario" && searchParams.get("novo") === "1" && !canCreateShift(trial)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- abre o paywall em resposta à navegação externa (?novo=1)
+      setPaywallOpen(true);
+    }
+  }, [pathname, searchParams, trial]);
+
+  const handleNewShift = (e: { preventDefault: () => void }) => {
+    if (blocked) {
+      e.preventDefault();
+      setPaywallOpen(true);
+    }
+  };
+
+  const handleNewShiftButton = () => {
+    if (blocked) {
+      setPaywallOpen(true);
+      return;
+    }
+    router.push("/calendario?novo=1");
+  };
 
   // Close drawer on Escape key and prevent background scroll when open
   useEffect(() => {
@@ -135,6 +178,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         <nav className="flex flex-1 flex-col gap-1.5" aria-label="Navegação principal">
           <Link
             href="/calendario?novo=1"
+            onClick={handleNewShift}
+            aria-label={blocked ? "Novo plantão (assinatura necessária)" : "Cadastrar novo plantão"}
             className="mb-4 flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-700/20 transition-all hover:from-emerald-500 hover:to-teal-500 hover:shadow-lg focus-visible:outline-ring active:scale-[0.98]"
           >
             <Plus className="size-4 stroke-[2.5]" />
@@ -318,7 +363,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         {/* 5th Navigation Item: Novo Plantão Quick Action */}
         <Link
           href="/calendario?novo=1"
-          aria-label="Cadastrar novo plantão"
+          onClick={handleNewShift}
+          aria-label={blocked ? "Novo plantão (assinatura necessária)" : "Cadastrar novo plantão"}
           className="group flex h-full min-h-[44px] w-full flex-col items-center justify-center select-none py-1 px-0.5 text-center touch-manipulation transition-colors"
         >
           <span className="grid size-7 place-items-center rounded-full bg-gradient-to-br from-emerald-600 to-teal-700 text-white shadow-md shadow-emerald-500/25 transition-transform group-active:scale-90">
@@ -329,6 +375,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           </span>
         </Link>
       </nav>
+      {/* MAI-126: botão acessível alternativo + Paywall global reativo */}
+      <button
+        type="button"
+        onClick={handleNewShiftButton}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+      <PaywallModal open={paywallOpen} onClose={() => setPaywallOpen(false)} />
     </div>
   );
 }
