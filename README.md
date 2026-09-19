@@ -16,7 +16,33 @@ cp .env.example .env.local   # preencha as credenciais do Supabase
 npm run dev
 ```
 
-Veja `PRODUCT.md` para a visão de produto e `AGENTS.md` para as regras de desenvolvimento.
+Veja `PRODUCT.md` para a visão de produto, `AGENTS.md` para as regras e contratos canônicos de desenvolvimento, e `CLAUDE.md` / `GEMINI.md` para as diretrizes específicas de agentes.
+
+## Regras Permanentes de Engenharia & Negócio
+
+Todo desenvolvimento neste repositório (humano ou por agentes de IA de qualquer modelo) segue obrigatoriamente três pilares contratuais:
+
+1. **Ciclo de Tarefas, Issues e Deploys:**
+   - **Issues no GitHub Obrigatórias:** Crie uma Issue para toda tarefa (Correção/Bugfix, Melhoria/Enhancement ou Nova Função/Feature) antes do início do código.
+   - **Branches por Tarefa:** Todo trabalho é feito em branch dedicada baseada na Issue (`feat/issue-X`, `fix/issue-X`).
+   - **Deploys via PR:** Todo deploy em produção é gerenciado exclusivamente via Pull Request direcionado para `main`.
+   - **Vínculo Issue ↔ PR:** A descrição do PR deve obrigatoriamente mencionar e encerrar a Issue (`Fixes #X`, `Closes #X`, `Resolves #X`).
+   - **Revisão Humana:** Agentes nunca realizam merge em `main` nem deploys diretos.
+
+2. **Padrão de Interface & Motion Principles (`kylezantos/design-motion-principles`):**
+   - **Skeleton Screens Obrigatórios:** Toda tela, card, tabela ou painel métrico deve exibir skeleton proporcional no carregamento (zero tela em branco ou layout shift).
+   - **Lazy Loading Universal:** Rotas secundárias, modais complexos, gráficos pesados e imagens (`React.lazy`, `next/dynamic`, `loading="lazy"`).
+   - **Smooth Animation em Todos os Elementos:**
+     - *Entrada:* 180ms a 300ms com springs suaves e easings naturais.
+     - *Saída:* < 200ms, ágil e limpa.
+     - *Carregamento:* Shimmer/pulso sutil e contínuo.
+     - *Progresso:* Interpolação suave em barras e valores numéricos sem saltos secos.
+   - **Ergonomia e Acessibilidade:** Touch targets mínimos de 44x44px, contraste mínimo 4.5:1 (WCAG AA) e suporte estrito a `prefers-reduced-motion: reduce`.
+
+3. **Observabilidade, Qualidade de Código & Pirâmide de Testes:**
+   - **Observabilidade:** Sentry (erros client e server), Datadog / NewRelic / OpenTelemetry (APM, distributed tracing, métricas de runtime) e logs estruturados.
+   - **Qualidade & Lint:** Arch-contract (respeito estrito à fronteira de camadas com DAL em `src/lib/<modulo>/`), Biome, Commitlint (Conventional Commits), Knip e Stryker.
+   - **Testes:** Pirâmide completa com testes unitários/integração (regras financeiras e RPCs atômicos), Playwright (E2E mobile/desktop) e Codecov no CI.
 
 ### Configuração do Supabase
 

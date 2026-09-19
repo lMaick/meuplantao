@@ -7,6 +7,7 @@ import { RoiCalculator } from "@/components/landing/roi-calculator";
 import { FeaturesGrid } from "@/components/landing/features-grid";
 import { FaqSection } from "@/components/landing/faq-section";
 import { LandingFooter } from "@/components/landing/landing-footer";
+import { PricingSection } from "@/components/landing/pricing-section";
 
 export const metadata: Metadata = {
   title: "MeuPlantão | Controle financeiro inteligente para quem vive de plantão",
@@ -23,6 +24,7 @@ export default function HomePage() {
         <InteractivePreview />
         <PainVsSolution />
         <RoiCalculator />
+        <PricingSection />
         <FeaturesGrid />
         <FaqSection />
       </main>

@@ -61,3 +61,24 @@ MeuPlantão is a Next.js 16 (App Router) + React 19 web application tailored for
 - `src/app/calendario/`: Calendar route (`page.tsx`, `plantao/[id]/page.tsx`)
 - `src/lib/<modulo>/`: Pure DAL functions and domain logic (UNCHANGED)
 - `tests/`: Automated test suites (`node --experimental-strip-types --test tests/*.test.mjs`)
+
+## Permanent Business & Engineering Rules (Governança Obrigatória)
+
+### 1. Issues & PR-Driven Deploys
+- Toda tarefa (Correção, Melhoria ou Nova Função) DEVE possuir uma Issue no GitHub antes do início da implementação.
+- Deploys são 100% governados por Pull Requests direcionados para `main`.
+- Toda descrição de PR DEVE obrigatoriamente referenciar e encerrar a Issue correspondente (`Fixes #X`).
+- Nenhum merge em `main` é feito por agentes; aprovação humana obrigatória.
+
+### 2. UI & Motion Principles (kylezantos/design-motion-principles)
+- Skill instalada em `.agents/skills/design-motion-principles/`.
+- Skeletons proporcionais obrigatórios em todos os carregamentos assíncronos.
+- Lazy loading em rotas, modais pesados, gráficos e imagens.
+- Smooth animations: Entrada (<300ms), Saída (<200ms), Carregamento contínuo suave, Progresso fluido em interpolações numéricas e barras.
+- Suporte a `prefers-reduced-motion` e touch targets >= 44px.
+
+### 3. Observabilidade, Qualidade e Pirâmide de Testes
+- **Observabilidade:** Sentry, OpenTelemetry / Datadog / NewRelic e logs estruturados em operações críticas.
+- **Qualidade de Código:** Arch-contract (respeito estrito ao DAL, componentes nunca fazem queries SQL soltas), Biome, Commitlint, Knip, Stryker.
+- **Testes:** Pirâmide completa com testes unitários e de integração (regras financeiras atômicas), Playwright (E2E mobile/desktop) e Codecov (cobertura monitorada em CI).
+

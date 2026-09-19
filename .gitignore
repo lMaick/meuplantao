@@ -31,3 +31,17 @@ yarn-error.log*
 
 # User local documents
 *.pdf
+
+# Local AI Tools & Worktrees
+.codex/
+.hermes/
+.impeccable/
+.maestri/
+.worktrees/
+
+# Ephemeral Agent Subtasks & Swarm Logs (Preserves rules and skills)
+.agents/*
+!.agents/rules/
+!.agents/rules/**
+!.agents/skills/
+!.agents/skills/**

@@ -22,6 +22,21 @@ Qualquer skill de marketing deve ler este arquivo antes de gerar conteúdo.
 - **Diferencial:** Status financeiro derivado dos dados reais (sem campo manual), controle de pagamentos parciais, alertas de atraso, dashboard claro.
 - **Estágio:** Produto funcional, em fase de crescimento inicial.
 
+## Contas Oficiais Registradas
+
+- **Domínio Oficial:** `meuplantao.pro` (Web App: `https://meuplantao.pro` / `https://www.meuplantao.pro`)
+- **E-mail Institucional:** `contato@meuplantao.pro` (ativo no Zoho Mail, com SPF/DKIM configurados)
+- **E-mail de Suporte Administrativo:** `meuplantao@zohomail.com`
+- **Instagram Oficial:** `@meuplantao.pro` (MeuPlantão.App)
+- **Facebook Page:** MeuPlantão
+- **Ferramenta de Automação & Agendamento:** Postiz (`http://localhost:4007`, CLI em `ops/marketing/postiz-client.mjs`)
+- **Threads:** `@meuplantao.pro`
+- **TikTok:** *(pendente)*
+- **LinkedIn:** *(pendente)*
+- **YouTube:** *(pendente)*
+- **X (Twitter):** *(pendente)*
+
+
 ## Persona / Público-Alvo
 
 - **Quem:** Profissionais de saúde que fazem plantões em múltiplos locais (hospitais, clínicas, UPAs, unidades de saúde).
