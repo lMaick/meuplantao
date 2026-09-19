@@ -36,14 +36,14 @@ export function DashboardAlerts({
       <section
         role="region"
         aria-label="Alertas de repasses financeiros em atraso"
-        className="rounded-2xl border border-destructive/30 bg-destructive/10 p-5 shadow-sm text-foreground transition-all"
+        className="rounded-2xl border border-destructive/30 bg-destructive/10 p-5 shadow-sm text-foreground transition-all overflow-x-hidden"
       >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3.5">
+        <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-1 items-start gap-3.5">
             <div className="rounded-xl bg-destructive/15 p-2.5 text-destructive shrink-0">
               <AlertTriangle className="size-5" aria-hidden="true" />
             </div>
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="destructive" dot>
                   Atenção · Repasses em atraso
@@ -54,7 +54,7 @@ export function DashboardAlerts({
                   </Badge>
                 )}
               </div>
-              <h2 className="text-xl font-bold tracking-tight text-destructive">
+              <h2 className="text-xl font-bold tracking-tight text-destructive break-words">
                 Você tem {money.format(summary.overdueAmount)} em atraso
               </h2>
               <p className="text-sm font-medium text-destructive/90">
@@ -70,7 +70,7 @@ export function DashboardAlerts({
             </div>
           </div>
 
-          <div className="grid w-full gap-2 pt-2 sm:w-auto sm:shrink-0 sm:pt-0">
+          <div className="flex w-full min-w-0 flex-col gap-2 pt-2 sm:mx-auto sm:max-w-md lg:mx-0 lg:w-auto lg:min-w-[220px] lg:max-w-[280px] lg:shrink-0 lg:pt-0">
             <Link
               href={overdueRegisterHref}
               className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-destructive px-5 py-2.5 text-sm font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 focus-visible:ring-3 focus-visible:ring-destructive/50 transition-colors"
@@ -81,7 +81,7 @@ export function DashboardAlerts({
             <p className="text-center text-xs text-muted-foreground">Começar pelo maior atraso</p>
             <Link
               href={overdueHref}
-              className="inline-flex min-h-[44px] w-full items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-destructive hover:bg-destructive/10 focus-visible:ring-3 focus-visible:ring-destructive/40 transition-colors sm:w-auto"
+              className="inline-flex min-h-[44px] w-full items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-destructive hover:bg-destructive/10 focus-visible:ring-3 focus-visible:ring-destructive/40 transition-colors lg:w-auto"
             >
               Ver todos os atrasados
             </Link>
@@ -96,20 +96,20 @@ export function DashboardAlerts({
     <section
       role="region"
       aria-label="Alerta preventivo de repasses a vencer nos próximos 7 dias"
-      className="rounded-2xl border border-warning/30 bg-warning/10 p-5 shadow-sm text-foreground transition-all"
+        className="rounded-2xl border border-warning/30 bg-warning/10 p-5 shadow-sm text-foreground transition-all overflow-x-hidden"
     >
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3.5">
+      <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 flex-1 items-start gap-3.5">
           <div className="rounded-xl bg-warning/20 p-2.5 text-warning-foreground shrink-0">
             <CalendarClock className="size-5" aria-hidden="true" />
           </div>
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge variant="warning" dot>
                 Preventivo · Próximos 7 dias
               </Badge>
             </div>
-            <h2 className="text-xl font-bold tracking-tight text-warning-foreground">
+            <h2 className="text-xl font-bold tracking-tight text-warning-foreground break-words">
               {money.format(summary.upcomingAmount)} a receber nos próximos 7 dias
             </h2>
             <p className="text-sm font-medium text-warning-foreground/90">
@@ -128,10 +128,10 @@ export function DashboardAlerts({
           </div>
         </div>
 
-        <div className="pt-2 sm:pt-0 shrink-0">
+        <div className="w-full min-w-0 pt-2 sm:mx-auto sm:max-w-md lg:mx-0 lg:w-auto lg:min-w-[220px] lg:max-w-[280px] lg:shrink-0 lg:pt-0">
           <Link
             href={upcomingHref}
-            className="inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-warning px-5 py-2.5 text-sm font-semibold text-warning-foreground shadow-sm hover:bg-warning/90 focus-visible:ring-3 focus-visible:ring-warning/50 transition-colors"
+            className="inline-flex min-h-[44px] w-full lg:w-auto items-center justify-center gap-2 rounded-xl bg-warning px-5 py-2.5 text-sm font-semibold text-warning-foreground shadow-sm hover:bg-warning/90 focus-visible:ring-3 focus-visible:ring-warning/50 transition-colors"
           >
             Ver agenda
             <ArrowRight className="size-4" aria-hidden="true" />

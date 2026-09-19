@@ -468,15 +468,15 @@ describe("Empirical Stress-Testing: Skeletons Layout Shift & DOM Integrity", () 
       "DashboardSkeleton reproduces exact container padding"
     );
 
-    // Max width wrapper
+    // Max width wrapper (MAI-115: single responsive div, fluid to ultrawide)
     assert.ok(
-      markup.includes("mx-auto max-w-6xl space-y-8"),
-      "DashboardSkeleton reproduces exact max-w-6xl space-y-8 wrapper"
+      markup.includes("mx-auto max-w-7xl space-y-8"),
+      "DashboardSkeleton reproduces exact max-w-7xl space-y-8 wrapper"
     );
 
-    // 4 KPI cards grid match
+    // 4 KPI cards grid match (MAI-115: xl breakpoint avoids squeeze at 1024px with 256px sidebar)
     assert.ok(
-      markup.includes("grid gap-4 sm:grid-cols-2 lg:grid-cols-4"),
+      markup.includes("sm:grid-cols-2 xl:grid-cols-4"),
       "DashboardSkeleton reproduces 4-col KPI grid"
     );
 

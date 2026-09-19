@@ -176,7 +176,7 @@ export function Dashboard() {
 
   if (error) {
     return (
-      <main className="mx-auto flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-foreground">
+      <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col items-center justify-center gap-4 bg-background px-4 py-6 text-foreground sm:px-8">
         <div className="rounded-full bg-destructive/10 p-3 text-destructive">
           <CircleAlert className="size-6" />
         </div>
@@ -186,7 +186,7 @@ export function Dashboard() {
         <Button variant="outline" onClick={() => void load()}>
           Tentar novamente
         </Button>
-      </main>
+      </div>
     );
   }
 
@@ -198,8 +198,9 @@ export function Dashboard() {
   ] as const;
 
   return (
-    <main className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-8">
-      <div className="mx-auto max-w-6xl space-y-8">
+    // MAI-115: wrapper <div> fluido (sem <main> duplicado — o AppShell já provê o
+    // <main> global). max-w-7xl adapta-se com elegância a monitores grandes/ultrawide.
+    <div className="w-full min-w-0 max-w-7xl mx-auto px-4 py-6 text-foreground sm:px-8 space-y-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
@@ -278,7 +279,7 @@ export function Dashboard() {
 
         <DashboardAlerts summary={alertsSummary} placeId={placeId} />
 
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {kpis.map(([label, value, Icon]) => {
             const isOverdueKpi = label === "Em atraso" && Number(value) > 0;
             const isReceivedKpi = label.startsWith("Recebido");
@@ -288,13 +289,13 @@ export function Dashboard() {
                 key={label}
                 label={label}
                 value={
-                  <span className="flex items-center justify-between">
-                    <span className={cn(isOverdueKpi ? "text-destructive" : "text-foreground")}>
+                  <span className="flex min-w-0 items-center justify-between gap-2">
+                    <span className={cn("min-w-0 break-words", isOverdueKpi ? "text-destructive" : "text-foreground")}>
                       {label === "Próximos 7 dias" ? value : money.format(Number(value))}
                     </span>
                     <span
                       className={cn(
-                        "rounded-xl p-2 shadow-xs",
+                        "rounded-xl p-2 shadow-xs shrink-0",
                         isOverdueKpi
                           ? "bg-destructive/10 text-destructive ring-1 ring-destructive/20"
                           : isReceivedKpi
@@ -313,7 +314,7 @@ export function Dashboard() {
           })}
         </section>
 
-        <section className="grid gap-4 lg:grid-cols-2">
+        <section className="grid min-w-0 gap-4 lg:grid-cols-2">
           <Card className="p-4 shadow-xs sm:p-5">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -473,7 +474,6 @@ export function Dashboard() {
             )}
           </Card>
         </section>
-      </div>
-    </main>
+    </div>
   );
 }

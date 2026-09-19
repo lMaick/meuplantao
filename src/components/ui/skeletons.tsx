@@ -47,7 +47,7 @@ export function DashboardSkeleton() {
       aria-label="Carregando resumo financeiro..."
       className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-8"
     >
-      <div className="mx-auto max-w-6xl space-y-8">
+      <div className="mx-auto max-w-7xl space-y-8">
         {/* Header */}
         <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-2">
@@ -90,7 +90,7 @@ export function DashboardSkeleton() {
         </div>
 
         {/* KPI metrics cards (4 grid items) */}
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="rounded-2xl border border-border bg-card p-5 shadow-sm space-y-4">
               <div className="flex items-center justify-between">

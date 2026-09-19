@@ -551,9 +551,20 @@ describe("Tier 5 [AppShell]: Active Route Highlighting, Safe Areas, Drawer & Tap
     );
 
     // Main container bottom clearance to avoid bottom nav collision
+    // MAI-115: sidebar offset lives as lg:pl-64 on the root container; main has no margin offset
     assert.ok(
-      appShellSource.includes("pb-28 lg:ml-64 lg:pb-8"),
+      appShellSource.includes("lg:pl-64"),
+      "Root container must offset the fixed sidebar via lg:pl-64 (no margin + w-full overflow)"
+    );
+    assert.ok(
+      appShellSource.includes("pb-28 lg:pb-8"),
       "Main container must define pb-28 to prevent fixed bottom bar overlap"
+    );
+    const mainClassAttr = appShellSource.match(/<main[^>]*className=["']([^"']+)["']/);
+    assert.ok(mainClassAttr, "Main container must exist in AppShell");
+    assert.ok(
+      !mainClassAttr[1].split(/\s+/).includes("lg:ml-64"),
+      "Main container must not use lg:ml-64 with w-full (100vw + 256px right-side cut)"
     );
   });
 
