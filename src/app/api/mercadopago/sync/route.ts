@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     }
 
     const searchUrl = `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=50`;
-    let paymentResponse = await fetch(searchUrl, {
+    const paymentResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
     });
 
