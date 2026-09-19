@@ -78,6 +78,13 @@ function loadTsxModule(relativeFilePath) {
       if (id === "@/components/theme/theme-toggle") {
         return { ThemeToggle: () => null };
       }
+      if (id === "@/components/subscription" || id === "@/components/subscription/trial-badge") {
+        return {
+          TrialBadge: () => null,
+          TrialBadgeMobile: () => null,
+          SubscriptionCard: () => null,
+        };
+      }
       if (id === "@/components/ui/primitives" || id === "./primitives") {
         return loadTsxModule("src/components/ui/primitives.tsx");
       }
