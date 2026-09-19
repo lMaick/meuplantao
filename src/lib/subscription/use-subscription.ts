@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect -- initial data load is asynchronous */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { calculateTrial } from "./trial";
 import type { TrialInfo } from "./types";
@@ -22,6 +22,13 @@ export function useSubscription(): SubscriptionState {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  // Identificador único por instância do hook: evita colisão de canais
+  // Realtime quando TrialBadge e TrialBadgeMobile montam simultaneamente
+  // no AppShell (Supabase retorna a mesma instância de canal já assinado
+  // e lança "cannot add 'postgres_changes' callbacks ... after 'subscribe()'").
+  // useId() é puro (lint-safe) e estável por instância.
+  const rawInstanceId = useId().replace(/:/g, "-");
+  const channelName = userId ? `subscription-status:${userId}:${rawInstanceId}` : null;
 
   const fetchSubscription = useCallback(async () => {
     setIsLoading(true);
@@ -61,27 +68,45 @@ export function useSubscription(): SubscriptionState {
   }, [fetchSubscription]);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !channelName) return;
 
     const supabase = createClient();
-    const channel = supabase
-      .channel(`subscription-status:${userId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "subscriptions",
-          filter: `user_id=eq.${userId}`,
-        },
-        () => void fetchSubscription(),
-      )
-      .subscribe();
 
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [fetchSubscription, userId]);
+    try {
+      const channel = supabase
+        .channel(channelName)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "subscriptions",
+            filter: `user_id=eq.${userId}`,
+          },
+          () => void fetchSubscription(),
+        )
+        .subscribe();
+
+      return () => {
+        try {
+          void supabase.removeChannel(channel);
+        } catch (cleanupError) {
+          console.warn(
+            "[useSubscription] Falha ao remover canal Realtime (degradação graciosa):",
+            cleanupError,
+          );
+        }
+      };
+    } catch (realtimeError) {
+      // Degradação graciosa: falha no Realtime nunca deve derrubar a
+      // aplicação nem acionar o Global Error Boundary (React 19).
+      console.warn(
+        "[useSubscription] Realtime indisponível, seguindo sem assinatura (degradação graciosa):",
+        realtimeError,
+      );
+      return;
+    }
+  }, [channelName, fetchSubscription, userId]);
 
   return {
     trial,
