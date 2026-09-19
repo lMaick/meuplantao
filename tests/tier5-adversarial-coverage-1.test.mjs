@@ -75,6 +75,9 @@ function loadTsxModule(relativeFilePath) {
       if (id === "@/components/ui/button" || id === "./button") {
         return loadTsxModule("src/components/ui/button.tsx");
       }
+      if (id === "@/components/theme/theme-toggle") {
+        return { ThemeToggle: () => null };
+      }
       if (id === "@/components/ui/primitives" || id === "./primitives") {
         return loadTsxModule("src/components/ui/primitives.tsx");
       }

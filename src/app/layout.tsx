@@ -3,6 +3,19 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppShell } from "@/components/ui/app-shell";
+import { ThemeProvider } from "@/components/theme/theme-provider";
+
+const themeScript = `(() => {
+  try {
+    const stored = localStorage.getItem("meuplantao:theme");
+    const theme = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+    const resolved = theme === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : theme;
+    document.documentElement.classList.toggle("dark", resolved === "dark");
+    document.documentElement.style.colorScheme = resolved;
+  } catch {}
+})();`;
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -24,8 +37,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#ffffff",
-  colorScheme: "light",
+  themeColor: "#f7faf9",
+  colorScheme: "light dark",
   viewportFit: "cover",
 };
 
@@ -33,9 +46,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="pt-BR"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col"><AppShell>{children}</AppShell></body>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
+      <body className="min-h-full flex flex-col">
+        <ThemeProvider>
+          <AppShell>{children}</AppShell>
+        </ThemeProvider>
+      </body>
     </html>
   );
 }

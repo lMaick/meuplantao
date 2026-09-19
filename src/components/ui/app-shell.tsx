@@ -22,6 +22,7 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { LogoutButton } from "@/lib/auth/logout-button";
 import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
+import { ThemeToggle } from "@/components/theme/theme-toggle";
 
 const primary = [
   { href: "/dashboard", label: "Início", short: "Início", icon: House },
@@ -124,7 +125,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               {label}
             </Link>
           ))}
-          <div className="mt-auto border-t border-border/80 pt-4">
+          <div className="mt-auto space-y-4 border-t border-border/80 pt-4">
+            <ThemeToggle />
             <LogoutButton />
           </div>
         </nav>
@@ -144,7 +146,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="size-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
           </span>
         </Link>
-        <Button
+        <div className="flex items-center gap-1">
+          <ThemeToggle compact />
+          <Button
           size="icon"
           variant="ghost"
           aria-label="Abrir menu de opções"
@@ -152,7 +156,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           onClick={() => setDrawerOpen(true)}
         >
           <Menu className="size-6" />
-        </Button>
+          </Button>
+        </div>
       </header>
 
       {/* Mobile Slide-Out Sheet Drawer (z-50) */}
@@ -210,7 +215,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </Link>
               ))}
 
-              <div className="mt-auto border-t border-border/80 pt-4">
+              <div className="mt-auto space-y-4 border-t border-border/80 pt-4">
+                <ThemeToggle />
                 <div className="flex items-center gap-3 px-2 py-1 text-sm text-muted-foreground">
                   <LogOut className="size-5 shrink-0" />
                   <div className="flex-1 [&_button]:min-h-[44px] [&_button]:w-full [&_button]:justify-center">
