@@ -6,6 +6,10 @@ import { createClient } from "@/lib/supabase/client";
 import { calculateTrial } from "./trial";
 import type { TrialInfo } from "./types";
 
+interface SubscriptionRow {
+  status: string | null;
+}
+
 export interface SubscriptionState {
   trial: TrialInfo | null;
   isLoading: boolean;
@@ -17,33 +21,35 @@ export function useSubscription(): SubscriptionState {
   const [trial, setTrial] = useState<TrialInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   const fetchSubscription = useCallback(async () => {
+    setIsLoading(true);
+
     try {
       setError(null);
       const supabase = createClient();
       const { data, error: userError } = await supabase.auth.getUser();
 
-      if (userError) {
-        // Fallback for unauthenticated/guest state
+      if (userError || !data.user) {
+        setUserId(null);
         setTrial(calculateTrial(new Date().toISOString(), null));
+        if (userError) setError(userError);
         return;
       }
 
-      if (data.user) {
-        const createdAt = data.user.created_at;
-        const subStatus =
-          (data.user.user_metadata?.subscription_status as string | undefined) ??
-          (data.user.app_metadata?.subscription_status as string | undefined) ??
-          null;
+      const { data: subscription, error: subscriptionError } = await supabase
+        .from("subscriptions")
+        .select("status")
+        .eq("user_id", data.user.id)
+        .maybeSingle() as { data: SubscriptionRow | null; error: Error | null };
 
-        setTrial(calculateTrial(createdAt, subStatus));
-      } else {
-        setTrial(calculateTrial(new Date().toISOString(), null));
-      }
+      if (subscriptionError) throw subscriptionError;
+
+      setUserId(data.user.id);
+      setTrial(calculateTrial(data.user.created_at, subscription?.status));
     } catch (err) {
       setError(err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura"));
-      // Default graceful trial fallback
       setTrial(calculateTrial(new Date().toISOString(), null));
     } finally {
       setIsLoading(false);
@@ -51,8 +57,31 @@ export function useSubscription(): SubscriptionState {
   }, []);
 
   useEffect(() => {
-    fetchSubscription();
+    void fetchSubscription();
   }, [fetchSubscription]);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`subscription-status:${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "subscriptions",
+          filter: `user_id=eq.${userId}`,
+        },
+        () => void fetchSubscription(),
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [fetchSubscription, userId]);
 
   return {
     trial,
