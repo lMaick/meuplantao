@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   Sparkles,
@@ -16,10 +16,49 @@ import { Card } from "@/components/ui/card";
 import { useSubscription } from "@/lib/subscription";
 import { cn } from "cn";
 
-export function SubscriptionCard({ className }: { className?: string }) {
-  const { trial, isLoading } = useSubscription();
+interface SubscriptionCardProps {
+  className?: string;
+  payment?: string | null;
+  paymentId?: string | null;
+}
+
+export function SubscriptionCard({ className, payment, paymentId }: SubscriptionCardProps) {
+  const { trial, isLoading, refresh } = useSubscription();
   const [isProcessing, setIsProcessing] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (payment !== "success" || !paymentId) return;
+
+    let cancelled = false;
+    const verifyPayment = async () => {
+      setFeedbackMessage("Confirmando seu pagamento com o Mercado Pago...");
+      try {
+        const response = await fetch(`/api/mercadopago/verify?payment_id=${encodeURIComponent(paymentId)}`, {
+          headers: { Accept: "application/json" },
+        });
+        const payload = await response.json() as { activated?: boolean; error?: string };
+        if (cancelled) return;
+        if (!response.ok) throw new Error(payload.error || "Nao foi possivel confirmar o pagamento.");
+
+        if (payload.activated) {
+          await refresh();
+          if (!cancelled) setFeedbackMessage("Pagamento confirmado. Seu plano Pro já está ativo.");
+        } else {
+          setFeedbackMessage("Pagamento recebido e ainda em processamento. Atualizaremos seu plano assim que o Mercado Pago confirmar.");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setFeedbackMessage(err instanceof Error ? err.message : "Nao foi possivel confirmar o pagamento agora.");
+        }
+      }
+    };
+
+    void verifyPayment();
+    return () => {
+      cancelled = true;
+    };
+  }, [payment, paymentId, refresh]);
 
   const handleSubscribe = async () => {
     setIsProcessing(true);
