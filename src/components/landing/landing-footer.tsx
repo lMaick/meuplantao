@@ -56,6 +56,9 @@ export function LandingFooter() {
             <Link href="#calculadora" className="hover:text-white transition-colors">
               Calculadora
             </Link>
+            <Link href="#preco" className="hover:text-white transition-colors">
+              Preço
+            </Link>
           </div>
         </div>
 

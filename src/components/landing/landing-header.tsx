@@ -46,6 +46,12 @@ export function LandingHeader({ isLoggedIn }: LandingHeaderProps) {
             Calculadora
           </Link>
           <Link
+            href="#preco"
+            className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Preço
+          </Link>
+          <Link
             href="#perguntas"
             className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
@@ -124,6 +130,13 @@ export function LandingHeader({ isLoggedIn }: LandingHeaderProps) {
               className="rounded-lg px-3 py-2.5 text-base font-medium text-muted-foreground hover:bg-muted"
             >
               Perguntas Frequentes
+            </Link>
+            <Link
+              href="#preco"
+              onClick={() => setMobileMenuOpen(false)}
+              className="rounded-lg px-3 py-2.5 text-base font-medium text-muted-foreground hover:bg-muted"
+            >
+              Preço
             </Link>
 
             <div className="mt-4 flex flex-col gap-2 pt-4 border-t border-border">

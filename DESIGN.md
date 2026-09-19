@@ -52,3 +52,26 @@ Este documento estabelece o contrato visual e as decisões de design do **MeuPla
   - Proibido gradiente roxo-azul clichê de IA.
   - Proibido animações de mola exageradas ("bounce/elastic easing").
   - Proibido telas cheias de cards vazios sem conteúdo ou métricas contextuais.
+
+---
+
+## 5. Motion Principles (kylezantos/design-motion-principles)
+
+Toda interface do MeuPlantão incorpora os princípios de motion design (Emil Kowalski e Jakub Krehel), garantindo máxima fluidez e ergonomia clínica:
+
+1. **Skeleton Screens Obrigatórios:**
+   - Todo componente e página com carregamento assíncrono deve possuir skeleton com proporções e geometria idênticas às do conteúdo final.
+   - Proibido qualquer estado de tela em branco ou Cumulative Layout Shift (CLS).
+
+2. **Lazy Loading Universal:**
+   - Modais, abas não visíveis, rotas secundárias, gráficos pesados e imagens devem usar lazy loading (`next/dynamic`, `React.lazy`, `loading="lazy"`).
+
+3. **Smooth Animations em Todos os Elementos:**
+   - **Entrada (Enter):** Animações suaves (< 300ms, ideal ~180ms) com acelerações naturais (springs controlados ou `cubic-bezier(0.16, 1, 0.3, 1)`).
+   - **Saída (Exit):** Transições de saída rápidas e limpas (< 200ms).
+   - **Carregamento (Loading):** Pulso/shimmer suave e contínuo nos skeletons.
+   - **Progresso (Progress):** Interpolação suave em barras de carregamento e variações numéricas de saldos.
+
+4. **Acessibilidade de Movimento:**
+   - Suporte mandatório a `prefers-reduced-motion: reduce`, desativando deslocamentos espaciais e mantendo apenas transições suaves de opacidade.
+
