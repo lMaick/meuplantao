@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
     }
 
     const origin = getApplicationOrigin(request.url);
+    const isHttps = origin.startsWith("https://");
     const mercadoPagoResponse = await fetch(`${getMercadoPagoApiUrl()}/checkout/preferences`, {
       method: "POST",
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}`, "Content-Type": "application/json" },
@@ -37,8 +38,8 @@ export async function POST(request: NextRequest) {
           pending: `${origin}/configuracoes?payment=pending`,
           failure: `${origin}/configuracoes?payment=failure`,
         },
-        auto_return: "approved",
-        notification_url: `${origin}/api/webhooks/mercadopago`,
+        auto_return: isHttps ? "approved" : undefined,
+        notification_url: isHttps ? `${origin}/api/webhooks/mercadopago` : undefined,
       }),
     });
 
