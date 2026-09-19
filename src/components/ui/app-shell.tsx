@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -74,8 +75,16 @@ export function AppShell({ children }: { children: ReactNode }) {
           href="/dashboard"
           className="mb-8 flex items-center gap-3 px-3 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group"
         >
-          <span className="grid size-9 place-items-center rounded-xl bg-gradient-to-br from-emerald-600 to-teal-700 font-bold text-white shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
-            M
+          <span className="grid size-9 place-items-center overflow-hidden rounded-xl bg-white shadow-md shadow-emerald-500/20 ring-1 ring-border/60 transition-transform group-hover:scale-105">
+            <Image
+              src="/brand/meuplantao-simbolo-oficial.png"
+              alt="MeuPlantão"
+              width={36}
+              height={36}
+              sizes="36px"
+              className="size-9 object-contain"
+              priority
+            />
           </span>
           <span className="flex items-center gap-1.5">
             MeuPlantão
@@ -177,8 +186,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <div className="flex items-center justify-between border-b border-border/80 pb-4">
               <div className="flex items-center gap-2.5">
-                <span className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-emerald-600 to-teal-700 font-bold text-white text-sm shadow-xs">
-                  M
+                <span className="grid size-8 place-items-center overflow-hidden rounded-lg bg-white shadow-xs ring-1 ring-border/60">
+                  <Image
+                    src="/brand/meuplantao-simbolo-oficial.png"
+                    alt="MeuPlantão"
+                    width={32}
+                    height={32}
+                    sizes="32px"
+                    className="size-8 object-contain"
+                  />
                 </span>
                 <span className="font-semibold text-foreground">Menu</span>
               </div>
@@ -230,7 +246,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       )}
 
       {/* Main Container (pb-28 lg:pb-8 prevents bottom bar occlusion) */}
-      <main className="min-h-screen pb-28 lg:ml-64 lg:pb-8 w-full max-w-full overflow-x-hidden">
+      <main className="min-h-screen w-full max-w-full min-w-0 flex-1 overflow-x-hidden pb-28 lg:ml-64 lg:pb-8">
         {children}
       </main>
 

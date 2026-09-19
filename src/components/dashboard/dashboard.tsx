@@ -198,8 +198,8 @@ export function Dashboard() {
   ] as const;
 
   return (
-    <main className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-8">
-      <div className="mx-auto max-w-6xl space-y-8">
+    <main className="min-h-screen w-full max-w-full min-w-0 overflow-x-hidden bg-background px-4 py-6 text-foreground sm:px-8">
+      <div className="mx-auto w-full max-w-6xl min-w-0 space-y-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
@@ -278,7 +278,7 @@ export function Dashboard() {
 
         <DashboardAlerts summary={alertsSummary} placeId={placeId} />
 
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {kpis.map(([label, value, Icon]) => {
             const isOverdueKpi = label === "Em atraso" && Number(value) > 0;
             const isReceivedKpi = label.startsWith("Recebido");
@@ -313,7 +313,7 @@ export function Dashboard() {
           })}
         </section>
 
-        <section className="grid gap-4 lg:grid-cols-2">
+        <section className="grid min-w-0 gap-4 lg:grid-cols-2">
           <Card className="p-4 shadow-xs sm:p-5">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
