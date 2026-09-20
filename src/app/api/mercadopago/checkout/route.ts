@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getApplicationOrigin, getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
+import { captureCheckoutError } from "@/lib/observability";
 import { createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -13,11 +14,13 @@ const periods = new Map([
 
 export async function POST(request: NextRequest) {
   const response = NextResponse.json({ error: "Nao foi possivel iniciar o checkout" }, { status: 500 });
+  let currentUserId: string | undefined;
 
   try {
     const supabase = createAuthenticatedClient(request, response);
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
+    currentUserId = user.id;
 
     let subscription = null;
     try {
@@ -76,7 +79,10 @@ export async function POST(request: NextRequest) {
     if (!initPoint) throw new Error("Mercado Pago nao retornou URL de checkout");
     return NextResponse.json({ init_point: initPoint });
   } catch (error) {
-    console.error("Mercado Pago checkout error", error instanceof Error ? error.message : "unknown");
+    captureCheckoutError(error, {
+      route: "/api/mercadopago/checkout",
+      userId: currentUserId,
+    });
     return response;
   }
 }

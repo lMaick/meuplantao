@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { captureError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -22,11 +23,14 @@ function getPaymentId(request: NextRequest): string | null {
 
 export async function GET(request: NextRequest) {
   const sessionResponse = NextResponse.json({ error: "Nao foi possivel verificar o pagamento" }, { status: 500 });
+  const requestedPaymentId = getPaymentId(request);
+  let currentUserId: string | undefined;
 
   try {
     const supabase = createAuthenticatedClient(request, sessionResponse);
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
+    currentUserId = user.id;
 
     const paymentId = getPaymentId(request);
     if (!paymentId) return NextResponse.json({ error: "Identificador do pagamento ausente" }, { status: 400 });
@@ -110,7 +114,12 @@ export async function GET(request: NextRequest) {
       status: subscriptionStatus,
     });
   } catch (error) {
-    console.error("Mercado Pago verification error", error instanceof Error ? error.message : "unknown");
+    captureError(error, {
+      route: "/api/mercadopago/verify",
+      userId: currentUserId,
+      paymentId: requestedPaymentId || undefined,
+      httpStatus: 500,
+    });
     return NextResponse.json({ error: "Nao foi possivel conciliar o pagamento" }, { status: 500 });
   }
 }

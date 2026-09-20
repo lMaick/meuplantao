@@ -1,6 +1,7 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
+import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -133,7 +134,11 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
       { status: 200 },
     );
   } catch (error) {
-    console.error("Mercado Pago webhook processing error", error instanceof Error ? error.message : "unknown");
+    captureWebhookError(error, {
+      route: "/api/webhooks/mercadopago",
+      paymentId,
+      httpStatus: 500,
+    });
     return Response.json({ error: "Nao foi possivel processar o evento Mercado Pago" }, { status: 500 });
   }
 }

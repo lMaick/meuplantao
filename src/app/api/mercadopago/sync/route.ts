@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { captureSyncError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -21,6 +22,7 @@ export { paymentBelongsToUser };
 
 export async function POST(request: NextRequest) {
   const sessionResponse = NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
+  let currentUserId: string | undefined;
 
   try {
     const supabase = createAuthenticatedClient(request, sessionResponse);
@@ -32,6 +34,7 @@ export async function POST(request: NextRequest) {
     if (userError || !user) {
       return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
     }
+    currentUserId = user.id;
 
     const searchUrl = `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=50`;
     const paymentResponse = await fetch(searchUrl, {
@@ -173,7 +176,10 @@ export async function POST(request: NextRequest) {
       status: currentStatus,
     });
   } catch (error) {
-    console.error("Mercado Pago sync error", error instanceof Error ? error.message : "unknown");
+    captureSyncError(error, {
+      route: "/api/mercadopago/sync",
+      userId: currentUserId,
+    });
     return NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
   }
 }

@@ -9,11 +9,14 @@ const __syncDirname = path.dirname(__syncTestFile);
 const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __syncObservabilityUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
+    if (specifier === "@/lib/observability") return { url: __syncObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") {
       return { url: __syncTrialUrl, shortCircuit: true };
     }
