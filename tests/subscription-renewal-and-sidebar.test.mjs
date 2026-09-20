@@ -29,6 +29,11 @@ test("security: paymentBelongsToUser strictly verifies user ownership", () => {
   assert.equal(paymentBelongsToUser({}, userId), false);
   assert.equal(paymentBelongsToUser({ metadata: { user_id: otherId } }, userId), false);
   assert.equal(paymentBelongsToUser({ metadata: {} }, userId), false);
+
+  // Divergent identifiers between external_reference and metadata MUST return false
+  assert.equal(paymentBelongsToUser({ external_reference: userId, metadata: { user_id: otherId } }, userId), false);
+  assert.equal(paymentBelongsToUser({ external_reference: `${userId}#3`, metadata: { user_id: otherId } }, userId), false);
+  assert.equal(paymentBelongsToUser({ external_reference: otherId, metadata: { user_id: userId } }, userId), false);
 });
 
 test("ui contract: AppShell desktop sidebar has overflow-y-auto to allow scrolling on small viewports", () => {

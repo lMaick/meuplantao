@@ -8,6 +8,7 @@ const __syncTestFile = fileURLToPath(import.meta.url);
 const __syncDirname = path.dirname(__syncTestFile);
 const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
+const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
@@ -15,6 +16,9 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/subscription/trial") {
       return { url: __syncTrialUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/payments") {
+      return { url: __syncPaymentsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/config") {
       return {

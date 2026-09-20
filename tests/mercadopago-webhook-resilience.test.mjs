@@ -9,11 +9,15 @@ let mockWebhookSecret = null;
 
 const __whTestFile = fileURLToPath(import.meta.url);
 const __whTrialUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
+const __whPaymentsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/subscription/trial") {
       return { url: __whTrialUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/payments") {
+      return { url: __whPaymentsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/config") {
       return {

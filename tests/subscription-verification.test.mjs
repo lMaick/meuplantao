@@ -7,12 +7,19 @@ import test from "node:test";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
+const paymentsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "payments.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/mercadopago/config") {
       return {
         url: configUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/payments") {
+      return {
+        url: paymentsUrl,
         shortCircuit: true,
       };
     }

@@ -1,20 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
+import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/stripe/supabase";
 
 export const runtime = "nodejs";
 
-const validityDaysByMonths = new Map([[1, 30], [3, 90], [6, 180], [12, 365]]);
-
-function addValidity(start: Date, days: number): Date {
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + days);
-  return end;
-}
-
 interface MercadoPagoPayment {
+  id?: string | number;
   status?: string;
   external_reference?: string;
+  transaction_amount?: number;
   metadata?: { user_id?: string; userId?: string; months?: number };
 }
 
@@ -53,22 +48,25 @@ export async function GET(request: NextRequest) {
     }
 
     const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
-    const validityDays = validityDaysByMonths.get(months) ?? validityDaysByMonths.get(1)!;
+    const validityDays = getValidityDays(months);
 
     const admin = createAdminClient();
-    const subscriptionTable = admin.from("subscriptions");
-    const { data: currentSubscription } = await subscriptionTable.select("current_period_end").eq("user_id", user.id).maybeSingle();
-    const currentEnd = currentSubscription?.current_period_end ? new Date(currentSubscription.current_period_end) : new Date();
-    const start = currentEnd > new Date() ? currentEnd : new Date();
-    const currentPeriodEnd = addValidity(start, validityDays).toISOString();
+    const result = await processMercadoPagoPayment(admin, {
+      paymentId,
+      userId: user.id,
+      months,
+      validityDays,
+      amount: payment.transaction_amount,
+      status: payment.status ?? "approved",
+    });
 
-    const { error: subscriptionError } = await admin.from("subscriptions").upsert(
-      { user_id: user.id, status: "active", current_period_end: currentPeriodEnd },
-      { onConflict: "user_id" },
-    );
-    if (subscriptionError) throw subscriptionError;
-
-    return NextResponse.json({ verified: true, activated: true, status: "active", current_period_end: currentPeriodEnd });
+    return NextResponse.json({
+      verified: true,
+      activated: true,
+      status: "active",
+      already_processed: result.already_processed,
+      current_period_end: result.current_period_end,
+    });
   } catch (error) {
     console.error("Mercado Pago verification error", error instanceof Error ? error.message : "unknown");
     return NextResponse.json({ error: "Nao foi possivel conciliar o pagamento" }, { status: 500 });

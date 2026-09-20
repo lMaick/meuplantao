@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     try {
       const { data, error } = await supabase
         .from("subscriptions")
-        .select("status")
+        .select("status, current_period_end")
         .eq("user_id", user.id)
         .maybeSingle();
       if (!error) subscription = data;
@@ -31,9 +31,7 @@ export async function POST(request: NextRequest) {
       // Subscriptions table might not be migrated yet in remote db
     }
 
-    if (subscription && ["trialing", "active", "past_due"].includes(subscription.status)) {
-      return NextResponse.json({ error: "Ja existe uma assinatura para este usuario" }, { status: 409 });
-    }
+    const isRenewal = Boolean(subscription && subscription.status === "active");
 
     let months = 1;
     let requestedPeriod = false;
@@ -53,9 +51,16 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        items: [{ id: `meuplantao-pro-${period.months}`, title: `MeuPlantão Pro — ${period.label}`, description: `Assinatura do MeuPlantão Pro por ${period.validityDays} dias`, quantity: 1, currency_id: "BRL", unit_price: period.price }],
+        items: [{
+          id: `meuplantao-pro-${period.months}`,
+          title: `MeuPlantão Pro — ${period.label}`,
+          description: `${isRenewal ? "Renovação" : "Assinatura"} do MeuPlantão Pro por ${period.validityDays} dias`,
+          quantity: 1,
+          currency_id: "BRL",
+          unit_price: period.price,
+        }],
         external_reference: requestedPeriod ? `${user.id}#${period.months}` : user.id,
-        metadata: { user_id: user.id, months: period.months },
+        metadata: { user_id: user.id, months: period.months, is_renewal: isRenewal },
         payer: user.email ? { email: user.email } : undefined,
         back_urls: {
           success: `${origin}/configuracoes?payment=success`,

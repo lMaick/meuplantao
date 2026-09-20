@@ -6,11 +6,15 @@ import test from "node:test";
 
 const __mpRoutesFile = fileURLToPath(import.meta.url);
 const __mpTrialUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "subscription", "trial.ts")).href;
+const __mpPaymentsUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/subscription/trial") {
       return { url: __mpTrialUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/payments") {
+      return { url: __mpPaymentsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';", shortCircuit: true };
     if (specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
@@ -53,10 +57,18 @@ test("checkout creates a Mercado Pago preference for the authenticated user", as
   assert.equal(calls[0].body.back_urls.success, "https://app.example.com/configuracoes?payment=success");
 });
 
-test("checkout blocks an existing active subscription", async () => {
-  globalThis.authenticatedClient = authenticatedClient({ status: "active" });
+test("checkout allows active users to extend/renew their subscription without 409", async () => {
+  const calls = [];
+  globalThis.authenticatedClient = authenticatedClient({ status: "active", current_period_end: "2026-12-01T00:00:00Z" });
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ init_point: "https://www.mercadopago.com/checkout/renew" }), { status: 201 });
+  };
+
   const response = await checkout(checkoutRequest());
-  assert.equal(response.status, 409);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { init_point: "https://www.mercadopago.com/checkout/renew" });
+  assert.equal(calls[0].body.metadata.is_renewal, true);
 });
 
 test("webhook ignores non-payment notifications", async () => {

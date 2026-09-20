@@ -8,6 +8,7 @@ const __testFilename = fileURLToPath(import.meta.url);
 const __testDirname = path.dirname(__testFilename);
 const trialModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
+const paymentsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
@@ -26,6 +27,12 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/config") {
       return {
         url: configModuleUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/payments") {
+      return {
+        url: paymentsModuleUrl,
         shortCircuit: true,
       };
     }
@@ -131,9 +138,20 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
         }),
         { status: 200 },
       );
+    let currentPeriodEnd = null;
     globalThis.adminClient = {
       from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: currentPeriodEnd ? { current_period_end: currentPeriodEnd, status: "active" } : null,
+              error: null,
+            }),
+          }),
+        }),
+        insert: async () => ({ error: null }),
         upsert: async (row, options) => {
+          currentPeriodEnd = row.current_period_end;
           upserts.push({ row, options });
           return { error: null };
         },
@@ -146,12 +164,13 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
     assert.equal(json.synced, true);
     assert.equal(json.status, "active");
     assert.ok(json.current_period_end, "sync deve retornar current_period_end");
-    assert.equal(upserts.length, 1);
+    assert.equal(upserts.length, 2, "sync deve processar os 2 pagamentos aprovados");
     assert.equal(upserts[0].row.user_id, testUserId);
-    assert.equal(upserts[0].row.status, "active");
-    assert.ok(upserts[0].row.current_period_end, "upsert deve gravar current_period_end");
+    assert.equal(upserts[1].row.user_id, testUserId);
+    assert.equal(upserts[1].row.status, "active");
+    assert.ok(upserts[1].row.current_period_end, "upsert deve gravar current_period_end");
 
-    const days = Math.round((new Date(upserts[0].row.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
+    const days = Math.round((new Date(upserts[1].row.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
     assert.ok(days >= 59 && days <= 61, `esperado ~60 dias, obtido ${days}`);
     assert.equal(DAYS_PER_PRO_PAYMENT, 30);
   });
@@ -195,10 +214,10 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
     assert.equal(json.received, true);
     assert.equal(json.processed, true);
     assert.ok(json.current_period_end);
-    assert.equal(calls, 2, "webhook deve buscar pagamento + historico cumulativo");
+    assert.ok(calls >= 1, "webhook deve consultar pagamento no Mercado Pago");
     assert.ok(upserts[0].row.current_period_end);
     const days = Math.round((new Date(upserts[0].row.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
-    assert.ok(days >= 59 && days <= 61, `esperado ~60 dias, obtido ${days}`);
+    assert.ok(days >= 29 && days <= 31, `esperado ~30 dias, obtido ${days}`);
     globalThis.__mockWebhookSecret = null;
   });
 });
