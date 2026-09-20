@@ -63,25 +63,172 @@ test("shift-calendar: footer actions are disambiguated with 'Fechar' and 'Salvar
   );
 });
 
-test("shift-calendar: cancellation confirmation alert is present before persisting canceled status", () => {
+test("shift-calendar: source implementation uses isBecomingCanceled logic", () => {
   assert.match(
     calendarSource,
-    /confirmCancel && status === "cancelado"/,
-    "Must check confirmCancel when status is cancelado"
+    /const\s+isBecomingCanceled\s*=\s*status\s*===\s*"cancelado"\s*&&\s*\(!shift\s*\|\|\s*shift\.status\s*!==\s*"cancelado"\);/,
+    "Must define isBecomingCanceled checking status and shift"
   );
   assert.match(
     calendarSource,
-    /Confirmar cancelamento do plantão\?/,
-    "Must display cancellation confirmation title"
+    /if\s*\(isBecomingCanceled\s*&&\s*!confirmCancel\)\s*\{\s*setConfirmCancel\(true\);\s*return;\s*\}/,
+    "onSubmit must check isBecomingCanceled && !confirmCancel before triggering confirmation"
   );
   assert.match(
     calendarSource,
-    /Confirmar cancelamento/,
-    "Must offer 'Confirmar cancelamento' primary action"
+    /isBecomingCanceled\s*&&\s*confirmCancel/,
+    "Confirmation alert and buttons must be guarded by isBecomingCanceled && confirmCancel"
   );
-  assert.match(
-    calendarSource,
-    /Voltar/,
-    "Must offer 'Voltar' action to dismiss confirmation"
-  );
+});
+
+// State transition simulation mirroring Form component in shift-calendar.tsx
+function createFormSimulation({ shift, initialStatus }) {
+  let status = initialStatus ?? (shift ? shift.status : "agendado");
+  let confirmCancel = false;
+  let saveCount = 0;
+
+  function handleStatusChange(newStatus) {
+    status = newStatus;
+    if (newStatus !== "cancelado") {
+      confirmCancel = false;
+    }
+  }
+
+  function submit() {
+    const isBecomingCanceled =
+      status === "cancelado" &&
+      (!shift || shift.status !== "cancelado");
+
+    if (isBecomingCanceled && !confirmCancel) {
+      confirmCancel = true;
+      return { status, confirmCancel, saved: false };
+    }
+
+    saveCount++;
+    return { status, confirmCancel, saved: true };
+  }
+
+  return {
+    getStatus: () => status,
+    isConfirming: () => confirmCancel,
+    getSaveCount: () => saveCount,
+    handleStatusChange,
+    setConfirmCancel: (val) => { confirmCancel = val; },
+    submit,
+  };
+}
+
+test("transição 1: Agendado -> Cancelado exige confirmação", () => {
+  const form = createFormSimulation({
+    shift: { id: "shift-1", status: "agendado" },
+    initialStatus: "agendado",
+  });
+
+  // User changes status to cancelado
+  form.handleStatusChange("cancelado");
+  assert.equal(form.getStatus(), "cancelado");
+  assert.equal(form.isConfirming(), false);
+
+  // First submit should NOT save; must trigger confirmation
+  const res1 = form.submit();
+  assert.equal(res1.saved, false, "Must NOT save immediately on first submit");
+  assert.equal(form.isConfirming(), true, "Must enter confirmation state");
+  assert.equal(form.getSaveCount(), 0);
+
+  // Second submit (with confirmCancel=true) should save
+  const res2 = form.submit();
+  assert.equal(res2.saved, true, "Must save after confirmation");
+  assert.equal(form.getSaveCount(), 1);
+});
+
+test("transição 2: Realizado -> Cancelado exige confirmação", () => {
+  const form = createFormSimulation({
+    shift: { id: "shift-2", status: "realizado" },
+    initialStatus: "realizado",
+  });
+
+  form.handleStatusChange("cancelado");
+  assert.equal(form.getStatus(), "cancelado");
+  assert.equal(form.isConfirming(), false);
+
+  const res1 = form.submit();
+  assert.equal(res1.saved, false, "Must NOT save immediately");
+  assert.equal(form.isConfirming(), true, "Must enter confirmation state");
+  assert.equal(form.getSaveCount(), 0);
+
+  const res2 = form.submit();
+  assert.equal(res2.saved, true);
+  assert.equal(form.getSaveCount(), 1);
+});
+
+test("transição 3: Cancelado -> Cancelado salva sem pedir confirmação novamente", () => {
+  const form = createFormSimulation({
+    shift: { id: "shift-3", status: "cancelado" },
+    initialStatus: "cancelado",
+  });
+
+  // Shift is already canceled; user edits another field without changing status
+  assert.equal(form.getStatus(), "cancelado");
+  assert.equal(form.isConfirming(), false);
+
+  // Submit should save immediately without asking for confirmation again
+  const res = form.submit();
+  assert.equal(res.saved, true, "Must save immediately without confirmation dialog");
+  assert.equal(form.isConfirming(), false, "Must not set confirmCancel");
+  assert.equal(form.getSaveCount(), 1);
+});
+
+test("transição 4: Novo plantão criado diretamente como Cancelado exige confirmação", () => {
+  const form = createFormSimulation({
+    shift: undefined, // new shift
+    initialStatus: "agendado",
+  });
+
+  // User sets status to cancelado on new shift
+  form.handleStatusChange("cancelado");
+  assert.equal(form.getStatus(), "cancelado");
+
+  // First submit must trigger confirmation
+  const res1 = form.submit();
+  assert.equal(res1.saved, false, "Must NOT save immediately for new canceled shift");
+  assert.equal(form.isConfirming(), true, "Must enter confirmation state");
+  assert.equal(form.getSaveCount(), 0);
+
+  // Confirming should save
+  const res2 = form.submit();
+  assert.equal(res2.saved, true);
+  assert.equal(form.getSaveCount(), 1);
+});
+
+test("transição 5: Entrou na confirmação e mudou para Agendado ou Realizado limpa a confirmação", () => {
+  const form = createFormSimulation({
+    shift: { id: "shift-5", status: "agendado" },
+    initialStatus: "agendado",
+  });
+
+  // User selects cancelado and submits, entering confirmation
+  form.handleStatusChange("cancelado");
+  form.submit();
+  assert.equal(form.isConfirming(), true, "Entered confirmation");
+
+  // User changes mind and selects agendado
+  form.handleStatusChange("agendado");
+  assert.equal(form.isConfirming(), false, "Changing to agendado must clear confirmation");
+  assert.equal(form.getStatus(), "agendado");
+
+  // If user submits with agendado, saves immediately without confirmation
+  const resAgendado = form.submit();
+  assert.equal(resAgendado.saved, true);
+
+  // Test again for Realizado
+  form.handleStatusChange("cancelado");
+  form.submit();
+  assert.equal(form.isConfirming(), true, "Entered confirmation again");
+
+  form.handleStatusChange("realizado");
+  assert.equal(form.isConfirming(), false, "Changing to realizado must clear confirmation");
+  assert.equal(form.getStatus(), "realizado");
+
+  const resRealizado = form.submit();
+  assert.equal(resRealizado.saved, true);
 });

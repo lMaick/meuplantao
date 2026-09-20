@@ -592,6 +592,10 @@ function Form({
     obligation?.responsavel_contact_id ?? obligation?.responsavel_place_id ?? ""
   );
 
+  const isBecomingCanceled =
+    status === "cancelado" &&
+    (!shift || shift.status !== "cancelado");
+
   function handleStatusChange(newStatus: ShiftStatus) {
     setStatus(newStatus);
     if (newStatus !== "cancelado") {
@@ -641,7 +645,7 @@ function Form({
         aria-busy={busy}
         onSubmit={(event) => {
           event.preventDefault();
-          if (status === "cancelado" && !confirmCancel) {
+          if (isBecomingCanceled && !confirmCancel) {
             setConfirmCancel(true);
             return;
           }
@@ -882,7 +886,7 @@ function Form({
           </div>
         </fieldset>
 
-        {confirmCancel && status === "cancelado" && (
+        {isBecomingCanceled && confirmCancel && (
           <div
             role="alert"
             className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-destructive animate-in fade-in duration-200"
@@ -925,7 +929,7 @@ function Form({
           )}
 
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
-            {confirmCancel && status === "cancelado" ? (
+            {isBecomingCanceled && confirmCancel ? (
               <>
                 <Button
                   type="button"
