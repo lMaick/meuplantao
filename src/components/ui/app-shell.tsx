@@ -152,7 +152,18 @@ function AppShellInner({ children }: { children: ReactNode }) {
   }, [drawerOpen]);
 
   if (["/login", "/cadastro"].includes(pathname)) return <>{children}</>;
-  if (pathname === "/") return <>{children}</>;
+  if (
+    [
+      "/",
+      "/esqueci-senha",
+      "/redefinir-senha",
+      "/privacidade",
+      "/termos",
+      "/suporte",
+    ].includes(pathname)
+  ) {
+    return <>{children}</>;
+  }
 
   const active = (href: string) => {
     if (href === "/dashboard") return pathname === "/dashboard";

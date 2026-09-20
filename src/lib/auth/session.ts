@@ -42,21 +42,33 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isLandingPage = request.nextUrl.pathname === "/";
-  const isAuthPage = request.nextUrl.pathname === "/login" || request.nextUrl.pathname === "/cadastro";
-  const isPublicAuthCallback = request.nextUrl.pathname === "/auth/callback";
-  const isPublicStripeWebhook = request.nextUrl.pathname === "/api/webhooks/stripe";
-  const isPublicMercadoPagoWebhook = request.nextUrl.pathname === "/api/webhooks/mercadopago";
+  const pathname = request.nextUrl.pathname;
+  const isLandingPage = pathname === "/";
+  const isAuthEntryPage = pathname === "/login" || pathname === "/cadastro" || pathname === "/esqueci-senha";
+  const isPublicLegalOrSupport = pathname === "/privacidade" || pathname === "/termos" || pathname === "/suporte";
+  const isPasswordResetPage = pathname === "/redefinir-senha";
+  const isPublicAuthCallback = pathname === "/auth/callback";
+  const isPublicStripeWebhook = pathname === "/api/webhooks/stripe";
+  const isPublicMercadoPagoWebhook = pathname === "/api/webhooks/mercadopago";
 
-  if (!user && !isLandingPage && !isAuthPage && !isPublicAuthCallback && !isPublicStripeWebhook && !isPublicMercadoPagoWebhook) {
+  const isPublicAllowed =
+    isLandingPage ||
+    isAuthEntryPage ||
+    isPublicLegalOrSupport ||
+    isPasswordResetPage ||
+    isPublicAuthCallback ||
+    isPublicStripeWebhook ||
+    isPublicMercadoPagoWebhook;
+
+  if (!user && !isPublicAllowed) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);
     return NextResponse.redirect(url);
   }
 
-  const isSessionRecovery = request.nextUrl.pathname === "/login" && request.nextUrl.searchParams.get("reason") === "session-expired";
-  if (user && isAuthPage && !isSessionRecovery) {
+  const isSessionRecovery = pathname === "/login" && request.nextUrl.searchParams.get("reason") === "session-expired";
+  if (user && isAuthEntryPage && !isSessionRecovery) {
     return NextResponse.redirect(new URL(safeNext(request.nextUrl.searchParams.get("next") ?? undefined), request.url));
   }
 
