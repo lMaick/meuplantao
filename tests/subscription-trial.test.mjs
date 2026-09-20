@@ -84,19 +84,86 @@ describe("MAI-118: Subscription & 14-Day Trial System", () => {
       assert.equal(trial20d.isExpired, true);
     });
 
-    test("Returns active subscriber state when subscriptionStatus is 'active' or 'pro'", () => {
+    test("Cenário A: status='active' com current_period_end=null NÃO inventa Pro de 30 dias", () => {
       const now = new Date("2026-09-19T12:00:00.000Z");
       const createdPast = new Date(now.getTime() - 30 * MS_PER_DAY).toISOString();
+      const createdRecent = new Date(now.getTime() - 2 * MS_PER_DAY).toISOString();
 
-      const activeTrial = calculateTrial(createdPast, "active", now);
-      assert.equal(activeTrial.status, "active");
-      assert.equal(activeTrial.isActive, true);
-      assert.equal(activeTrial.isTrialing, false);
-      assert.equal(activeTrial.isExpired, false);
+      // Conta antiga (> 14 dias) sem vigência real cai para expirada, nunca Pro ativa
+      const trialOld = calculateTrial(createdPast, "active", now, null);
+      assert.equal(trialOld.status, "expired");
+      assert.equal(trialOld.isActive, false);
+      assert.equal(trialOld.isExpired, true);
+      assert.equal(trialOld.isTrialing, false);
+      assert.equal(trialOld.daysRemaining, 0);
+      assert.equal(trialOld.proDaysRemaining, 0);
+      assert.equal(trialOld.proEndsAt, null);
 
-      const proTrial = calculateTrial(createdPast, "pro", now);
-      assert.equal(proTrial.status, "active");
-      assert.equal(proTrial.isActive, true);
+      // Conta recente (< 14 dias) sem vigência real fica no trial natural, nunca Pro ativa
+      const trialNew = calculateTrial(createdRecent, "active", now, null);
+      assert.equal(trialNew.status, "trialing");
+      assert.equal(trialNew.isActive, false);
+      assert.equal(trialNew.isExpired, false);
+      assert.equal(trialNew.isTrialing, true);
+      assert.equal(trialNew.daysRemaining, 12);
+      assert.equal(trialNew.proDaysRemaining, 0);
+      assert.equal(trialNew.proEndsAt, null);
+    });
+
+    test("Cenário B: status='active' com current_period_end futuro deriva Pro ativo", () => {
+      const now = new Date("2026-09-19T12:00:00.000Z");
+      const createdPast = new Date(now.getTime() - 30 * MS_PER_DAY).toISOString();
+      const futureEnd = new Date(now.getTime() + 30 * MS_PER_DAY).toISOString();
+
+      const trial = calculateTrial(createdPast, "active", now, futureEnd);
+      assert.equal(trial.status, "active");
+      assert.equal(trial.isActive, true);
+      assert.equal(trial.isExpired, false);
+      assert.equal(trial.isTrialing, false);
+      assert.equal(trial.daysRemaining, 30);
+      assert.equal(trial.proDaysRemaining, 30);
+      assert.equal(trial.currentPeriodEnd, futureEnd);
+      assert.equal(trial.proEndsAt, futureEnd);
+    });
+
+    test("Cenário C: status='active' com current_period_end passado deriva Pro expirado", () => {
+      const now = new Date("2026-09-19T12:00:00.000Z");
+      const createdPast = new Date(now.getTime() - 30 * MS_PER_DAY).toISOString();
+      const pastEnd = new Date(now.getTime() - 5 * MS_PER_DAY).toISOString();
+
+      const trial = calculateTrial(createdPast, "active", now, pastEnd);
+      assert.equal(trial.status, "expired");
+      assert.equal(trial.isActive, false);
+      assert.equal(trial.isExpired, true);
+      assert.equal(trial.isTrialing, false);
+      assert.equal(trial.daysRemaining, 0);
+      assert.equal(trial.proDaysRemaining, 0);
+      assert.equal(trial.proEndsAt, null);
+      assert.equal(trial.currentPeriodEnd, pastEnd);
+    });
+
+    test("Cenário D: usuário sem assinatura segue período de trial normal da conta", () => {
+      const now = new Date("2026-09-19T12:00:00.000Z");
+      const createdRecent = new Date(now.getTime() - 4 * MS_PER_DAY).toISOString();
+      const createdPast = new Date(now.getTime() - 20 * MS_PER_DAY).toISOString();
+
+      // Conta criada há 4 dias -> 10 dias restantes de trial
+      const trialRecent = calculateTrial(createdRecent, null, now, null);
+      assert.equal(trialRecent.status, "trialing");
+      assert.equal(trialRecent.isActive, false);
+      assert.equal(trialRecent.isTrialing, true);
+      assert.equal(trialRecent.isExpired, false);
+      assert.equal(trialRecent.daysRemaining, 10);
+      assert.equal(trialRecent.proDaysRemaining, 0);
+
+      // Conta criada há 20 dias -> trial expirado
+      const trialPast = calculateTrial(createdPast, null, now, null);
+      assert.equal(trialPast.status, "expired");
+      assert.equal(trialPast.isActive, false);
+      assert.equal(trialPast.isTrialing, false);
+      assert.equal(trialPast.isExpired, true);
+      assert.equal(trialPast.daysRemaining, 0);
+      assert.equal(trialPast.proDaysRemaining, 0);
     });
 
     test("Gracefully handles missing, null, or invalid dates", () => {
