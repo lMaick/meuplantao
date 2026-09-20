@@ -32,3 +32,63 @@ grant select, delete on public.shifts to authenticated;
 -- 5. Reafirma concessão de execução da RPC save_shift_with_obligation para authenticated
 grant execute on function public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid,text) to authenticated;
 
+-- 6. Atualiza validate_obligation_financial_integrity para usar FOR KEY SHARE e SECURITY DEFINER
+-- Evita exigir privilégio de UPDATE em public.shifts (revogado acima) durante edições legítimas de colunas não financeiras de public.obligations.
+create or replace function public.validate_obligation_financial_integrity()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shift public.shifts;
+  v_registered numeric(12, 2);
+begin
+  if tg_op = 'UPDATE' and new.shift_id is distinct from old.shift_id then
+    raise exception using errcode = '23514', message = 'O plantao da obrigacao nao pode ser alterado';
+  end if;
+
+  if tg_op <> 'DELETE' then
+    select * into v_shift
+      from public.shifts
+     where id = new.shift_id
+       and user_id = new.user_id
+     for key share;
+    if not found then
+      raise exception using errcode = '23503', message = 'Plantao nao encontrado para este usuario';
+    end if;
+    if v_shift.status <> 'realizado' then
+      raise exception using errcode = '23514', message = 'Obrigacao somente pode pertencer a plantao realizado';
+    end if;
+  end if;
+
+  if tg_op <> 'DELETE' then
+    if new.valor_devido is null then
+      raise exception using errcode = '23514', message = 'Obrigacao de plantao realizado exige valor_devido nao nulo';
+    end if;
+    if new.valor_devido is distinct from v_shift.valor_previsto then
+      raise exception using errcode = '23514', message = 'Obrigacao divergente do valor do plantao realizado; altere pela RPC financeira';
+    end if;
+  end if;
+
+  select coalesce(sum(valor), 0)::numeric(12, 2) into v_registered
+    from public.payments
+   where obligation_id = old.id
+     and user_id = old.user_id
+     and status = 'registrado';
+  if tg_op = 'DELETE' and v_registered > 0 then
+    raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao com pagamentos registrados';
+  end if;
+  if tg_op = 'DELETE' and exists (select 1 from public.payments where obligation_id = old.id and user_id = old.user_id) then
+    raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao com historico de pagamentos';
+  end if;
+  if tg_op = 'DELETE' and exists (select 1 from public.shifts where id = old.shift_id and user_id = old.user_id and status = 'realizado') then
+    raise exception using errcode = '23514', message = 'Nao e possivel excluir obrigacao de plantao realizado';
+  end if;
+  if tg_op = 'UPDATE' and new.valor_devido is not null and new.valor_devido < v_registered then
+    raise exception using errcode = '23514', message = 'A alteracao deixaria a obrigacao inconsistente';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
