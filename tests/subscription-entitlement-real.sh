@@ -27,14 +27,12 @@ USER_A="00000000-0000-0000-0000-0000000000a1"
 USER_B="00000000-0000-0000-0000-0000000000b2"
 PLACE_A="00000000-0000-0000-0000-0000000000a2"
 PLACE_B="00000000-0000-0000-0000-0000000000b3"
-SHIFT_A="00000000-0000-0000-0000-0000000000a3"
-SHIFT_B="00000000-0000-0000-0000-0000000000b4"
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
 begin;
 -- Limpa fixtures anteriores se existirem
-delete from public.shifts where id in ('$SHIFT_A', '$SHIFT_B');
-delete from public.places where id in ('$PLACE_A', '$PLACE_B');
+delete from public.shifts where user_id in ('$USER_A', '$USER_B');
+delete from public.places where user_id in ('$USER_A', '$USER_B');
 delete from public.subscriptions where user_id in ('$USER_A', '$USER_B');
 delete from auth.users where id in ('$USER_A', '$USER_B');
 
@@ -56,11 +54,11 @@ SQL
 # Cenário A: Usuário com 5 dias de conta, sem assinatura -> pode criar plantão
 # ------------------------------------------------------------------------------
 echo "==> Testando Cenário A: usuário com 5 dias (trial) pode criar plantão..."
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+SHIFT_A="$(psql "$DATABASE_URL" -Atqc "
 set role authenticated;
 select set_config('request.jwt.claim.sub', '$USER_A', false);
-select save_shift_with_obligation(
-  '$SHIFT_A',
+select id from save_shift_with_obligation(
+  null,
   '$PLACE_A',
   '2026-09-25'::date,
   '08:00'::time,
@@ -68,9 +66,9 @@ select save_shift_with_obligation(
   1200.00,
   'agendado'
 );
-reset role;
-SQL
+")"
 
+test -n "$SHIFT_A"
 test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.shifts where id = '$SHIFT_A' and user_id = '$USER_A'")" = 1
 echo "✔ Cenário A aprovado."
 
@@ -114,12 +112,12 @@ insert into public.subscriptions (user_id, status, current_period_end)
 values ('$USER_B', 'active', now() + interval '20 days');
 SQL
 
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+SHIFT_B="$(psql "$DATABASE_URL" -Atqc "
 set role authenticated;
 select set_config('request.jwt.claim.sub', '$USER_B', false);
 -- Criação
-select save_shift_with_obligation(
-  '$SHIFT_B',
+select id from save_shift_with_obligation(
+  null,
   '$PLACE_B',
   '2026-09-27'::date,
   '07:00'::time,
@@ -127,6 +125,13 @@ select save_shift_with_obligation(
   1500.00,
   'agendado'
 );
+")"
+
+test -n "$SHIFT_B"
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+set role authenticated;
+select set_config('request.jwt.claim.sub', '$USER_B', false);
 -- Edição
 select save_shift_with_obligation(
   '$SHIFT_B',
