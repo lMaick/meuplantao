@@ -66,7 +66,7 @@ select id from save_shift_with_obligation(
   1200.00,
   'agendado'
 );
-")"
+" | tail -n 1)"
 
 test -n "$SHIFT_A"
 test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.shifts where id = '$SHIFT_A' and user_id = '$USER_A'")" = 1
@@ -125,7 +125,7 @@ select id from save_shift_with_obligation(
   1500.00,
   'agendado'
 );
-")"
+" | tail -n 1)"
 
 test -n "$SHIFT_B"
 
@@ -198,7 +198,7 @@ user_a_checks_b="$(psql "$DATABASE_URL" -Atqc "
 set role authenticated;
 select set_config('request.jwt.claim.sub', '$USER_A', false);
 select public.has_active_entitlement('$USER_B');
-")"
+" | tail -n 1)"
 test "$user_a_checks_b" = "f"
 
 # Usuário A tenta editar o plantão de B
@@ -232,7 +232,7 @@ user_a_shifts_count="$(psql "$DATABASE_URL" -Atqc "
 set role authenticated;
 select set_config('request.jwt.claim.sub', '$USER_A', false);
 select count(*) from public.shifts;
-")"
+" | tail -n 1)"
 test "$user_a_shifts_count" = "1"
 
 echo "✔ Cenário F aprovado (leitura via RLS preservada)."
