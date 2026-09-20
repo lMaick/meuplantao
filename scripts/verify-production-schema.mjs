@@ -38,14 +38,17 @@ export async function verifyProductionSchema(options = {}) {
   const isStrict = isExplicit || isVercelProduction;
   const isVercelPreview = env.VERCEL_ENV === "preview";
 
+  const databaseUrl = options.databaseUrl || env.DATABASE_URL;
+  const usePsql = options.usePsql;
+
   if (isStrict) {
     logger.log("[SCHEMA-GATE] Strict schema verification active (Production / Explicit gate).");
     try {
-      const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn });
+      const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn, databaseUrl, usePsql });
       if (!result.ok) {
         logger.error("[SCHEMA-GATE] FATAL: Production database is missing critical migrations / RPCs!");
         logger.error("[SCHEMA-GATE] Aborting build/deploy to prevent serving broken code to users.");
-        return { ok: false, strict: true, error: result.error, missingCount: result.missingCount };
+        return { ok: false, strict: true, error: result.error, missingCount: result.missingCount, results: result.results };
       }
       logger.log("[SCHEMA-GATE] Production schema compatibility verified successfully.");
       return { ok: true, strict: true };
@@ -66,11 +69,11 @@ export async function verifyProductionSchema(options = {}) {
   // If a remote URL is present in preview / non-strict mode, run optional diagnostic check
   try {
     logger.log(`[SCHEMA-GATE] Optional diagnostic schema check (${isVercelPreview ? "Vercel Preview" : "non-strict remote"})...`);
-    const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn });
+    const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn, databaseUrl, usePsql });
     if (!result.ok) {
       logger.warn(`[SCHEMA-GATE] WARNING: Target database schema is missing ${result.missingCount || 1} migration(s)/RPC(s).`);
       logger.warn("[SCHEMA-GATE] Build proceeding without blocking because this is a preview / non-strict environment.");
-      return { ok: true, warned: true, preview: isVercelPreview, missingCount: result.missingCount };
+      return { ok: true, warned: true, preview: isVercelPreview, missingCount: result.missingCount, results: result.results };
     }
     logger.log("[SCHEMA-GATE] Diagnostic schema check passed successfully.");
     return { ok: true, preview: isVercelPreview };

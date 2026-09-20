@@ -72,10 +72,25 @@ export function redactSecrets(text, extraSecrets = []) {
   return redacted;
 }
 
+export const RPC_STATUS = {
+  FOUND: "FOUND",
+  MISSING: "MISSING",
+  AUTH_ERROR: "AUTH_ERROR",
+  NETWORK_ERROR: "NETWORK_ERROR",
+  SERVER_ERROR: "SERVER_ERROR",
+};
+
 /**
  * Checks an RPC using PostgREST REST API.
  * PostgREST returns HTTP 404 with code PGRST202 if the function does not exist in schema cache.
- * If the function exists, PostgREST returns 200, 400 (missing parameters), or 401/403 (auth).
+ * PostgREST returns HTTP 400 (missing parameters PGRST201) if the function exists.
+ *
+ * Granular classification:
+ *  - FOUND: HTTP 200, or HTTP 400/422 proving function exists in schema cache.
+ *  - MISSING: HTTP 404 with PGRST202 or route not found.
+ *  - AUTH_ERROR: HTTP 401 or 403 (invalid key / permission denied before function resolution).
+ *  - SERVER_ERROR: HTTP 429 (rate limit) or 5xx (server/gateway error).
+ *  - NETWORK_ERROR: fetch exception, DNS error, timeout.
  */
 export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = globalThis.fetch) {
   const url = `${baseUrl.replace(/\/+$/, "")}/rest/v1/rpc/${rpcName}`;
@@ -92,29 +107,86 @@ export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = global
       body: JSON.stringify({}),
     });
 
-    if (response.status === 404) {
-      let bodyText = "";
-      try {
-        const bodyJson = await response.json();
-        bodyText = JSON.stringify(bodyJson);
-      } catch {
-        bodyText = await response.text().catch(() => "");
-      }
+    let bodyText = "";
+    let bodyJson = null;
+    try {
+      bodyJson = await response.json();
+      bodyText = JSON.stringify(bodyJson);
+    } catch {
+      bodyText = await response.text().catch(() => "");
+    }
 
+    const httpStatus = response.status;
+
+    // 1. HTTP 401 / 403: Auth failure — NEVER consider as proof of RPC existence
+    if (httpStatus === 401 || httpStatus === 403) {
       return {
+        status: RPC_STATUS.AUTH_ERROR,
         exists: false,
-        status: 404,
+        httpStatus,
         details: redactSecrets(bodyText, [apiKey]),
       };
     }
 
-    // Any non-404 status (200, 400, 401, 403, 422, 500) proves the route exists in PostgREST
+    // 2. HTTP 429 or 5xx: Server/gateway error or rate limit
+    if (httpStatus === 429 || httpStatus >= 500) {
+      return {
+        status: RPC_STATUS.SERVER_ERROR,
+        exists: false,
+        httpStatus,
+        details: redactSecrets(bodyText, [apiKey]),
+      };
+    }
+
+    // 3. HTTP 404: Not found (PGRST202 function not in schema cache)
+    if (httpStatus === 404) {
+      return {
+        status: RPC_STATUS.MISSING,
+        exists: false,
+        httpStatus: 404,
+        details: redactSecrets(bodyText, [apiKey]),
+      };
+    }
+
+    // 4. HTTP 200-299: Successfully executed / reached
+    if (httpStatus >= 200 && httpStatus < 300) {
+      return {
+        status: RPC_STATUS.FOUND,
+        exists: true,
+        httpStatus,
+      };
+    }
+
+    // 5. HTTP 400 or 422: Parameter validation or signature error by PostgREST
+    // PostgREST returns 400 with PGRST201 ("Missing required argument") or 422 ("PGRST..."),
+    // or Postgres error from function body, which proves the function exists in schema cache.
+    if (httpStatus === 400 || httpStatus === 422) {
+      if (bodyJson?.code === "PGRST202") {
+        return {
+          status: RPC_STATUS.MISSING,
+          exists: false,
+          httpStatus,
+          details: redactSecrets(bodyText, [apiKey]),
+        };
+      }
+      return {
+        status: RPC_STATUS.FOUND,
+        exists: true,
+        httpStatus,
+        details: redactSecrets(bodyText, [apiKey]),
+      };
+    }
+
+    // Any other unexpected status: fail closed as SERVER_ERROR, not FOUND
     return {
-      exists: true,
-      status: response.status,
+      status: RPC_STATUS.SERVER_ERROR,
+      exists: false,
+      httpStatus,
+      details: redactSecrets(bodyText, [apiKey]),
     };
   } catch (err) {
     return {
+      status: RPC_STATUS.NETWORK_ERROR,
       exists: false,
       error: redactSecrets(err?.message || String(err), [apiKey]),
     };
@@ -138,8 +210,10 @@ export function checkRpcsViaPsql(databaseUrl) {
     const results = {};
 
     for (const rpc of CRITICAL_RPCS) {
+      const exists = foundNames.has(rpc.name);
       results[rpc.name] = {
-        exists: foundNames.has(rpc.name),
+        status: exists ? RPC_STATUS.FOUND : RPC_STATUS.MISSING,
+        exists,
         source: "psql",
       };
     }
@@ -148,6 +222,7 @@ export function checkRpcsViaPsql(databaseUrl) {
   } catch (err) {
     return {
       ok: false,
+      status: RPC_STATUS.SERVER_ERROR,
       error: redactSecrets(err?.message || String(err), [databaseUrl]),
     };
   }
@@ -180,7 +255,7 @@ export async function runSmokeTest(options = {}) {
       let missingCount = 0;
       for (const rpc of CRITICAL_RPCS) {
         const res = psqlRes.results[rpc.name];
-        if (res?.exists) {
+        if (res?.status === RPC_STATUS.FOUND) {
           logger.log(`  ✓ ${rpc.name}: FOUND (${rpc.description})`);
         } else {
           logger.error(`  ✗ ${rpc.name}: MISSING in public schema!`);
@@ -189,10 +264,10 @@ export async function runSmokeTest(options = {}) {
       }
       if (missingCount === 0) {
         logger.log("\n[SUCCESS] All critical RPCs confirmed present in PostgreSQL!");
-        return { ok: true, method: "psql" };
+        return { ok: true, method: "psql", results: psqlRes.results };
       } else {
         logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing from database.`);
-        return { ok: false, missingCount, method: "psql" };
+        return { ok: false, missingCount, method: "psql", results: psqlRes.results };
       }
     } else {
       logger.log(`[SMOKE] psql check unavailable or failed (${psqlRes.error}). Falling back to REST API...`);
@@ -222,33 +297,47 @@ export async function runSmokeTest(options = {}) {
   }
 
   let missingCount = 0;
+  let errorCount = 0;
   const results = {};
 
   for (const rpc of CRITICAL_RPCS) {
     if (rpc.requiresServiceRole && !isServiceRole) {
       logger.log(`  - ${rpc.name}: SKIPPED (Requires SUPABASE_SERVICE_ROLE_KEY)`);
-      results[rpc.name] = { skipped: true, reason: "requires_service_role" };
+      results[rpc.name] = { status: "SKIPPED", skipped: true, reason: "requires_service_role", exists: false };
       continue;
     }
 
     const check = await checkRpcViaRest(supabaseUrl, rpc.name, effectiveKey, fetchFn);
     results[rpc.name] = check;
 
-    if (check.exists) {
-      logger.log(`  ✓ ${rpc.name}: OK (Found in schema cache)`);
-    } else {
-      logger.error(`  ✗ ${rpc.name}: MISSING! ${check.details || check.error || "Not found (404/PGRST202)"}`);
+    if (check.status === RPC_STATUS.FOUND) {
+      logger.log(`  ✓ ${rpc.name}: FOUND (HTTP ${check.httpStatus})`);
+    } else if (check.status === RPC_STATUS.MISSING) {
+      logger.error(`  ✗ ${rpc.name}: MISSING! ${check.details || "Not found (404/PGRST202)"}`);
       missingCount++;
+    } else if (check.status === RPC_STATUS.AUTH_ERROR) {
+      logger.error(`  ✗ ${rpc.name}: AUTH_ERROR! Authentication rejected (HTTP ${check.httpStatus}). Cannot verify existence.`);
+      errorCount++;
+    } else if (check.status === RPC_STATUS.SERVER_ERROR) {
+      logger.error(`  ✗ ${rpc.name}: SERVER_ERROR! Gateway/Server error (HTTP ${check.httpStatus}).`);
+      errorCount++;
+    } else if (check.status === RPC_STATUS.NETWORK_ERROR) {
+      logger.error(`  ✗ ${rpc.name}: NETWORK_ERROR! ${check.error}`);
+      errorCount++;
+    } else {
+      logger.error(`  ✗ ${rpc.name}: FAILED! Unknown check status.`);
+      errorCount++;
     }
   }
 
-  if (missingCount > 0) {
-    logger.error(`\n[FAIL-CLOSED] Schema verification failed: ${missingCount} critical RPC(s) missing on ${redactSecrets(supabaseUrl, extraSecrets)}.`);
-    logger.error("A required migration was not applied to production. Deploy cannot proceed.");
-    return { ok: false, missingCount, results };
+  const totalFailures = missingCount + errorCount;
+  if (totalFailures > 0) {
+    logger.error(`\n[FAIL-CLOSED] Schema verification failed: ${missingCount} missing, ${errorCount} error(s) on ${redactSecrets(supabaseUrl, extraSecrets)}.`);
+    logger.error("Only functions with verified FOUND status are accepted. Deploy cannot proceed.");
+    return { ok: false, missingCount, errorCount, totalFailures, results };
   }
 
-  logger.log("\n[SUCCESS] All verified critical RPCs are present in Supabase schema cache!");
+  logger.log("\n[SUCCESS] All verified critical RPCs are present in Supabase schema cache (FOUND)!");
   return { ok: true, results };
 }
 
