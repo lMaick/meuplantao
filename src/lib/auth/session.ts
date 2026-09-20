@@ -45,10 +45,9 @@ export async function updateSession(request: NextRequest) {
   const isLandingPage = request.nextUrl.pathname === "/";
   const isAuthPage = request.nextUrl.pathname === "/login" || request.nextUrl.pathname === "/cadastro";
   const isPublicAuthCallback = request.nextUrl.pathname === "/auth/callback";
-  const isPublicStripeWebhook = request.nextUrl.pathname === "/api/webhooks/stripe";
-  const isPublicMercadoPagoWebhook = request.nextUrl.pathname === "/api/webhooks/mercadopago";
+  const isPublicMercadoPagoWebhook = request.nextUrl.pathname.startsWith("/api/webhooks/mercadopago");
 
-  if (!user && !isLandingPage && !isAuthPage && !isPublicAuthCallback && !isPublicStripeWebhook && !isPublicMercadoPagoWebhook) {
+  if (!user && !isLandingPage && !isAuthPage && !isPublicAuthCallback && !isPublicMercadoPagoWebhook) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);

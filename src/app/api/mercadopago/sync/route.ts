@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
-import { createAdminClient, createAuthenticatedClient } from "@/lib/stripe/supabase";
+import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 

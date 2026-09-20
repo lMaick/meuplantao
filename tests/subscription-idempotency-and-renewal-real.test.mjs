@@ -18,7 +18,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: paymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: trialUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: typesUrl, shortCircuit: true };
-    if (specifier === "@/lib/stripe/supabase") {
+    if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {
       return {
         url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;",
         shortCircuit: true,
