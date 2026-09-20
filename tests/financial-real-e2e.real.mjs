@@ -22,10 +22,14 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const obligationFor = async (token, shiftId) => { const rows = await ok(await request(token, `obligations?shift_id=eq.${shiftId}&select=id,shift_id,valor_devido,data_prevista,responsavel_place_id,responsavel_contact_id`), "ler obrigação"); assert.equal(rows.length, 1); return rows[0]; };
   const pay = (token, obligation, value) => request(token, "rpc/register_payment", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ p_obligation_id: obligation, p_valor: value, p_data_pagamento: date }) });
   const saveShift = (token, values) => request(token, "rpc/save_shift_with_obligation", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
+  const hasEntitlement = (token, p_user_id = null) => request(token, "rpc/has_active_entitlement", { method: "POST", body: JSON.stringify(p_user_id ? { p_user_id } : {}) });
   const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
   const concreteRpcShift = (body, label) => { const row = rpcRow(body); assert.ok(row && typeof row.id === "string" && row.id.length > 0, `${label}: RPC retornou shift inválido ${JSON.stringify(body)}`); return row; };
   const assertRejected42501 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "42501", `${label}: privilegio inesperado`); return response; };
   const assertRejected23514 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "23514", `${label}: código SQL inesperado`); return response; };
+
+  assert.equal(await ok(await hasEntitlement(a), "entitlement A durante trial"), true);
+  assert.equal(await ok(await hasEntitlement(a, bId), "A consultando entitlement de B retorna falso"), false);
 
   const invalidScheduledKey = `mai65-invalid-scheduled-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   await assertRejected23514(saveShift(a, { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "05:00", p_hora_fim: "05:30", p_valor_previsto: 50, p_status: "agendado", p_data_prevista: "2030-09-10", p_responsavel_place_id: place.id, p_responsavel_contact_id: null, p_idempotency_key: invalidScheduledKey }), "criação agendada com obligation inválida");
