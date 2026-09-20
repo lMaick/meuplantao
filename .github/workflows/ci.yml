@@ -89,6 +89,8 @@ jobs:
           restore_migration
           bash tests/financial-migration-upgrade-real.sh "${migration_first}" "${migration_second}" "${migration_third}" "${migration_fourth}"
           npx --yes supabase@2.117.0 db reset --local --no-seed >/dev/null
+          bash tests/subscription-entitlement-real.sh "supabase/migrations/20260920120000_subscription_entitlement_boundary.sql"
+          npx --yes supabase@2.117.0 db reset --local --no-seed >/dev/null
           export NEXT_PUBLIC_SUPABASE_URL="${API_URL}"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}"
 
