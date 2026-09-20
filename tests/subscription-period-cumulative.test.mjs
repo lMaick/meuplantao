@@ -139,7 +139,23 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
         { status: 200 },
       );
     let currentPeriodEnd = null;
+    let rpcCalls = [];
     globalThis.adminClient = {
+      rpc: async (fn, params) => {
+        rpcCalls.push(params);
+        const now = Date.now();
+        const base = currentPeriodEnd ? Math.max(new Date(currentPeriodEnd).getTime(), now) : now;
+        currentPeriodEnd = new Date(base + (params.p_validity_days || 30) * 86400000).toISOString();
+        return {
+          data: {
+            already_processed: false,
+            current_period_end: currentPeriodEnd,
+            validity_days_added: params.p_validity_days || 30,
+            status: "active",
+          },
+          error: null,
+        };
+      },
       from: () => ({
         select: () => ({
           eq: () => ({
@@ -149,12 +165,6 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
             }),
           }),
         }),
-        insert: async () => ({ error: null }),
-        upsert: async (row, options) => {
-          currentPeriodEnd = row.current_period_end;
-          upserts.push({ row, options });
-          return { error: null };
-        },
       }),
     };
 
@@ -164,47 +174,39 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
     assert.equal(json.synced, true);
     assert.equal(json.status, "active");
     assert.ok(json.current_period_end, "sync deve retornar current_period_end");
-    assert.equal(upserts.length, 2, "sync deve processar os 2 pagamentos aprovados");
-    assert.equal(upserts[0].row.user_id, testUserId);
-    assert.equal(upserts[1].row.user_id, testUserId);
-    assert.equal(upserts[1].row.status, "active");
-    assert.ok(upserts[1].row.current_period_end, "upsert deve gravar current_period_end");
+    assert.equal(rpcCalls.length, 2, "sync deve processar os 2 pagamentos aprovados via RPC");
+    assert.equal(rpcCalls[0].p_user_id, testUserId);
+    assert.equal(rpcCalls[1].p_user_id, testUserId);
 
-    const days = Math.round((new Date(upserts[1].row.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
+    const days = Math.round((new Date(json.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
     assert.ok(days >= 59 && days <= 61, `esperado ~60 dias, obtido ${days}`);
     assert.equal(DAYS_PER_PRO_PAYMENT, 30);
   });
 
   test("webhook acumula historico e grava current_period_end", async () => {
     globalThis.__mockWebhookSecret = null;
-    const upserts = [];
     let calls = 0;
-    globalThis.fetch = async (url) => {
+    let rpcExecuted = false;
+    globalThis.fetch = async () => {
       calls += 1;
-      // 1ª chamada: pagamento individual; 2ª: busca do histórico com 2 aprovados
-      if (String(url).includes("/v1/payments/search")) {
-        return new Response(
-          JSON.stringify({
-            results: [
-              { status: "approved", date_created: "2026-09-19T10:00:00.000Z", transaction_amount: 12.9, external_reference: testUserId },
-              { status: "approved", date_created: "2026-09-19T11:00:00.000Z", transaction_amount: 12.9, external_reference: testUserId },
-            ],
-          }),
-          { status: 200 },
-        );
-      }
       return new Response(
         JSON.stringify({ status: "approved", external_reference: testUserId, date_created: "2026-09-19T11:00:00.000Z", transaction_amount: 12.9 }),
         { status: 200 },
       );
     };
     globalThis.adminClient = {
-      from: () => ({
-        upsert: async (row, options) => {
-          upserts.push({ row, options });
-          return { error: null };
-        },
-      }),
+      rpc: async () => {
+        rpcExecuted = true;
+        return {
+          data: {
+            already_processed: false,
+            current_period_end: new Date(Date.now() + 30 * MS_PER_DAY).toISOString(),
+            validity_days_added: 30,
+            status: "active",
+          },
+          error: null,
+        };
+      },
     };
 
     const request = new Request("http://localhost/api/webhooks/mercadopago?data.id=999&type=payment", { method: "POST", body: JSON.stringify({ data: { id: "999" }, type: "payment" }) });
@@ -215,8 +217,8 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
     assert.equal(json.processed, true);
     assert.ok(json.current_period_end);
     assert.ok(calls >= 1, "webhook deve consultar pagamento no Mercado Pago");
-    assert.ok(upserts[0].row.current_period_end);
-    const days = Math.round((new Date(upserts[0].row.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
+    assert.ok(rpcExecuted, "webhook deve executar a RPC de processamento atômico");
+    const days = Math.round((new Date(json.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
     assert.ok(days >= 29 && days <= 31, `esperado ~30 dias, obtido ${days}`);
     globalThis.__mockWebhookSecret = null;
   });

@@ -48,12 +48,18 @@ test("webhook GET handles IPN query params (?id=...&topic=payment)", async () =>
     return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
   };
   globalThis.adminClient = {
-    from: () => ({
-      upsert: async (row, options) => {
-        calls.push({ row, options });
-        return { error: null };
-      },
-    }),
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
   };
 
   const request = new Request("http://localhost/api/webhooks/mercadopago?id=123456789&topic=payment", {
@@ -67,10 +73,9 @@ test("webhook GET handles IPN query params (?id=...&topic=payment)", async () =>
   assert.equal(jsonFirst.processed, true);
   assert.ok(jsonFirst.current_period_end);
   assert.equal(calls[0], "https://api.mercadopago.test/v1/payments/123456789");
-  const upsertFirst = calls.find((c) => c && c.row);
-  assert.equal(upsertFirst.row.user_id, validUserId);
-  assert.equal(upsertFirst.row.status, "active");
-  assert.ok(upsertFirst.row.current_period_end);
+  const rpcCall = calls.find((c) => c && c.fn === "process_mercadopago_subscription_payment");
+  assert.ok(rpcCall);
+  assert.equal(rpcCall.params.p_user_id, validUserId);
 });
 
 test("webhook GET handles IPN query params (?data.id=...&type=payment)", async () => {
@@ -81,12 +86,18 @@ test("webhook GET handles IPN query params (?data.id=...&type=payment)", async (
     return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
   };
   globalThis.adminClient = {
-    from: () => ({
-      upsert: async (row, options) => {
-        calls.push({ row, options });
-        return { error: null };
-      },
-    }),
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
   };
 
   const request = new Request("http://localhost/api/webhooks/mercadopago?data.id=987654321&type=payment", {
@@ -110,12 +121,18 @@ test("webhook POST handles JSON body with resource URL", async () => {
     return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
   };
   globalThis.adminClient = {
-    from: () => ({
-      upsert: async (row, options) => {
-        calls.push({ row, options });
-        return { error: null };
-      },
-    }),
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
   };
 
   const request = new Request("http://localhost/api/webhooks/mercadopago", {
@@ -163,7 +180,17 @@ test("webhook validates HMAC x-signature when secret is set", async () => {
   // 2. Valid signature
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
-  globalThis.adminClient = { from: () => ({ upsert: async () => ({ error: null }) }) };
+  globalThis.adminClient = {
+    rpc: async () => ({
+      data: {
+        already_processed: false,
+        current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+        validity_days_added: 30,
+        status: "active",
+      },
+      error: null,
+    }),
+  };
 
   const validRequest = new Request("http://localhost/api/webhooks/mercadopago", {
     method: "POST",

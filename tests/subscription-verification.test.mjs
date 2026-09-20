@@ -60,17 +60,18 @@ test("approved payment matching the authenticated user activates the subscriptio
     return new Response(JSON.stringify({ status: "approved", external_reference: userId }), { status: 200 });
   };
   globalThis.adminClient = {
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          maybeSingle: async () => ({ data: null, error: null }),
-        }),
-      }),
-      upsert: async (row, options) => {
-        calls.push({ row, options });
-        return { error: null };
-      },
-    }),
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
   };
 
   const response = await verifyPayment(verifyRequest("payment_id=payment-123"));
@@ -81,16 +82,16 @@ test("approved payment matching the authenticated user activates the subscriptio
   assert.equal(json.status, "active");
   assert.ok(json.current_period_end);
   assert.equal(calls[0], "https://api.mercadopago.com/v1/payments/payment-123");
-  const upsertCall = calls.find((c) => c && c.row);
-  assert.equal(upsertCall.row.user_id, userId);
-  assert.equal(upsertCall.row.status, "active");
-  assert.ok(upsertCall.row.current_period_end);
+  const rpcCall = calls.find((c) => c && c.fn === "process_mercadopago_subscription_payment");
+  assert.ok(rpcCall);
+  assert.equal(rpcCall.params.p_user_id, userId);
+  assert.equal(rpcCall.params.p_payment_id, "payment-123");
 });
 
 test("collection_id is accepted and a payment belonging to another user is rejected", async () => {
   globalThis.authenticatedClient = authenticatedClient();
   globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: "22222222-2222-4222-8222-222222222222" }), { status: 200 });
-  globalThis.adminClient = { from: () => ({ upsert: async () => ({ error: null }) }) };
+  globalThis.adminClient = { rpc: async () => { throw new Error("must not call rpc"); } };
 
   const response = await verifyPayment(verifyRequest("collection_id=collection-456"));
   assert.equal(response.status, 403);
@@ -100,7 +101,7 @@ test("collection_id is accepted and a payment belonging to another user is rejec
 test("non-approved payment is reported without changing the subscription", async () => {
   globalThis.authenticatedClient = authenticatedClient();
   globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending" }), { status: 200 });
-  globalThis.adminClient = { from: () => ({ upsert: async () => { throw new Error("must not upsert"); } }) };
+  globalThis.adminClient = { rpc: async () => { throw new Error("must not call rpc"); } };
 
   const response = await verifyPayment(verifyRequest("payment_id=pending-789"));
   assert.equal(response.status, 200);

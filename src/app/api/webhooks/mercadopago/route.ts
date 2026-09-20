@@ -155,6 +155,7 @@ async function handleWebhook(request: Request, rawBody: string) {
       processed: true,
       already_processed: result.already_processed,
       current_period_end: result.current_period_end,
+      status: result.status,
     }, { status: 200 });
   } catch (error) {
     console.error("Mercado Pago webhook processing error", error instanceof Error ? error.message : "unknown");

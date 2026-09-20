@@ -121,9 +121,13 @@ export async function POST(request: NextRequest) {
 
       const finalPeriodEnd = currentSub?.current_period_end || lastResultPeriodEnd;
 
+      const now = new Date();
+      const isActivePeriod = Boolean(finalPeriodEnd && new Date(finalPeriodEnd) > now);
+      const derivedStatus = isActivePeriod ? "active" : (currentSub?.status || "expired");
+
       return NextResponse.json({
         synced: true,
-        status: currentSub?.status || "active",
+        status: derivedStatus,
         current_period_end: finalPeriodEnd,
         newly_processed: newlyProcessedCount,
         total_payments: uniquePayments.length,

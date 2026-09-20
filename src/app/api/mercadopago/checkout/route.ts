@@ -34,10 +34,8 @@ export async function POST(request: NextRequest) {
     const isRenewal = Boolean(subscription && subscription.status === "active");
 
     let months = 1;
-    let requestedPeriod = false;
     try {
       const body = (await request.json()) as { months?: number };
-      requestedPeriod = body.months !== undefined;
       months = body.months ?? 1;
     } catch {
       months = 1;
@@ -59,7 +57,7 @@ export async function POST(request: NextRequest) {
           currency_id: "BRL",
           unit_price: period.price,
         }],
-        external_reference: requestedPeriod ? `${user.id}#${period.months}` : user.id,
+        external_reference: user.id,
         metadata: { user_id: user.id, months: period.months, is_renewal: isRenewal },
         payer: user.email ? { email: user.email } : undefined,
         back_urls: {

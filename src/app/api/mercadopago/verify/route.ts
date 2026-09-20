@@ -62,8 +62,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       verified: true,
-      activated: true,
-      status: "active",
+      activated: !result.already_processed,
+      status: result.status,
       already_processed: result.already_processed,
       current_period_end: result.current_period_end,
     });

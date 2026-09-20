@@ -83,7 +83,20 @@ test("approved payment activates the user's subscription", async () => {
     calls.push(url);
     return new Response(JSON.stringify({ status: "approved", external_reference: userId }), { status: 200 });
   };
-  globalThis.adminClient = { from: () => ({ upsert: async (row, options) => { calls.push({ row, options }); return { error: null }; } }) };
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
+  };
 
   const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", {
     method: "POST",
@@ -94,10 +107,8 @@ test("approved payment activates the user's subscription", async () => {
   assert.equal(webhookJson.processed, true);
   assert.ok(webhookJson.current_period_end, "MAI-126: webhook deve retornar current_period_end");
   assert.equal(calls[0], "https://api.mercadopago.test/v1/payments/payment-1");
-  const upsertCall = calls.find((c) => c && c.row);
-  assert.ok(upsertCall, "webhook deve fazer upsert da assinatura");
-  assert.equal(upsertCall.row.user_id, userId);
-  assert.equal(upsertCall.row.status, "active");
-  assert.equal(upsertCall.options.onConflict, "user_id");
-  assert.ok(upsertCall.row.current_period_end, "MAI-126: upsert deve gravar current_period_end");
+  const rpcCall = calls.find((c) => c && c.fn === "process_mercadopago_subscription_payment");
+  assert.ok(rpcCall, "webhook deve chamar a RPC atômica process_mercadopago_subscription_payment");
+  assert.equal(rpcCall.params.p_user_id, userId);
+  assert.equal(rpcCall.params.p_payment_id, "payment-1");
 });

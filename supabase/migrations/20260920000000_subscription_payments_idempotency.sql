@@ -46,7 +46,9 @@ as $$
 declare
   v_inserted public.subscription_payments;
   v_current_period_end timestamptz;
+  v_current_status text;
   v_new_period_end timestamptz;
+  v_real_status text;
   v_validity_days integer := coalesce(p_validity_days, 30);
   v_months integer := coalesce(p_months, 1);
   v_now timestamptz := now();
@@ -58,7 +60,11 @@ begin
     raise exception using errcode = '22023', message = 'Identificador do usuario ausente';
   end if;
 
-  -- 1. Tenta inserir o registro de pagamento (idempotencia via constraint UNIQUE)
+  -- 1. Serialização estrita por usuário via advisory lock de transação
+  -- Garante atomicidade e evita concorrência mesmo quando o usuário ainda não possui linha em subscriptions
+  perform pg_advisory_xact_lock(hashtext(p_user_id::text));
+
+  -- 2. Tenta inserir o registro de pagamento (idempotencia via constraint UNIQUE)
   insert into public.subscription_payments (
     mercadopago_payment_id,
     user_id,
@@ -79,21 +85,31 @@ begin
   on conflict (mercadopago_payment_id) do nothing
   returning * into v_inserted;
 
-  -- 2. Se ja foi processado anteriormente, retorna sem adicionar dias
+  -- 3. Se ja foi processado anteriormente, retorna sem adicionar dias e com o status real
   if v_inserted.id is null then
-    select current_period_end into v_current_period_end
+    select status, current_period_end into v_current_status, v_current_period_end
       from public.subscriptions
      where user_id = p_user_id;
+
+    v_real_status := case
+      when v_current_period_end is not null and v_current_period_end > v_now then 'active'
+      when v_current_status is not null and v_current_status in ('trialing', 'active', 'past_due', 'canceled', 'unpaid') then
+        case
+          when v_current_status = 'active' and (v_current_period_end is null or v_current_period_end <= v_now) then 'expired'
+          else v_current_status
+        end
+      else 'expired'
+    end;
 
     return jsonb_build_object(
       'already_processed', true,
       'current_period_end', v_current_period_end,
       'validity_days_added', 0,
-      'status', 'active'
+      'status', v_real_status
     );
   end if;
 
-  -- 3. Pagamento novo: calcula e adiciona vigencia atomicamente
+  -- 4. Pagamento novo: calcula e adiciona vigencia atomicamente com lock
   select current_period_end into v_current_period_end
     from public.subscriptions
    where user_id = p_user_id
