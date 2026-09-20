@@ -165,22 +165,22 @@ function AppShellInner({ children }: { children: ReactNode }) {
     // cálculo quebrado de lg:ml-64 + w-full (100vw + 256px) que cortava a direita.
     <div className="min-h-screen bg-muted/30 lg:pl-64">
       {/* Desktop Sidebar (z-30) */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-border/80 bg-background/95 backdrop-blur-md px-4 py-6 lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-border/80 bg-background/95 backdrop-blur-md px-4 py-5 lg:flex overflow-y-auto overflow-x-hidden">
         <Link
           href="/dashboard"
-          className="mb-4 flex min-w-0 items-center gap-3 px-3 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group"
+          className="mb-3 flex min-w-0 items-center gap-3 px-2 text-lg font-bold tracking-tight text-foreground focus-visible:outline-ring group shrink-0"
         >
           <BrandLogo priority />
         </Link>
-        <div className="mb-5 px-1">
+        <div className="mb-4 w-full min-w-0 shrink-0 overflow-hidden px-0.5">
           <TrialBadge />
         </div>
-        <nav className="flex flex-1 flex-col gap-1.5" aria-label="Navegação principal">
+        <nav className="flex flex-1 flex-col gap-1.5 min-h-0" aria-label="Navegação principal">
           <Link
             href="/calendario?novo=1"
             onClick={handleNewShift}
             aria-label={blocked ? "Novo plantão (assinatura necessária)" : "Cadastrar novo plantão"}
-            className="mb-4 flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-700/20 transition-all hover:from-emerald-500 hover:to-teal-500 hover:shadow-lg focus-visible:outline-ring active:scale-[0.98]"
+            className="mb-3 flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-700/20 transition-all hover:from-emerald-500 hover:to-teal-500 hover:shadow-lg focus-visible:outline-ring active:scale-[0.98]"
           >
             <Plus className="size-4 stroke-[2.5]" />
             Novo plantão
@@ -191,7 +191,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               href={href}
               aria-current={active(href) ? "page" : undefined}
               className={cn(
-                "flex min-h-[44px] items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-all",
+                "flex min-h-[44px] shrink-0 items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-all",
                 active(href)
                   ? "bg-primary/10 font-semibold text-primary border-l-2 border-primary shadow-xs"
                   : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
@@ -201,7 +201,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               {label}
             </Link>
           ))}
-          <p className="mb-1 mt-6 px-3.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="mb-1 mt-5 shrink-0 px-3.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Gerenciamento
           </p>
           {secondary.map(({ href, label, icon: Icon }) => (
@@ -210,7 +210,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               href={href}
               aria-current={active(href) ? "page" : undefined}
               className={cn(
-                "flex min-h-[44px] items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-all",
+                "flex min-h-[44px] shrink-0 items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-all",
                 active(href)
                   ? "bg-primary/10 font-semibold text-primary border-l-2 border-primary shadow-xs"
                   : "text-muted-foreground hover:bg-muted/70 hover:text-foreground"
@@ -220,7 +220,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
               {label}
             </Link>
           ))}
-          <div className="mt-auto space-y-4 border-t border-border/80 pt-4">
+          <div className="mt-auto shrink-0 space-y-4 border-t border-border/80 pt-4 pb-2">
             <ThemeToggle />
             <LogoutButton />
           </div>

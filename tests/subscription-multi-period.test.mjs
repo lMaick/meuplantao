@@ -7,10 +7,12 @@ import test from "node:test";
 const userId = "11111111-1111-4111-8111-111111111111";
 const subscriptionTypesUrl = pathToFileURL(resolve("src/lib/subscription/types.ts")).href;
 const subscriptionTrialUrl = pathToFileURL(resolve("src/lib/subscription/trial.ts")).href;
+const subscriptionPaymentsUrl = pathToFileURL(resolve("src/lib/mercadopago/payments.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';", shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/payments") return { url: subscriptionPaymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: subscriptionTypesUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: subscriptionTrialUrl, shortCircuit: true };
@@ -56,7 +58,7 @@ for (const expected of [
     const body = calls[0].body;
     assert.equal(response.status, 200);
     assert.equal(body.items[0].unit_price, expected[1]);
-    assert.equal(body.external_reference, `${userId}#${expected[0]}`);
+    assert.equal(body.external_reference, userId);
     assert.equal(body.metadata.months, expected[0]);
   });
 }
@@ -69,12 +71,27 @@ test("subscription validity accumulates from an active period end", () => {
 
 test("webhook activates a multi-period payment with cumulative validity", async () => {
   const calls = [];
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: `${userId}#6`, metadata: { user_id: userId, months: 6 } }), { status: 200 });
-  globalThis.adminClient = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { current_period_end: "2026-12-01T00:00:00.000Z" }, error: null }) }) }), upsert: async (row) => { calls.push(row); return { error: null }; } }) };
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: userId, metadata: { user_id: userId, months: 6 } }), { status: 200 });
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push(params);
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: "2027-05-30T00:00:00.000Z",
+          validity_days_added: 180,
+          status: "active",
+        },
+        error: null,
+      };
+    },
+  };
 
   const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", { method: "POST", body: JSON.stringify({ type: "payment", data: { id: "payment-6" } }) }));
   assert.equal(response.status, 200);
-  assert.equal(calls[0].current_period_end, "2027-05-30T00:00:00.000Z");
+  const json = await response.json();
+  assert.equal(json.current_period_end, "2027-05-30T00:00:00.000Z");
+  assert.equal(calls[0].p_validity_days, 180);
 });
 
 test("checkout rejects unsupported periods", async () => {

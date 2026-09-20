@@ -1,17 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
+import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { createAdminClient } from "@/lib/stripe/supabase";
-import { calculateCumulativePeriodEnd, DAYS_PER_PRO_PAYMENT, MS_PER_DAY } from "@/lib/subscription/trial";
 
 export const runtime = "nodejs";
-
-const validityDaysByMonths = new Map([[1, 30], [3, 90], [6, 180], [12, 365]]);
-
-function addValidity(start: Date, days: number): Date {
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + days);
-  return end;
-}
 
 function isUserId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
@@ -134,74 +126,37 @@ async function handleWebhook(request: Request, rawBody: string) {
     }
 
     const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
-    const userId = externalUserId || payment.metadata?.user_id || payment.metadata?.userId;
-    const months = Number(payment.metadata?.months || externalMonths || 1);
-    const validityDays = validityDaysByMonths.get(months) ?? validityDaysByMonths.get(1)!;
-    const isMultiPeriodPayment = Boolean(payment.metadata?.months || externalMonths);
+    const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
+
+    if (externalUserId && metadataUserId && externalUserId !== metadataUserId) {
+      return Response.json({ received: true, ignored: true, error: "Identificadores de usuario divergentes no pagamento" }, { status: 200 });
+    }
+
+    const userId = externalUserId || metadataUserId;
     if (!isUserId(userId)) {
       return Response.json({ received: true, ignored: true, error: "Pagamento sem usuario valido associado" }, { status: 200 });
     }
 
+    const months = Number(payment.metadata?.months || externalMonths || 1);
+    const validityDays = getValidityDays(months);
+
     const admin = createAdminClient();
-    let currentPeriodEnd: string | null = null;
+    const result = await processMercadoPagoPayment(admin, {
+      paymentId,
+      userId,
+      months,
+      validityDays,
+      amount: payment.transaction_amount,
+      status: payment.status ?? "approved",
+    });
 
-    if (isMultiPeriodPayment) {
-      const subscriptionTable = admin.from("subscriptions");
-      const { data: currentSubscription } = await subscriptionTable.select("current_period_end").eq("user_id", userId).maybeSingle();
-      const currentEnd = currentSubscription?.current_period_end ? new Date(currentSubscription.current_period_end) : new Date();
-      const start = currentEnd > new Date() ? currentEnd : new Date();
-      currentPeriodEnd = addValidity(start, validityDays).toISOString();
-    } else {
-      // Vigência cumulativa para pagamentos padrão — busca histórico e deriva current_period_end
-      try {
-        const searchResponse = await fetch(
-          `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(userId)}&sort=date_created&criteria=desc&limit=50`,
-          { headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` } },
-        );
-        if (searchResponse.ok) {
-          const searchData = (await searchResponse.json()) as {
-            results?: Array<{
-              status?: string;
-              date_created?: string;
-              date_approved?: string;
-              transaction_amount?: number;
-              external_reference?: string;
-              metadata?: { user_id?: string; userId?: string };
-            }>;
-          };
-          const history = (searchData.results || []).filter((p) => p.status === "approved");
-          const seen = history.some(
-            (p) =>
-              (p.date_created ?? p.date_approved) ===
-              (payment.date_created ?? payment.date_approved),
-          );
-          const pool = seen ? history : [...history, payment];
-          currentPeriodEnd = calculateCumulativePeriodEnd(pool, new Date());
-        }
-      } catch {
-        currentPeriodEnd = null;
-      }
-      if (!currentPeriodEnd) {
-        const anchor = payment.date_approved ?? payment.date_created ?? new Date().toISOString();
-        const anchorTime = new Date(anchor).getTime();
-        const base = Number.isNaN(anchorTime) ? Date.now() : Math.max(anchorTime, Date.now());
-        currentPeriodEnd = new Date(base + DAYS_PER_PRO_PAYMENT * MS_PER_DAY).toISOString();
-      }
-    }
-
-    const subscriptionPayload = {
-      user_id: userId,
-      status: "active" as const,
-      ...(currentPeriodEnd ? { current_period_end: currentPeriodEnd } : {}),
-    };
-
-    const { error } = await admin.from("subscriptions").upsert(
-      subscriptionPayload,
-      { onConflict: "user_id" },
-    );
-    if (error) throw error;
-
-    return Response.json({ received: true, processed: true, current_period_end: currentPeriodEnd }, { status: 200 });
+    return Response.json({
+      received: true,
+      processed: true,
+      already_processed: result.already_processed,
+      current_period_end: result.current_period_end,
+      status: result.status,
+    }, { status: 200 });
   } catch (error) {
     console.error("Mercado Pago webhook processing error", error instanceof Error ? error.message : "unknown");
     return Response.json({ error: "Nao foi possivel processar o evento Mercado Pago" }, { status: 500 });

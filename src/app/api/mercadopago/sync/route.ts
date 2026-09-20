@@ -1,17 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
+import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
+import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/stripe/supabase";
-import { calculateCumulativePeriodEnd } from "@/lib/subscription/trial";
 
 export const runtime = "nodejs";
-
-const validityDaysByMonths = new Map([[1, 30], [3, 90], [6, 180], [12, 365]]);
-
-function addValidity(start: Date, days: number): Date {
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + days);
-  return end;
-}
 
 interface MercadoPagoSearchResult {
   results?: Array<{
@@ -24,6 +16,8 @@ interface MercadoPagoSearchResult {
     metadata?: { user_id?: string; userId?: string; months?: number };
   }>;
 }
+
+export { paymentBelongsToUser };
 
 export async function POST(request: NextRequest) {
   const sessionResponse = NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
@@ -53,9 +47,7 @@ export async function POST(request: NextRequest) {
 
     const matchesUser = (p: NonNullable<MercadoPagoSearchResult["results"]>[number]) => {
       if (p.status !== "approved") return false;
-      const [paymentUserId] = (p.external_reference || "").split("#");
-      const ref = p.external_reference || p.metadata?.user_id || p.metadata?.userId;
-      return !ref || ref === user.id || paymentUserId === user.id || p.metadata?.user_id === user.id || p.metadata?.userId === user.id;
+      return paymentBelongsToUser(p, user.id);
     };
 
     let searchData = (await paymentResponse.json()) as MercadoPagoSearchResult;
@@ -72,47 +64,102 @@ export async function POST(request: NextRequest) {
     }
 
     if (userPayments.length > 0) {
-      const latestPayment = userPayments[0];
-      const months = Number(latestPayment.metadata?.months || latestPayment.external_reference?.split("#")[1] || 1);
-      const isMultiPeriodPayment = Boolean(latestPayment.metadata?.months || latestPayment.external_reference?.includes("#"));
-      const admin = createAdminClient();
+      // Deduplica por ID de pagamento
+      const uniquePaymentsMap = new Map<string, NonNullable<MercadoPagoSearchResult["results"]>[number]>();
+      for (const p of userPayments) {
+        if (p.id) {
+          uniquePaymentsMap.set(String(p.id), p);
+        }
+      }
+      const uniquePayments = Array.from(uniquePaymentsMap.values());
 
-      let currentPeriodEnd: string | null = null;
-      if (isMultiPeriodPayment) {
-        const validityDays = validityDaysByMonths.get(months) ?? validityDaysByMonths.get(1)!;
-        const subscriptionTable = admin.from("subscriptions");
-        const { data: currentSubscription } = await subscriptionTable.select("current_period_end").eq("user_id", user.id).maybeSingle();
-        const currentEnd = currentSubscription?.current_period_end ? new Date(currentSubscription.current_period_end) : new Date();
-        const start = currentEnd > new Date() ? currentEnd : new Date();
-        currentPeriodEnd = addValidity(start, validityDays).toISOString();
-      } else {
-        currentPeriodEnd = calculateCumulativePeriodEnd(userPayments, new Date());
+      // Ordena cronologicamente (do mais antigo para o mais novo) para aplicar na ordem de aquisição
+      uniquePayments.sort((a, b) => {
+        const timeA = new Date(a.date_approved || a.date_created || 0).getTime();
+        const timeB = new Date(b.date_approved || b.date_created || 0).getTime();
+        return timeA - timeB;
+      });
+
+      const admin = createAdminClient();
+      let newlyProcessedCount = 0;
+      let lastResultPeriodEnd: string | null = null;
+
+      for (const p of uniquePayments) {
+        const paymentId = String(p.id);
+        const months = Number(p.metadata?.months || p.external_reference?.split("#")[1] || 1);
+        const validityDays = getValidityDays(months);
+
+        const result = await processMercadoPagoPayment(admin, {
+          paymentId,
+          userId: user.id,
+          months,
+          validityDays,
+          amount: p.transaction_amount,
+          status: p.status ?? "approved",
+        });
+
+        if (!result.already_processed) {
+          newlyProcessedCount += 1;
+        }
+        lastResultPeriodEnd = result.current_period_end;
       }
 
-      const subscriptionPayload = {
-        user_id: user.id,
-        status: "active" as const,
-        ...(currentPeriodEnd ? { current_period_end: currentPeriodEnd } : {}),
-      };
+      // Consulta o registro atualizado da assinatura
+      let currentSub = null;
+      try {
+        const subQuery = admin.from("subscriptions");
+        if (typeof subQuery?.select === "function") {
+          const { data } = await subQuery
+            .select("status, current_period_end")
+            .eq("user_id", user.id)
+            .maybeSingle();
+          currentSub = data;
+        }
+      } catch {
+        // Fallback gracioso
+      }
 
-      const { error: subError } = await admin.from("subscriptions").upsert(
-        subscriptionPayload,
-        { onConflict: "user_id" },
-      );
-      if (subError) throw subError;
+      const finalPeriodEnd = currentSub?.current_period_end || lastResultPeriodEnd;
 
-      return NextResponse.json({ synced: true, status: "active", current_period_end: currentPeriodEnd });
+      const now = new Date();
+      const derivedStatus = finalPeriodEnd
+        ? (new Date(finalPeriodEnd) > now ? "active" : "expired")
+        : (currentSub?.status || "expired");
+
+      return NextResponse.json({
+        synced: true,
+        status: derivedStatus,
+        current_period_end: finalPeriodEnd,
+        newly_processed: newlyProcessedCount,
+        total_payments: uniquePayments.length,
+      });
     }
 
     // Se nenhum pagamento aprovado foi encontrado, consulta o status atual
-    const { data: currentSub } = await createAdminClient()
-      .from("subscriptions")
-      .select("status")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    let currentSub = null;
+    try {
+      const subQuery = createAdminClient().from("subscriptions");
+      if (typeof subQuery?.select === "function") {
+        const { data } = await subQuery
+          .select("status, current_period_end")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        currentSub = data;
+      }
+    } catch {
+      // Fallback
+    }
 
-    const currentStatus = currentSub?.status || "trialing";
-    return NextResponse.json({ synced: false, status: currentStatus });
+    const now = new Date();
+    const currentStatus = currentSub?.current_period_end
+      ? (new Date(currentSub.current_period_end) > now ? (currentSub.status || "active") : "expired")
+      : (currentSub?.status || "trialing");
+
+    return NextResponse.json({
+      synced: false,
+      status: currentStatus,
+      ...(currentSub?.current_period_end ? { current_period_end: currentSub.current_period_end } : {}),
+    });
   } catch (error) {
     console.error("Mercado Pago sync error", error instanceof Error ? error.message : "unknown");
     return NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });

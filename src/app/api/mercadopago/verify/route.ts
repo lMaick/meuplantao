@@ -1,13 +1,16 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
+import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
+import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/stripe/supabase";
 
 export const runtime = "nodejs";
 
 interface MercadoPagoPayment {
+  id?: string | number;
   status?: string;
   external_reference?: string;
-  metadata?: { user_id?: string };
+  transaction_amount?: number;
+  metadata?: { user_id?: string; userId?: string; months?: number };
 }
 
 function getPaymentId(request: NextRequest): string | null {
@@ -35,23 +38,35 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Nao foi possivel consultar o pagamento no Mercado Pago" }, { status: 502 });
     }
 
-    const payment = await paymentResponse.json() as MercadoPagoPayment;
+    const payment = (await paymentResponse.json()) as MercadoPagoPayment;
     if (payment.status !== "approved") {
       return NextResponse.json({ verified: true, activated: false, status: payment.status ?? "unknown" });
     }
 
-    const paymentUserId = payment.external_reference || payment.metadata?.user_id;
-    if (paymentUserId !== user.id) {
+    if (!paymentBelongsToUser(payment, user.id)) {
       return NextResponse.json({ error: "Pagamento nao pertence a esta conta" }, { status: 403 });
     }
 
-    const { error: subscriptionError } = await createAdminClient().from("subscriptions").upsert(
-      { user_id: user.id, status: "active" },
-      { onConflict: "user_id" },
-    );
-    if (subscriptionError) throw subscriptionError;
+    const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
+    const validityDays = getValidityDays(months);
 
-    return NextResponse.json({ verified: true, activated: true, status: "active" });
+    const admin = createAdminClient();
+    const result = await processMercadoPagoPayment(admin, {
+      paymentId,
+      userId: user.id,
+      months,
+      validityDays,
+      amount: payment.transaction_amount,
+      status: payment.status ?? "approved",
+    });
+
+    return NextResponse.json({
+      verified: true,
+      activated: !result.already_processed,
+      status: result.status,
+      already_processed: result.already_processed,
+      current_period_end: result.current_period_end,
+    });
   } catch (error) {
     console.error("Mercado Pago verification error", error instanceof Error ? error.message : "unknown");
     return NextResponse.json({ error: "Nao foi possivel conciliar o pagamento" }, { status: 500 });
