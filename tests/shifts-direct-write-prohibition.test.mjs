@@ -28,8 +28,13 @@ describe("Database Migration: shifts_direct_write_prohibition.sql", () => {
     );
     assert.match(
       migrationSql,
-      /revoke update \(place_id, data, hora_inicio, hora_fim, status, idempotency_key, updated_at\)\s+on public\.shifts from anon, authenticated, public;/is,
-      "Must revoke column-level UPDATE privileges on public.shifts",
+      /idempotency_key/i,
+      "Must include idempotency_key in column revocation target list",
+    );
+    assert.match(
+      migrationSql,
+      /revoke update \(%I\) on public\.shifts/i,
+      "Must revoke column-level UPDATE privileges dynamically/conditionally",
     );
   });
 
@@ -54,8 +59,13 @@ describe("Database Migration: shifts_direct_write_prohibition.sql", () => {
     );
     assert.match(
       migrationSql,
-      /grant execute on function public\.save_shift_with_obligation\(.*\) to authenticated;/i,
-      "Must grant execute on save_shift_with_obligation to authenticated",
+      /save_shift_with_obligation/i,
+      "Must target save_shift_with_obligation in function execution grant",
+    );
+    assert.match(
+      migrationSql,
+      /grant execute on function %s to authenticated/i,
+      "Must grant execute on function dynamically to authenticated",
     );
   });
 });

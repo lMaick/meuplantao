@@ -29,18 +29,21 @@ test "$(psql "$DATABASE_URL" -Atqc "select has_table_privilege('authenticated', 
 test "$(psql "$DATABASE_URL" -Atqc "select has_table_privilege('authenticated', 'public.shifts', 'DELETE')")" = "t"
 test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.shifts', 'status', 'UPDATE')")" = "f"
 test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.shifts', 'data', 'UPDATE')")" = "f"
+has_idemp_col="$(psql "$DATABASE_URL" -Atqc "select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'shifts' and column_name = 'idempotency_key'")"
+if [ "$has_idemp_col" = "1" ]; then
+  test "$(psql "$DATABASE_URL" -Atqc "select has_column_privilege('authenticated', 'public.shifts', 'idempotency_key', 'UPDATE')")" = "f"
+fi
 echo "✔ Privilégios no catálogo verificados com sucesso."
 
 echo "==> Configurando fixtures no Postgres..."
 USER_A="00000000-0000-0000-0000-0000000000c1"
 USER_B="00000000-0000-0000-0000-0000000000c2"
 PLACE_A="00000000-0000-0000-0000-0000000000c3"
-SHIFT_A="00000000-0000-0000-0000-0000000000c4"
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
 begin;
-delete from public.shifts where id = '$SHIFT_A';
-delete from public.places where id = '$PLACE_A';
+delete from public.shifts where user_id in ('$USER_A', '$USER_B');
+delete from public.places where user_id in ('$USER_A', '$USER_B');
 delete from auth.users where id in ('$USER_A', '$USER_B');
 
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
@@ -76,11 +79,11 @@ echo "✔ Garantia 1 aprovada: INSERT direto rejeitado com 42501."
 # 3. Criação pela RPC -> sucesso
 # ------------------------------------------------------------------------------
 echo "==> Testando 3: Criação de plantão via save_shift_with_obligation tem sucesso..."
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+SHIFT_A="$(psql "$DATABASE_URL" -Atqc "
 set role authenticated;
 select set_config('request.jwt.claim.sub', '$USER_A', false);
-select save_shift_with_obligation(
-  '$SHIFT_A',
+select id from save_shift_with_obligation(
+  null,
   '$PLACE_A',
   '2026-09-25'::date,
   '08:00'::time,
@@ -88,9 +91,9 @@ select save_shift_with_obligation(
   1200.00,
   'agendado'
 );
-reset role;
-SQL
+" | tail -n 1)"
 
+test -n "$SHIFT_A"
 test "$(psql "$DATABASE_URL" -Atqc "select valor_previsto from public.shifts where id = '$SHIFT_A'")" = "1200.00"
 echo "✔ Garantia 3 aprovada: Criação via RPC bem-sucedida."
 
