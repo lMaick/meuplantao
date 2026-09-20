@@ -4,7 +4,10 @@ import { useMemo, useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
+  AlertTriangle,
+  Ban,
   CalendarDays,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -581,12 +584,20 @@ function Form({
       ? "local"
       : "";
   const [status, setStatus] = useState<ShiftStatus>(shift?.status ?? "agendado");
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const [responsibleType, setResponsibleType] = useState<"" | "local" | "contato">(
     initialResponsibleType
   );
   const [responsibleId, setResponsibleId] = useState(
     obligation?.responsavel_contact_id ?? obligation?.responsavel_place_id ?? ""
   );
+
+  function handleStatusChange(newStatus: ShiftStatus) {
+    setStatus(newStatus);
+    if (newStatus !== "cancelado") {
+      setConfirmCancel(false);
+    }
+  }
 
   async function run(operation: () => Promise<void>) {
     setBusy(true);
@@ -603,6 +614,7 @@ function Form({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-xs sm:items-center">
       <form
+        id="shift-modal-form"
         role="dialog"
         aria-modal="true"
         aria-label={shift ? "Editar plantão" : "Novo plantão"}
@@ -629,6 +641,10 @@ function Form({
         aria-busy={busy}
         onSubmit={(event) => {
           event.preventDefault();
+          if (status === "cancelado" && !confirmCancel) {
+            setConfirmCancel(true);
+            return;
+          }
           const data = new FormData(event.currentTarget);
           void run(() => save(data));
         }}
@@ -797,29 +813,93 @@ function Form({
             <div>
               <h3 className="text-sm font-semibold text-foreground">Situação do plantão</h3>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                Isso define se ele ainda vai acontecer, já aconteceu ou foi cancelado.
+                Defina se o plantão está agendado, se já foi realizado ou se foi cancelado.
               </p>
             </div>
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Status</span>
-            <Select name="status" value={status}
-              onChange={(event) => setStatus(event.target.value as ShiftStatus)}
+
+            <Input type="hidden" name="status" value={status} />
+
+            <div
+              role="radiogroup"
+              aria-label="Situação do plantão"
+              className="grid grid-cols-3 gap-2"
             >
-              {Object.entries(labels).map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </Select>
-            <span className="text-xs font-normal leading-relaxed text-muted-foreground">
-              {status === "agendado" && "O plantão ainda vai acontecer."}
-              {status === "realizado" && "O plantão aconteceu e pode gerar um recebimento."}
-              {status === "cancelado" && "O plantão não aconteceu e não gera recebimento."}
-            </span>
-          </label>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={status === "agendado"}
+                onClick={() => handleStatusChange("agendado")}
+                className={cn(
+                  "flex min-h-[56px] flex-col items-center justify-center gap-1.5 rounded-xl border p-2 text-xs font-semibold transition-all duration-180 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary cursor-pointer",
+                  status === "agendado"
+                    ? "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:text-amber-200 ring-2 ring-amber-500/25 shadow-xs"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <CalendarDays className={cn("size-4 shrink-0", status === "agendado" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")} />
+                <span>Agendado</span>
+              </button>
+
+              <button
+                type="button"
+                role="radio"
+                aria-checked={status === "realizado"}
+                onClick={() => handleStatusChange("realizado")}
+                className={cn(
+                  "flex min-h-[56px] flex-col items-center justify-center gap-1.5 rounded-xl border p-2 text-xs font-semibold transition-all duration-180 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary cursor-pointer",
+                  status === "realizado"
+                    ? "border-emerald-600/60 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 ring-2 ring-emerald-500/25 shadow-xs"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <CheckCircle2 className={cn("size-4 shrink-0", status === "realizado" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
+                <span>Realizado</span>
+              </button>
+
+              <button
+                type="button"
+                role="radio"
+                aria-checked={status === "cancelado"}
+                onClick={() => handleStatusChange("cancelado")}
+                className={cn(
+                  "flex min-h-[56px] flex-col items-center justify-center gap-1.5 rounded-xl border p-2 text-xs font-semibold transition-all duration-180 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive cursor-pointer",
+                  status === "cancelado"
+                    ? "border-destructive/60 bg-destructive/10 text-destructive dark:text-rose-200 ring-2 ring-destructive/25 shadow-xs"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <Ban className={cn("size-4 shrink-0", status === "cancelado" ? "text-destructive" : "text-muted-foreground")} />
+                <span>Cancelado</span>
+              </button>
+            </div>
+
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              {status === "agendado" && "O plantão ainda vai acontecer conforme o planejamento."}
+              {status === "realizado" && "O plantão aconteceu e gera previsão de repasse financeiro."}
+              {status === "cancelado" && "O plantão não aconteceu e não gerará previsão de repasse financeiro."}
+            </div>
           </div>
           </div>
         </fieldset>
+
+        {confirmCancel && status === "cancelado" && (
+          <div
+            role="alert"
+            className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-destructive animate-in fade-in duration-200"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="size-5 shrink-0 mt-0.5 text-destructive" />
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-destructive">
+                  Confirmar cancelamento do plantão?
+                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Marcar como cancelado indica que o plantão não foi realizado. Nenhuma obrigação financeira ou recebimento será gerado.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {error && (
           <p role="alert" className="mt-4 text-sm font-medium text-destructive">
@@ -845,24 +925,50 @@ function Form({
           )}
 
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
-            <Button
-              type="button"
-              variant="outline"
-              size="default"
-              disabled={busy}
-              onClick={close}
-              className="min-h-[44px] w-full sm:w-auto"
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="submit"
-              size="default"
-              disabled={busy}
-              className="min-h-[44px] w-full sm:w-auto font-semibold"
-            >
-              {busy ? "Salvando..." : "Salvar plantão"}
-            </Button>
+            {confirmCancel && status === "cancelado" ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="default"
+                  disabled={busy}
+                  onClick={() => setConfirmCancel(false)}
+                  className="min-h-[44px] w-full sm:w-auto"
+                >
+                  Voltar
+                </Button>
+                <Button
+                  type="submit"
+                  variant="destructive"
+                  size="default"
+                  disabled={busy}
+                  className="min-h-[44px] w-full sm:w-auto font-semibold"
+                >
+                  {busy ? "Cancelando..." : "Confirmar cancelamento"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="default"
+                  disabled={busy}
+                  onClick={close}
+                  className="min-h-[44px] w-full sm:w-auto"
+                >
+                  Fechar
+                </Button>
+                <Button
+                  type="submit"
+                  size="default"
+                  disabled={busy}
+                  className="min-h-[44px] w-full sm:w-auto font-semibold"
+                >
+                  {busy ? "Salvando..." : "Salvar alterações"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </form>

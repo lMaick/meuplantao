@@ -287,7 +287,8 @@ describe("3. iOS Safari Auto-Zoom Prevention (text-base md:text-sm)", () => {
     assert.match(formCode, /<Input\s+name="data_prevista"\s+type="date"/, "data_prevista must use Input");
     assert.match(formCode, /<Select\s+name="responsavel_tipo"/, "responsavel_tipo must use Select");
     assert.match(formCode, /<Select\s+name="responsavel_id"/, "responsavel_id must use Select");
-    assert.match(formCode, /<Select name="status"/, "status must use Select");
+    assert.match(formCode, /<Input type="hidden" name="status"/, "status must use Input primitive");
+    assert.match(formCode, /role="radiogroup"/, "status must render as visible radiogroup");
 
     // Verify no raw <input or <select tags exist inside Form
     const rawInputMatches = formCode.match(/<input\b/g);
