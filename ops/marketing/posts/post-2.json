@@ -1,0 +1,63 @@
+{
+  "id": "post-2",
+  "type": "carousel",
+  "badge": "Passo a Passo",
+  "title": "3 passos para nunca mais esquecer um plantão ou repasse",
+  "totalSteps": 3,
+  "outputDir": "ops/marketing/assets/post-2",
+  "slides": [
+    {
+      "template": "cover",
+      "badge": "Passo a Passo",
+      "title": "3 passos para nunca mais esquecer um plantão ou repasse",
+      "subtitle": "O método simples para organizar seus recebimentos em múltiplos hospitais sem perder dinheiro.",
+      "highlightWords": ["3 passos", "nunca mais esquecer"]
+    },
+    {
+      "template": "step",
+      "stepNumber": 1,
+      "stepTag": "Passo 1 de 3",
+      "title": "Registre o plantão e a data prevista",
+      "description": "Local + data + valor + quando deveria cair. Menos de 30 segundos no celular e está guardado com segurança.",
+      "highlightBox": {
+        "title": "💡 Dica de plantonista",
+        "text": "Cadastre no trajeto ou logo ao finalizar o turno de 12h ou 24h para não esquecer os adicionais."
+      }
+    },
+    {
+      "template": "step",
+      "stepNumber": 2,
+      "stepTag": "Passo 2 de 3",
+      "title": "Acompanhe os repasses parciais",
+      "description": "Caiu metade? Registre o valor pago. O saldo devedor atualiza sozinho, sem precisar fazer contas de cabeça.",
+      "highlightBox": {
+        "title": "⚡ Saldo Automático",
+        "text": "O valor restante continua vinculado ao plantão original até a quitação total."
+      }
+    },
+    {
+      "template": "step",
+      "stepNumber": 3,
+      "stepTag": "Passo 3 de 3",
+      "title": "Identifique atrasos na hora",
+      "description": "Passou da data prevista? O sistema sinaliza na hora quem está devendo, o valor exato e há quantos dias.",
+      "highlightBox": {
+        "title": "⚠️ Sem surpresas",
+        "text": "Saiba exatamente qual escala cobrar sem passar horas cruzando extratos do banco."
+      }
+    },
+    {
+      "template": "closing",
+      "badge": "Resultado",
+      "headline": "Plantão batido, valor registrado, repasse cobrado.",
+      "ctaTitle": "Comece a organizar seus plantões hoje",
+      "ctaUrl": "www.meuplantao.pro",
+      "bulletPoints": [
+        "Controle em múltiplos hospitais e escalas",
+        "Cálculo automático de saldos e atrasos",
+        "Acesso 100% gratuito e seguro no celular"
+      ]
+    }
+  ],
+  "caption": "Se você trabalha em 3 lugares diferentes, salva esse passo a passo. 📌\n\nA maioria perde dinheiro não porque ganha pouco, mas porque não tem controle: esquece plantão, confunde repasse parcial, deixa atraso passar batido.\n\nNo MeuPlantão funciona assim:\n1️⃣ Registra em segundos\n2️⃣ Acompanha o que já entrou\n3️⃣ Vê o que atrasou\n\nSem planilha bagunçada, sem guardar na memória. Tudo no celular no intervalo do plantão. 📱\n\nTesta de graça agora: www.meuplantao.pro — link na bio!\nMarca aquele colega que vive de plantão e precisa ver isso.\n\n#plantao #plantonista #enfermagempormor #medicinaporamor #residenciamedica #internatomedico #enfermeira #fisioterapeuta #odontologia #farmacia #controlefinanceiro #organizacaofinanceira #dicasparaplantonista #vidademedico #meuplantao"
+}
