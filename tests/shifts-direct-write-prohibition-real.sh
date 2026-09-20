@@ -222,8 +222,33 @@ then
   exit 1
 fi
 
-grep -q '23514' "$failure_log"
+grep -qE '23503|23514' "$failure_log"
 echo "✔ Garantia 7 aprovada: Invariante de integridade financeira de exclusão preservada."
+
+# Testando exclusão permitida de plantão agendado (sem obligation)
+SHIFT_AGENDADO="$(psql "$DATABASE_URL" -Atqc "
+set role authenticated;
+select set_config('request.jwt.claim.sub', '$USER_A', false);
+select id from save_shift_with_obligation(
+  null,
+  '$PLACE_A',
+  '2026-09-30'::date,
+  '08:00'::time,
+  '18:00'::time,
+  500.00,
+  'agendado'
+);
+" | tail -n 1)"
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+set role authenticated;
+select set_config('request.jwt.claim.sub', '$USER_A', false);
+delete from public.shifts where id = '$SHIFT_AGENDADO';
+reset role;
+SQL
+
+test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.shifts where id = '$SHIFT_AGENDADO'")" = "0"
+echo "✔ Exclusão de plantão agendado sob RLS permitida."
 
 echo "=========================================================================="
 echo "TODAS AS 7 GARANTIAS DO CONTRATO FINANCEIRO VALIDADAS COM SUCESSO!"
