@@ -32,7 +32,7 @@ Regras e contratos permanentes para qualquer agente de IA de qualquer modelo tra
 
 ## 2. Padrão de Interface & Motion Principles (Regra Permanente 2)
 
-Utilize a skill **Motion Principles** (`kylezantos/design-motion-principles`) em `.agents/skills/design-motion-principles/`. Toda interface do sistema DEVE cumprir:
+Utilize a skill **Motion Principles** (`design-motion-principles`) via `.agents/skills-hub/skills/frontend/design-motion-principles/`. Toda interface do sistema DEVE cumprir:
 
 1. **Skeleton Screens Obrigatórios:**
    - Toda tela, card, tabela, lista ou painel métrico deve exibir skeleton proporcional e condizente com a estrutura final durante o carregamento.
@@ -93,9 +93,10 @@ Todo worker (agente de IA de qualquer modelo) atuando em worktrees do Orca DEVE 
 ## Skills de IA & Hub Central
 
 O repositório consome o hub central de skills via Git Submodule em `.agents/skills-hub`:
-- **42 Skills Universais**: localizadas em `.agents/skills-hub/skills/<setor>/<skill-nome>/` (frontend, backend, marketing, qa, product, devops).
-- **Configurações Específicas do MeuPlantão**: localizadas em `.agents/skills/` (branding, personas, tom de voz clínico).
-- **Atualização**: para sincronizar com a versão mais recente do hub central, execute `git submodule update --remote --merge`.
+- **42 Skills Universais** (hub): `.agents/skills-hub/skills/<setor>/<skill-nome>/` — inclui `impeccable`, `design-motion-principles` e 40+ outros. Nunca duplique essas skills localmente.
+- **Skills Exclusivas do MeuPlantão** (locais em `.agents/skills/`): `content-calendar`, `linear-orchestrator`, `marketing-config`, `marketing-copywriter`, `marketing-designer`, `orca-worker-protocol`.
+- **Regra:** Só crie uma skill em `.agents/skills/` se ela NÃO existir no hub. Cópias do hub são proibidas.
+- **Atualização do hub**: `git submodule update --remote --merge`.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

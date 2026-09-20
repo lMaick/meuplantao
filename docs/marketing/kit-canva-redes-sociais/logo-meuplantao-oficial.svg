@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 90" fill="none">
+  <!-- SÍMBOLO: CALENDÁRIO COM PULSO -->
+  <g transform="translate(10, 8)">
+    <!-- Alças do Calendário -->
+    <rect x="20" y="2" width="7" height="16" rx="3.5" fill="#033B5C"/>
+    <rect x="47" y="2" width="7" height="16" rx="3.5" fill="#033B5C"/>
+    
+    <!-- Corpo do Calendário (Contorno Arredondado) -->
+    <rect x="6" y="9" width="62" height="60" rx="16" stroke="#033B5C" stroke-width="8" fill="none"/>
+    
+    <!-- Linha de Pulso / Eletrocardiograma Verde -->
+    <path d="M-2 42H18L24 30L32 58L40 22L47 50L51 38L55 42H76" 
+          stroke="#008A4B" 
+          stroke-width="6" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+  </g>
+
+  <!-- TIPOGRAFIA: MeuPlantão -->
+  <text x="96" y="55" font-family="'Plus Jakarta Sans', system-ui, -apple-system, sans-serif" font-size="42" font-weight="800" letter-spacing="-1.5">
+    <tspan fill="#033B5C">Meu</tspan><tspan fill="#008A4B">Plantão</tspan>
+  </text>
+</svg>
