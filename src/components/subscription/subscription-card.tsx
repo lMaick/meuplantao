@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { useSubscription } from "@/lib/subscription";
+import { useSubscription, deriveVerifyFeedback, deriveSyncFeedback } from "@/lib/subscription";
 import { getSubscriptionPeriod, type SubscriptionMonths } from "@/lib/subscription/types";
 import { PlanPeriodSelector } from "./plan-period-selector";
 import { cn } from "cn";
@@ -45,19 +45,28 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         const response = await fetch(`/api/mercadopago/verify?payment_id=${encodeURIComponent(paymentId)}`, {
           headers: { Accept: "application/json" },
         });
-        const payload = (await response.json()) as { activated?: boolean; error?: string };
+        const payload = (await response.json()) as {
+          verified?: boolean;
+          payment_found?: boolean;
+          payment_processed_now?: boolean;
+          already_processed?: boolean;
+          subscription_active?: boolean;
+          subscription_status?: string;
+          current_period_end?: string | null;
+          activated?: boolean;
+          status?: string;
+          error?: string;
+        };
         if (cancelled) return;
         if (!response.ok) throw new Error(payload.error || "Nao foi possivel confirmar o pagamento.");
 
-        if (payload.activated) {
+        const feedback = deriveVerifyFeedback(payload);
+        if (feedback.isProActive) {
           await refresh();
-          if (!cancelled) {
-            setFeedbackMessage("Pagamento confirmado. Seu plano Pro já está ativo e atualizado.");
-            setFeedbackType("success");
-          }
-        } else {
-          setFeedbackMessage("Pagamento recebido e ainda em processamento. Atualizaremos seu plano assim que o Mercado Pago confirmar.");
-          setFeedbackType("info");
+        }
+        if (!cancelled) {
+          setFeedbackMessage(feedback.message);
+          setFeedbackType(feedback.type);
         }
       } catch (err) {
         if (!cancelled) {
@@ -108,6 +117,14 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
       });
       const payload = (await response.json()) as {
         synced?: boolean;
+        payment_found?: boolean;
+        payment_processed_now?: boolean;
+        already_processed?: boolean;
+        subscription_active?: boolean;
+        subscription_status?: string;
+        current_period_end?: string | null;
+        newly_processed?: number;
+        total_payments?: number;
         status?: string;
         error?: string;
       };
@@ -116,14 +133,12 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         throw new Error(payload.error || "Não foi possível verificar seu pagamento no momento.");
       }
 
-      if (payload.synced) {
+      const feedback = deriveSyncFeedback(payload);
+      if (feedback.isProActive || (payload.subscription_status === "expired" || payload.status === "expired")) {
         await refresh();
-        setFeedbackMessage("Assinatura sincronizada e atualizada com sucesso! Seu plano Pro está liberado.");
-        setFeedbackType("success");
-      } else {
-        setFeedbackMessage("Nenhum pagamento aprovado vinculado a esta conta foi identificado. Se você acabou de pagar via PIX, aguarde alguns instantes e tente novamente.");
-        setFeedbackType("info");
       }
+      setFeedbackMessage(feedback.message);
+      setFeedbackType(feedback.type);
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : "Não foi possível verificar seu pagamento no momento. Tente novamente.";
       setFeedbackMessage(message);

@@ -122,16 +122,20 @@ export async function POST(request: NextRequest) {
       const finalPeriodEnd = currentSub?.current_period_end || lastResultPeriodEnd;
 
       const now = new Date();
-      const derivedStatus = finalPeriodEnd
-        ? (new Date(finalPeriodEnd) > now ? "active" : "expired")
-        : (currentSub?.status || "expired");
+      const isSubscriptionActive = Boolean(finalPeriodEnd && new Date(finalPeriodEnd) > now);
+      const derivedStatus = isSubscriptionActive ? "active" : "expired";
 
       return NextResponse.json({
         synced: true,
-        status: derivedStatus,
+        payment_found: true,
+        payment_processed_now: newlyProcessedCount > 0,
+        already_processed: newlyProcessedCount === 0 && uniquePayments.length > 0,
+        subscription_active: isSubscriptionActive,
+        subscription_status: derivedStatus,
         current_period_end: finalPeriodEnd,
         newly_processed: newlyProcessedCount,
         total_payments: uniquePayments.length,
+        status: derivedStatus,
       });
     }
 
@@ -151,14 +155,22 @@ export async function POST(request: NextRequest) {
     }
 
     const now = new Date();
-    const currentStatus = currentSub?.current_period_end
-      ? (new Date(currentSub.current_period_end) > now ? (currentSub.status || "active") : "expired")
-      : (currentSub?.status || "trialing");
+    const isSubActive = Boolean(currentSub?.current_period_end && new Date(currentSub.current_period_end) > now);
+    const currentStatus = isSubActive
+      ? "active"
+      : (currentSub?.current_period_end ? "expired" : (currentSub?.status || "trialing"));
 
     return NextResponse.json({
       synced: false,
+      payment_found: false,
+      payment_processed_now: false,
+      already_processed: false,
+      subscription_active: isSubActive,
+      subscription_status: currentStatus,
+      current_period_end: currentSub?.current_period_end || null,
+      newly_processed: 0,
+      total_payments: 0,
       status: currentStatus,
-      ...(currentSub?.current_period_end ? { current_period_end: currentSub.current_period_end } : {}),
     });
   } catch (error) {
     console.error("Mercado Pago sync error", error instanceof Error ? error.message : "unknown");
