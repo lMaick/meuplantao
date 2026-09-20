@@ -86,10 +86,10 @@ jobs:
           export DATABASE_URL="${DB_URL}"
           restore_migration
           bash tests/financial-migration-upgrade-real.sh "${migration_first}" "${migration_second}" "${migration_third}" "${migration_fourth}"
-          npx --yes supabase@2.117.0 db reset --local --no-seed >/dev/null
+          npx --yes supabase@2.117.0 db reset --local --no-seed
           bash tests/subscription-entitlement-real.sh "supabase/migrations/20260920120000_subscription_entitlement_boundary.sql"
           bash tests/shifts-direct-write-prohibition-real.sh "supabase/migrations/20260920140000_shifts_direct_write_prohibition.sql"
-          npx --yes supabase@2.117.0 db reset --local --no-seed >/dev/null
+          npx --yes supabase@2.117.0 db reset --local --no-seed
           export NEXT_PUBLIC_SUPABASE_URL="${API_URL}"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}"
 

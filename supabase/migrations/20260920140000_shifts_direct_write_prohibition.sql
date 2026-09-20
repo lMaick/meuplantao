@@ -10,7 +10,6 @@ revoke update on public.shifts from anon, authenticated, public;
 do $$
 declare
   v_col text;
-  v_role text;
 begin
   for v_col in
     select column_name
@@ -19,10 +18,7 @@ begin
        and table_name = 'shifts'
        and column_name in ('place_id', 'data', 'hora_inicio', 'hora_fim', 'status', 'idempotency_key', 'updated_at')
   loop
-    for v_role in select unnest(array['anon', 'authenticated', 'public'])
-    loop
-      execute format('revoke update (%I) on public.shifts from %I', v_col, v_role);
-    end loop;
+    execute format('revoke update (%I) on public.shifts from anon, authenticated, public', v_col);
   end loop;
 end $$;
 
@@ -34,18 +30,5 @@ drop policy if exists "shifts_update_own" on public.shifts;
 grant select, delete on public.shifts to authenticated;
 
 -- 5. Reafirma concessão de execução da RPC save_shift_with_obligation para authenticated
-do $$
-declare
-  v_rec record;
-begin
-  for v_rec in
-    select p.oid::regprocedure as regproc
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.proname = 'save_shift_with_obligation'
-  loop
-    execute format('grant execute on function %s to authenticated', v_rec.regproc);
-  end loop;
-end $$;
+grant execute on function public.save_shift_with_obligation(uuid,uuid,date,time,time,numeric,text,date,uuid,uuid,text) to authenticated;
 

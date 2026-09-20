@@ -59,13 +59,8 @@ describe("Database Migration: shifts_direct_write_prohibition.sql", () => {
     );
     assert.match(
       migrationSql,
-      /save_shift_with_obligation/i,
-      "Must target save_shift_with_obligation in function execution grant",
-    );
-    assert.match(
-      migrationSql,
-      /grant execute on function %s to authenticated/i,
-      "Must grant execute on function dynamically to authenticated",
+      /grant execute on function public\.save_shift_with_obligation\(.*\) to authenticated;/i,
+      "Must grant execute on save_shift_with_obligation to authenticated",
     );
   });
 });
