@@ -220,3 +220,48 @@ test("sync route returns 502 if Mercado Pago API fails", async () => {
   const json = await response.json();
   assert.equal(json.error, "Nao foi possivel consultar pagamentos no Mercado Pago");
 });
+
+test("sync route returns status: expired when current_period_end has passed even if DB status is active", async () => {
+  const pastDate = new Date(Date.now() - 86400000).toISOString();
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      results: [
+        { id: "old-100", status: "approved", external_reference: testUserId, date_created: pastDate },
+      ],
+    }),
+    { status: 200 },
+  );
+
+  globalThis.adminClient = {
+    rpc: async () => ({
+      data: {
+        already_processed: true,
+        current_period_end: pastDate,
+        validity_days_added: 0,
+        status: "expired",
+      },
+      error: null,
+    }),
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { status: "active", current_period_end: pastDate },
+            error: null,
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.synced, true);
+  assert.equal(json.status, "expired");
+  assert.equal(json.current_period_end, pastDate);
+});

@@ -535,11 +535,11 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
       validityDays: 30,
     });
 
-    // Simula passagem do tempo: assinatura expirou há 10 dias
+    // Simula passagem do tempo: no banco real subscriptions.status mantém "active", mas current_period_end expirou há 10 dias
     const pastDate = new Date(Date.now() - 10 * MS_PER_DAY).toISOString();
     db.subscriptions.set(USER_A, {
       user_id: USER_A,
-      status: "expired",
+      status: "active",
       current_period_end: pastDate,
       updated_at: pastDate,
     });
@@ -594,6 +594,90 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
 
     const totalDays = Math.round((new Date(json.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
     assert.ok(totalDays >= 178 && totalDays <= 182, `esperado ~180 dias, obtido ${totalDays}`);
+  });
+
+  test("13. Sync retorna status: 'expired' quando vigência venceu, mesmo com status = 'active' no banco", async () => {
+    const db = createMockSupabaseDatabase();
+    globalThis.adminClient = db.adminClient;
+    globalThis.authenticatedClient = {
+      auth: { getUser: async () => ({ data: { user: { id: USER_A } }, error: null }) },
+      from: db.adminClient.from,
+    };
+
+    // Assinatura no banco com status='active', mas current_period_end no passado (ontem)
+    const pastDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    db.subscriptions.set(USER_A, {
+      user_id: USER_A,
+      status: "active",
+      current_period_end: pastDate,
+      updated_at: pastDate,
+    });
+
+    // Mock do Mercado Pago retornando o pagamento antigo já existente
+    db.subscriptionPayments.set("old-pay-123", {
+      mercadopago_payment_id: "old-pay-123",
+      user_id: USER_A,
+      months: 1,
+      validity_days: 30,
+      amount: 49.9,
+      status: "approved",
+      processed_at: pastDate,
+    });
+
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({
+        results: [
+          {
+            id: "old-pay-123",
+            status: "approved",
+            external_reference: USER_A,
+            metadata: { user_id: USER_A, months: 1 },
+            date_created: pastDate,
+            date_approved: pastDate,
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+
+    const res = await syncRoute(new Request("http://localhost/api/mercadopago/sync", { method: "POST" }));
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.synced, true);
+    assert.equal(json.newly_processed, 0, "Pagamento antigo já estava processado");
+    assert.equal(json.current_period_end, pastDate, "Vigência expirada mantida");
+    assert.equal(json.status, "expired", "Status DEVE ser 'expired', mesmo com status='active' no banco");
+  });
+
+  test("14. Sync retorna status: 'expired' quando nenhum pagamento aprovado é encontrado e vigência venceu", async () => {
+    const db = createMockSupabaseDatabase();
+    globalThis.adminClient = db.adminClient;
+    globalThis.authenticatedClient = {
+      auth: { getUser: async () => ({ data: { user: { id: USER_A } }, error: null }) },
+      from: db.adminClient.from,
+    };
+
+    // Assinatura no banco com status='active', mas current_period_end no passado (ontem)
+    const pastDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    db.subscriptions.set(USER_A, {
+      user_id: USER_A,
+      status: "active",
+      current_period_end: pastDate,
+      updated_at: pastDate,
+    });
+
+    // Mercado Pago retorna 0 pagamentos aprovados
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ results: [] }),
+      { status: 200 },
+    );
+
+    const res = await syncRoute(new Request("http://localhost/api/mercadopago/sync", { method: "POST" }));
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.synced, false);
+    assert.equal(json.current_period_end, pastDate);
+    assert.equal(json.status, "expired", "Status DEVE ser 'expired' mesmo quando nenhum pagamento é encontrado");
   });
 });
 

@@ -122,8 +122,9 @@ export async function POST(request: NextRequest) {
       const finalPeriodEnd = currentSub?.current_period_end || lastResultPeriodEnd;
 
       const now = new Date();
-      const isActivePeriod = Boolean(finalPeriodEnd && new Date(finalPeriodEnd) > now);
-      const derivedStatus = isActivePeriod ? "active" : (currentSub?.status || "expired");
+      const derivedStatus = finalPeriodEnd
+        ? (new Date(finalPeriodEnd) > now ? "active" : "expired")
+        : (currentSub?.status || "expired");
 
       return NextResponse.json({
         synced: true,
@@ -149,7 +150,11 @@ export async function POST(request: NextRequest) {
       // Fallback
     }
 
-    const currentStatus = currentSub?.status || "trialing";
+    const now = new Date();
+    const currentStatus = currentSub?.current_period_end
+      ? (new Date(currentSub.current_period_end) > now ? (currentSub.status || "active") : "expired")
+      : (currentSub?.status || "trialing");
+
     return NextResponse.json({
       synced: false,
       status: currentStatus,
