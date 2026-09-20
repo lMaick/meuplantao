@@ -17,14 +17,44 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const [a, b] = await Promise.all([auth(process.env.E2E_USER_A_EMAIL, process.env.E2E_USER_A_PASSWORD), auth(process.env.E2E_USER_B_EMAIL, process.env.E2E_USER_B_PASSWORD)]); const aId = userId(a); const bId = userId(b); const date = new Date().toISOString().slice(0, 10);
   const place = (await ok(await request(a, "places", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, nome: `E2E-${Date.now()}` }) }), "local A"))[0];
   const contact = (await ok(await request(a, "contacts", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, nome: `E2E contato ${Date.now()}` }) }), "contato A"))[0];
-  const createShift = async (token, values) => (await ok(await request(token, "shifts", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: userId(token), place_id: place.id, data: date, hora_inicio: "08:00", hora_fim: "09:00", valor_previsto: 100, status: "agendado", ...values }) }), "criar plantão"))[0];
-  const realize = async (token, id) => { await ok(await patch(token, "shifts", id, { status: "realizado" }), "realizar plantão"); };
   const obligationFor = async (token, shiftId) => { const rows = await ok(await request(token, `obligations?shift_id=eq.${shiftId}&select=id,shift_id,valor_devido,data_prevista,responsavel_place_id,responsavel_contact_id`), "ler obrigação"); assert.equal(rows.length, 1); return rows[0]; };
   const pay = (token, obligation, value) => request(token, "rpc/register_payment", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ p_obligation_id: obligation, p_valor: value, p_data_pagamento: date }) });
   const saveShift = (token, values) => request(token, "rpc/save_shift_with_obligation", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
   const hasEntitlement = (token, p_user_id = null) => request(token, "rpc/has_active_entitlement", { method: "POST", body: JSON.stringify(p_user_id ? { p_user_id } : {}) });
   const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
   const concreteRpcShift = (body, label) => { const row = rpcRow(body); assert.ok(row && typeof row.id === "string" && row.id.length > 0, `${label}: RPC retornou shift inválido ${JSON.stringify(body)}`); return row; };
+  const createShift = async (token, values = {}) => {
+    const payload = {
+      p_shift_id: values.p_shift_id ?? null,
+      p_place_id: values.p_place_id ?? values.place_id ?? place.id,
+      p_data: values.p_data ?? values.data ?? date,
+      p_hora_inicio: values.p_hora_inicio ?? values.hora_inicio ?? "08:00",
+      p_hora_fim: values.p_hora_fim ?? values.hora_fim ?? "09:00",
+      p_valor_previsto: values.p_valor_previsto ?? values.valor_previsto ?? 100,
+      p_status: values.p_status ?? values.status ?? "agendado",
+      p_data_prevista: values.p_data_prevista ?? values.data_prevista ?? null,
+      p_responsavel_place_id: values.p_responsavel_place_id ?? values.responsavel_place_id ?? null,
+      p_responsavel_contact_id: values.p_responsavel_contact_id ?? values.responsavel_contact_id ?? null,
+      p_idempotency_key: values.p_idempotency_key ?? values.idempotency_key ?? null,
+    };
+    return concreteRpcShift(await ok(await saveShift(token, payload), "criar plantão RPC"), "criar plantão RPC");
+  };
+  const realize = async (token, id, values = {}) => {
+    const payload = {
+      p_shift_id: id,
+      p_place_id: values.p_place_id ?? values.place_id ?? place.id,
+      p_data: values.p_data ?? values.data ?? date,
+      p_hora_inicio: values.p_hora_inicio ?? values.hora_inicio ?? "08:00",
+      p_hora_fim: values.p_hora_fim ?? values.hora_fim ?? "09:00",
+      p_valor_previsto: values.p_valor_previsto ?? values.valor_previsto ?? 100,
+      p_status: "realizado",
+      p_data_prevista: values.p_data_prevista ?? values.data_prevista ?? date,
+      p_responsavel_place_id: values.p_responsavel_place_id !== undefined ? values.p_responsavel_place_id : (values.responsavel_place_id !== undefined ? values.responsavel_place_id : place.id),
+      p_responsavel_contact_id: values.p_responsavel_contact_id ?? values.responsavel_contact_id ?? null,
+      p_idempotency_key: values.p_idempotency_key ?? values.idempotency_key ?? null,
+    };
+    return concreteRpcShift(await ok(await saveShift(token, payload), "realizar plantão RPC"), "realizar plantão RPC");
+  };
   const assertRejected42501 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "42501", `${label}: privilegio inesperado`); return response; };
   const assertRejected23514 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "23514", `${label}: código SQL inesperado`); return response; };
 
@@ -38,6 +68,10 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const scheduledCreated = concreteRpcShift(await ok(await saveShift(a, scheduledInput), "criação agendada idempotente"), "criação agendada idempotente");
   await assertRejected23514(saveShift(a, { ...scheduledInput, p_data_prevista: "2030-09-10" }), "retry agendado com obligation divergente");
   assert.equal((await request(a, `shifts?id=eq.${scheduledCreated.id}&select=id`)).body.length, 1, "retry inválido não deve duplicar shift agendado");
+
+  await assertRejected42501(request(a, "shifts", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, place_id: place.id, data: date, hora_inicio: "08:00", hora_fim: "09:00", valor_previsto: 100, status: "agendado" }) }), "POST direto em /rest/v1/shifts proibido");
+  await assertRejected42501(patch(a, "shifts", scheduledCreated.id, { status: "realizado" }), "PATCH direto de status em shifts proibido");
+  await assertRejected42501(patch(a, "shifts", scheduledCreated.id, { data: "2030-01-01" }), "PATCH direto de data em shifts proibido");
 
   const creationKey = `mai65-create-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const creationInput = { p_shift_id: null, p_place_id: place.id, p_data: date, p_hora_inicio: "06:00", p_hora_fim: "07:00", p_valor_previsto: 80, p_status: "realizado", p_data_prevista: "2030-09-11", p_responsavel_place_id: place.id, p_responsavel_contact_id: null, p_idempotency_key: creationKey };
@@ -71,19 +105,29 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   await rejected(remove(a, "shifts", editableShift.id), "DELETE direto de shift realizado"); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
   await assertRejected42501(patch(b, "obligations", editable.id, { valor_devido: 999 }), "B sem privilegio em coluna financeira de A");
   const bObligationDelete = await remove(b, "obligations", editable.id); assert.equal(bObligationDelete.r.ok, true); assert.deepEqual(bObligationDelete.body, [], "RLS B não remove obligation A");
-  const bReversal = await patch(b, "shifts", editableShift.id, { status: "cancelado" }); assert.equal(bReversal.r.ok, true); assert.deepEqual(bReversal.body, [], "RLS B não reverte shift A");
+  await assertRejected42501(patch(b, "shifts", editableShift.id, { status: "cancelado" }), "PATCH direto de B em shifts rejeitado com 42501");
+  await rejected(saveShift(b, { p_shift_id: editableShift.id, p_place_id: place.id, p_data: date, p_hora_inicio: "08:00", p_hora_fim: "09:00", p_valor_previsto: 100, p_status: "cancelado" }), "RPC de B em shift de A rejeitada com 23503");
   const editableAfterB = (await (await request(a, `shifts?id=eq.${editableShift.id}&select=status,valor_previsto`)).body)[0]; assert.deepEqual(editableAfterB, { status: "realizado", valor_previsto: 120 }); assert.equal((await obligationFor(a, editableShift.id)).id, editable.id);
 
-  const incompatible = await createShift(a, { hora_inicio: "12:00", hora_fim: "13:00" });
+  const incompatible = await createShift(a, { p_hora_inicio: "12:00", p_hora_fim: "13:00" });
   await rejected(request(a, "obligations", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, shift_id: incompatible.id, valor_devido: 10, data_prevista: date, responsavel_place_id: place.id }) }), "criação em plantão agendado");
   await rejected(patch(a, "obligations", editable.id, { shift_id: incompatible.id }), "reassociação incompatível");
 
-  const reversible = await createShift(a, { hora_inicio: "14:00", hora_fim: "15:00" }); await realize(a, reversible.id); const reversibleObligation = await obligationFor(a, reversible.id);
-  await ok(await patch(a, "shifts", reversible.id, { status: "agendado" }), "reverter sem pagamento"); assert.deepEqual(await ok(await request(a, `obligations?id=eq.${reversibleObligation.id}&select=id`, {}), "confirmar remoção atômica"), []);
+  const reversible = await createShift(a, { p_hora_inicio: "14:00", p_hora_fim: "15:00" }); await realize(a, reversible.id); const reversibleObligation = await obligationFor(a, reversible.id);
+  await ok(await saveShift(a, { p_shift_id: reversible.id, p_place_id: place.id, p_data: date, p_hora_inicio: "14:00", p_hora_fim: "15:00", p_valor_previsto: 100, p_status: "agendado" }), "reverter sem pagamento via RPC"); assert.deepEqual(await ok(await request(a, `obligations?id=eq.${reversibleObligation.id}&select=id`, {}), "confirmar remoção atômica"), []);
 
-  const paid = await createShift(a, { hora_inicio: "16:00", hora_fim: "17:00" }); await realize(a, paid.id); const paidObligation = await obligationFor(a, paid.id); const partial = await ok(await pay(a, paidObligation.id, 40), "pagamento parcial");
-  await rejected(patch(a, "shifts", paid.id, { valor_previsto: 999 }), "PATCH direto de valor em realizado");
-  await rejected(patch(a, "obligations", paidObligation.id, { valor_devido: 30 }), "valor abaixo do recebido"); await rejected(patch(a, "shifts", paid.id, { status: "cancelado" }), "reversão com pagamento"); const finalPayment = await ok(await pay(a, paidObligation.id, 60), "pagamento restante"); await rejected(await pay(a, paidObligation.id, 1), "overpayment"); await ok(await patch(a, "payments", partial.id, { status: "cancelado" }), "cancelamento lógico parcial"); await ok(await patch(a, "payments", finalPayment.id, { status: "cancelado" }), "cancelamento lógico total"); await rejected(patch(a, "shifts", paid.id, { status: "cancelado" }), "reversão após todos cancelados com histórico"); assert.equal((await (await request(a, `shifts?id=eq.${paid.id}&select=status`)).body)[0].status, "realizado"); assert.equal((await obligationFor(a, paid.id)).id, paidObligation.id);
+  const paid = await createShift(a, { p_hora_inicio: "16:00", p_hora_fim: "17:00" }); await realize(a, paid.id); const paidObligation = await obligationFor(a, paid.id); const partial = await ok(await pay(a, paidObligation.id, 40), "pagamento parcial");
+  await assertRejected42501(patch(a, "shifts", paid.id, { valor_previsto: 999 }), "PATCH direto de valor em realizado");
+  await rejected(patch(a, "obligations", paidObligation.id, { valor_devido: 30 }), "valor abaixo do recebido");
+  await assertRejected42501(patch(a, "shifts", paid.id, { status: "cancelado" }), "PATCH direto de status com pagamento");
+  await assertRejected23514(saveShift(a, { p_shift_id: paid.id, p_place_id: place.id, p_data: date, p_hora_inicio: "16:00", p_hora_fim: "17:00", p_valor_previsto: 100, p_status: "cancelado" }), "reversão RPC com pagamento");
+  const finalPayment = await ok(await pay(a, paidObligation.id, 60), "pagamento restante");
+  await rejected(await pay(a, paidObligation.id, 1), "overpayment");
+  await ok(await patch(a, "payments", partial.id, { status: "cancelado" }), "cancelamento lógico parcial");
+  await ok(await patch(a, "payments", finalPayment.id, { status: "cancelado" }), "cancelamento lógico total");
+  await assertRejected42501(patch(a, "shifts", paid.id, { status: "cancelado" }), "PATCH direto de status pós-cancelados");
+  await assertRejected23514(saveShift(a, { p_shift_id: paid.id, p_place_id: place.id, p_data: date, p_hora_inicio: "16:00", p_hora_fim: "17:00", p_valor_previsto: 100, p_status: "cancelado" }), "reversão RPC após todos cancelados com histórico");
+  assert.equal((await (await request(a, `shifts?id=eq.${paid.id}&select=status`)).body)[0].status, "realizado"); assert.equal((await obligationFor(a, paid.id)).id, paidObligation.id);
   const paidRpcBase = { p_shift_id: paid.id, p_place_id: place.id, p_data: date, p_hora_inicio: "16:00", p_hora_fim: "17:00", p_status: "realizado", p_data_prevista: date, p_responsavel_place_id: place.id, p_responsavel_contact_id: null };
   await ok(await pay(a, paidObligation.id, 30), "pagamento para piso RPC");
   await ok(await saveShift(a, { ...paidRpcBase, p_valor_previsto: 120 }), "RPC com valor novo acima do recebido");
