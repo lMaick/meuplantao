@@ -7,14 +7,15 @@ import { useSubscription } from "@/lib/subscription";
 
 /**
  * Desktop sidebar trial badge with countdown and dynamic color tone.
+ * Built to strictly stay within the 256px sidebar without horizontal overflow.
  */
 export function TrialBadge({ className }: { className?: string }) {
   const { trial, isLoading } = useSubscription();
 
   if (isLoading) {
     return (
-      <div className={cn("px-3 py-1.5", className)}>
-        <div className="h-7 w-full max-w-[190px] animate-pulse rounded-full bg-muted/60" />
+      <div className={cn("w-full px-1 py-1", className)}>
+        <div className="h-7 w-full animate-pulse rounded-full bg-muted/60" />
       </div>
     );
   }
@@ -30,23 +31,29 @@ export function TrialBadge({ className }: { className?: string }) {
         return null;
       }
     })();
-    const vigLabel =
+    const vigFull =
       trial.proDaysRemaining > 0 && vigDate
         ? `Plano Pro Ativo — ${trial.proDaysRemaining === 1 ? "1 dia restante" : `${trial.proDaysRemaining} dias restantes`} (até ${vigDate})`
         : "Plano Pro Ativo";
+
+    const vigShort =
+      trial.proDaysRemaining > 0
+        ? `Pro Ativo • ${trial.proDaysRemaining}d ${vigDate ? `(até ${vigDate.slice(0, 5)})` : ""}`
+        : "Plano Pro Ativo";
+
     return (
       <Link
         href="/configuracoes"
         className={cn(
-          "group inline-flex min-h-[36px] items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all duration-200",
+          "group flex w-full max-w-full min-h-[36px] items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200 overflow-hidden",
           "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400 border border-emerald-500/20",
           className
         )}
-        title={vigLabel}
-        aria-label={vigLabel}
+        title={vigFull}
+        aria-label={vigFull}
       >
         <Sparkles className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-        <span className="font-semibold truncate max-w-[260px]">{vigLabel}</span>
+        <span className="font-semibold truncate min-w-0 flex-1">{vigShort}</span>
       </Link>
     );
   }
@@ -56,14 +63,14 @@ export function TrialBadge({ className }: { className?: string }) {
       <Link
         href="/configuracoes"
         className={cn(
-          "group inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition-all duration-200",
+          "group flex w-full max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all duration-200 overflow-hidden",
           "bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 active:scale-[0.98]",
           className
         )}
         title="Seu período de teste terminou. Clique para assinar o MeuPlantão Pro."
       >
-        <span>⚠️</span>
-        <span>Trial expirado — Assinar</span>
+        <span className="shrink-0">⚠️</span>
+        <span className="truncate min-w-0 flex-1">Trial expirado — Assinar</span>
       </Link>
     );
   }
@@ -81,7 +88,7 @@ export function TrialBadge({ className }: { className?: string }) {
     <Link
       href="/configuracoes"
       className={cn(
-        "group inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all duration-200 active:scale-[0.98]",
+        "group flex w-full max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200 active:scale-[0.98] overflow-hidden",
         isWarning
           ? "bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-400 border border-amber-500/25"
           : "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/25",
@@ -89,7 +96,7 @@ export function TrialBadge({ className }: { className?: string }) {
       )}
       title={`Período de teste gratuito: ${trial.daysRemaining} dias restantes. Clique para ver o plano.`}
     >
-      <span className="truncate font-medium">{badgeLabel}</span>
+      <span className="truncate min-w-0 flex-1 font-medium">{badgeLabel}</span>
     </Link>
   );
 }

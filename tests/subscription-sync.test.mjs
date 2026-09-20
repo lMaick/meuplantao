@@ -5,16 +5,24 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 
 const __syncTestFile = fileURLToPath(import.meta.url);
-const __syncTrialUrl = pathToFileURL(path.join(path.dirname(__syncTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
+const __syncDirname = path.dirname(__syncTestFile);
+const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
+const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
+const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+
+process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/subscription/trial") {
       return { url: __syncTrialUrl, shortCircuit: true };
     }
+    if (specifier === "@/lib/mercadopago/payments") {
+      return { url: __syncPaymentsUrl, shortCircuit: true };
+    }
     if (specifier === "@/lib/mercadopago/config") {
       return {
-        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';",
+        url: __syncConfigUrl,
         shortCircuit: true,
       };
     }
@@ -29,9 +37,10 @@ registerHooks({
   },
 });
 
-const { POST: syncRoute } = await import("../src/app/api/mercadopago/sync/route.ts");
+const { POST: syncRoute, paymentBelongsToUser } = await import("../src/app/api/mercadopago/sync/route.ts");
 
 const testUserId = "33333333-3333-4333-8333-333333333333";
+const otherUserId = "44444444-4444-4444-8444-444444444444";
 
 function createMockRequest() {
   return new Request("http://localhost/api/mercadopago/sync", {
@@ -70,11 +79,27 @@ test("sync route activates subscription when approved payment is found", async (
   };
 
   globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
     from: () => ({
-      upsert: async (row, options) => {
-        calls.push({ row, options });
-        return { error: null };
-      },
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { status: "active", current_period_end: new Date(Date.now() + 30 * 86400000).toISOString() },
+            error: null,
+          }),
+        }),
+      }),
     }),
   };
 
@@ -87,12 +112,67 @@ test("sync route activates subscription when approved payment is found", async (
 
   assert.equal(
     calls[0].url,
-    `https://api.mercadopago.test/v1/payments/search?external_reference=${testUserId}&sort=date_created&criteria=desc&limit=50`,
+    `https://api.mercadopago.com/v1/payments/search?external_reference=${testUserId}&sort=date_created&criteria=desc&limit=50`,
   );
-  assert.equal(calls[1].row.user_id, testUserId);
-  assert.equal(calls[1].row.status, "active");
-  assert.equal(calls[1].options.onConflict, "user_id");
-  assert.ok(calls[1].row.current_period_end, "MAI-126: upsert deve gravar current_period_end");
+  const rpcCall = calls.find((c) => c && c.fn === "process_mercadopago_subscription_payment");
+  assert.ok(rpcCall, "sync deve chamar a RPC atômica");
+  assert.equal(rpcCall.params.p_user_id, testUserId);
+  assert.equal(rpcCall.params.p_payment_id, "1001");
+});
+
+test("security: sync route NEVER activates payments without external_reference or belonging to another user", async () => {
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  // Mock search returning payments from other users or missing reference
+  globalThis.fetch = async () => {
+    return new Response(
+      JSON.stringify({
+        results: [
+          { id: "9999", status: "approved", external_reference: otherUserId, date_created: "2026-09-19T20:00:00Z" },
+          { id: "8888", status: "approved", external_reference: "", date_created: "2026-09-19T20:00:00Z" },
+          { id: "7777", status: "approved", external_reference: null, metadata: {}, date_created: "2026-09-19T20:00:00Z" },
+        ],
+      }),
+      { status: 200 },
+    );
+  };
+
+  let rpcCalled = false;
+  globalThis.adminClient = {
+    rpc: async () => {
+      rpcCalled = true;
+      return { data: null, error: null };
+    },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: null, error: null }),
+        }),
+      }),
+    }),
+  };
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.synced, false);
+  assert.equal(json.status, "trialing");
+  assert.equal(rpcCalled, false, "Nao deve chamar RPC para pagamentos de terceiros ou sem ref");
+});
+
+test("paymentBelongsToUser correctly matches package refs and metadata", () => {
+  assert.equal(paymentBelongsToUser({ external_reference: testUserId }, testUserId), true);
+  assert.equal(paymentBelongsToUser({ external_reference: `${testUserId}#6` }, testUserId), true);
+  assert.equal(paymentBelongsToUser({ external_reference: `${testUserId}#12` }, testUserId), true);
+  assert.equal(paymentBelongsToUser({ metadata: { user_id: testUserId } }, testUserId), true);
+  assert.equal(paymentBelongsToUser({ metadata: { userId: testUserId } }, testUserId), true);
+
+  assert.equal(paymentBelongsToUser({ external_reference: otherUserId }, testUserId), false);
+  assert.equal(paymentBelongsToUser({ external_reference: "" }, testUserId), false);
+  assert.equal(paymentBelongsToUser({}, testUserId), false);
+  assert.equal(paymentBelongsToUser({ external_reference: "generic-payment" }, testUserId), false);
 });
 
 test("sync route returns synced: false and status: trialing when no approved payment found", async () => {
@@ -139,4 +219,49 @@ test("sync route returns 502 if Mercado Pago API fails", async () => {
   assert.equal(response.status, 502);
   const json = await response.json();
   assert.equal(json.error, "Nao foi possivel consultar pagamentos no Mercado Pago");
+});
+
+test("sync route returns status: expired when current_period_end has passed even if DB status is active", async () => {
+  const pastDate = new Date(Date.now() - 86400000).toISOString();
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      results: [
+        { id: "old-100", status: "approved", external_reference: testUserId, date_created: pastDate },
+      ],
+    }),
+    { status: 200 },
+  );
+
+  globalThis.adminClient = {
+    rpc: async () => ({
+      data: {
+        already_processed: true,
+        current_period_end: pastDate,
+        validity_days_added: 0,
+        status: "expired",
+      },
+      error: null,
+    }),
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { status: "active", current_period_end: pastDate },
+            error: null,
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.synced, true);
+  assert.equal(json.status, "expired");
+  assert.equal(json.current_period_end, pastDate);
 });

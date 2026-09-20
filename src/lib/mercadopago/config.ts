@@ -27,3 +27,28 @@ export function getApplicationOrigin(requestUrl: string): string {
 export function getMercadoPagoApiUrl(): string {
   return MERCADO_PAGO_API_URL;
 }
+
+export function paymentBelongsToUser(
+  p: { external_reference?: string | null; metadata?: { user_id?: string | null; userId?: string | null } | null },
+  userId: string,
+): boolean {
+  if (!userId || !p) return false;
+  const rawRef = (p.external_reference || "").trim();
+  const [paymentUserId] = rawRef ? rawRef.split("#") : [""];
+  const metadataUserId = (p.metadata?.user_id || p.metadata?.userId || "").trim();
+
+  const hasRef = Boolean(paymentUserId);
+  const hasMeta = Boolean(metadataUserId);
+
+  if (!hasRef && !hasMeta) return false;
+
+  if (hasRef && hasMeta) {
+    return paymentUserId === userId && metadataUserId === userId;
+  }
+
+  if (hasRef) {
+    return paymentUserId === userId;
+  }
+
+  return metadataUserId === userId;
+}
