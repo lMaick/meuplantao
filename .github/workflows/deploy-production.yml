@@ -1,0 +1,89 @@
+name: Production Migrations & Release Gate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_smoke_test:
+        description: "Force run smoke test without applying migrations"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate-and-verify:
+    name: Apply & Verify Production Schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply Migrations to Production Database
+        id: apply-migrations
+        shell: bash
+        env:
+          PROD_DB_URL: ${{ secrets.PRODUCTION_DATABASE_URL || secrets.SUPABASE_DB_URL }}
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -n "${PROD_DB_URL:-}" ]; then
+            printf '::add-mask::%s\n' "${PROD_DB_URL}"
+            echo "Applying pending migrations to production Supabase via direct connection..."
+            npx --yes supabase@2.117.0 db push --db-url "${PROD_DB_URL}"
+            echo "Migrations applied successfully."
+          elif [ -n "${SUPABASE_TOKEN:-}" ] && [ -n "${PROJECT_ID:-}" ]; then
+            printf '::add-mask::%s\n' "${SUPABASE_TOKEN}" "${PROJECT_ID}"
+            echo "Linking and applying pending migrations via Supabase CLI project link..."
+            npx --yes supabase@2.117.0 link --project-ref "${PROJECT_ID}"
+            npx --yes supabase@2.117.0 db push
+            echo "Migrations applied successfully."
+          else
+            echo "::warning::Neither PRODUCTION_DATABASE_URL nor SUPABASE_ACCESS_TOKEN configured in GitHub Secrets."
+            echo "::warning::Verifying existing schema compatibility directly via smoke test..."
+          fi
+
+      - name: Production Schema Smoke Test (Fail-Closed)
+        id: smoke-test
+        shell: bash
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL || secrets.SUPABASE_DB_URL }}
+          CHECK_SCHEMA_COMPATIBILITY: "1"
+        run: |
+          set -Eeuo pipefail
+          if [ -n "${NEXT_PUBLIC_SUPABASE_URL:-}" ]; then
+            printf '::add-mask::%s\n' "${NEXT_PUBLIC_SUPABASE_URL}"
+          fi
+          if [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            printf '::add-mask::%s\n' "${SUPABASE_SERVICE_ROLE_KEY}"
+          fi
+          if [ -n "${DATABASE_URL:-}" ]; then
+            printf '::add-mask::%s\n' "${DATABASE_URL}"
+          fi
+
+          echo "Running critical RPC smoke test against production..."
+          node scripts/smoke-test-schema.mjs
+
+      - name: Release Gate Summary
+        if: always()
+        run: |
+          echo "### Production Database Verification" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status == 'success' && 'Healthy ✅' || 'Failed ❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Critical RPCs Checked:**" >> $GITHUB_STEP_SUMMARY
+          echo "  - \`save_shift_with_obligation\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - \`register_payment\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - \`process_mercadopago_subscription_payment\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - \`process_stripe_subscription_event\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Canonical Process:** See \`docs/DEVOPS_MIGRATIONS.md\`" >> $GITHUB_STEP_SUMMARY
