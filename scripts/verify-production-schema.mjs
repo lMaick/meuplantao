@@ -35,21 +35,27 @@ export async function verifyProductionSchema(options = {}) {
     supabaseUrl.includes("127.0.0.1") ||
     supabaseUrl.includes("your-project");
 
-  const isStrict = isVercelProduction || isExplicit;
+  const isStrict = isExplicit || isVercelProduction;
+  const isVercelPreview = env.VERCEL_ENV === "preview";
 
   if (isStrict) {
     logger.log("[SCHEMA-GATE] Strict schema verification active (Production / Explicit gate).");
-    const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn });
-    if (!result.ok) {
-      logger.error("[SCHEMA-GATE] FATAL: Production database is missing critical migrations / RPCs!");
-      logger.error("[SCHEMA-GATE] Aborting build/deploy to prevent serving broken code to users.");
-      return { ok: false, strict: true };
+    try {
+      const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn });
+      if (!result.ok) {
+        logger.error("[SCHEMA-GATE] FATAL: Production database is missing critical migrations / RPCs!");
+        logger.error("[SCHEMA-GATE] Aborting build/deploy to prevent serving broken code to users.");
+        return { ok: false, strict: true, error: result.error, missingCount: result.missingCount };
+      }
+      logger.log("[SCHEMA-GATE] Production schema compatibility verified successfully.");
+      return { ok: true, strict: true };
+    } catch (err) {
+      logger.error("[SCHEMA-GATE] FATAL: Database unreachable during strict schema gate:", redactSecrets(err?.message || String(err)));
+      return { ok: false, strict: true, error: err?.message || String(err) };
     }
-    logger.log("[SCHEMA-GATE] Production schema compatibility verified successfully.");
-    return { ok: true, strict: true };
   }
 
-  // Non-strict mode (local build, CI quality test)
+  // Non-strict mode (local build, CI quality test, or Vercel preview)
   if (isLocalOrPlaceholder) {
     logger.log("[SCHEMA-GATE] Non-production environment detected (local/mock config).");
     logger.log("[SCHEMA-GATE] Skipping strict database schema gate for offline asset build.");
@@ -57,13 +63,20 @@ export async function verifyProductionSchema(options = {}) {
     return { ok: true, bypassed: true };
   }
 
-  // If a remote URL is present even in non-strict, attempt check gently
+  // If a remote URL is present in preview / non-strict mode, run optional diagnostic check
   try {
+    logger.log(`[SCHEMA-GATE] Optional diagnostic schema check (${isVercelPreview ? "Vercel Preview" : "non-strict remote"})...`);
     const result = await runSmokeTest({ env, logger, fetchFn: options.fetchFn });
-    return result;
+    if (!result.ok) {
+      logger.warn(`[SCHEMA-GATE] WARNING: Target database schema is missing ${result.missingCount || 1} migration(s)/RPC(s).`);
+      logger.warn("[SCHEMA-GATE] Build proceeding without blocking because this is a preview / non-strict environment.");
+      return { ok: true, warned: true, preview: isVercelPreview, missingCount: result.missingCount };
+    }
+    logger.log("[SCHEMA-GATE] Diagnostic schema check passed successfully.");
+    return { ok: true, preview: isVercelPreview };
   } catch (err) {
-    logger.warn(`[SCHEMA-GATE] Gentle check warning: ${redactSecrets(err?.message || String(err))}`);
-    return { ok: true, warned: true };
+    logger.warn(`[SCHEMA-GATE] Diagnostic check warning (non-blocking): ${redactSecrets(err?.message || String(err))}`);
+    return { ok: true, warned: true, preview: isVercelPreview };
   }
 }
 

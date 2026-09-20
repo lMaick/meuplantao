@@ -182,4 +182,69 @@ test("smoke-test-schema: verifyProductionSchema respects VERCEL_ENV and gates bu
   });
   assert.strictEqual(prodPassRes.ok, true);
   assert.strictEqual(prodPassRes.strict, true);
+
+  // 5. In Vercel Preview with incompatible remote schema, emits warning but does NOT block build (ok: true)
+  const warnLogs = [];
+  const previewWarnLogger = {
+    log: () => {},
+    error: () => {},
+    warn: (m) => warnLogs.push(m),
+  };
+  const previewFailRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "preview",
+      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "preview-role-key",
+    },
+    logger: previewWarnLogger,
+    fetchFn: failFetch,
+  });
+  assert.strictEqual(previewFailRes.ok, true, "Preview build must NOT be blocked by incompatible remote schema");
+  assert.strictEqual(previewFailRes.warned, true, "Must flag warning in preview");
+  assert.strictEqual(previewFailRes.preview, true);
+  assert.ok(warnLogs.some((l) => typeof l === "string" && l.includes("WARNING")), "Must log warning notice");
+
+  // 6. In Vercel Preview with unreachable/network failure, emits warning but does NOT block build (ok: true)
+  const networkErrorFetch = async () => {
+    throw new Error("Connection refused (network timeout)");
+  };
+  const previewNetworkRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "preview",
+      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "preview-role-key",
+    },
+    logger: previewWarnLogger,
+    fetchFn: networkErrorFetch,
+  });
+  assert.strictEqual(previewNetworkRes.ok, true, "Preview build must NOT be blocked by network failure");
+  assert.strictEqual(previewNetworkRes.warned, true);
+
+  // 7. In Vercel Preview with explicit CHECK_SCHEMA_COMPATIBILITY=1, enforces strict gate
+  const previewExplicitRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "preview",
+      CHECK_SCHEMA_COMPATIBILITY: "1",
+      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "preview-role-key",
+    },
+    logger: mockLogger,
+    fetchFn: failFetch,
+  });
+  assert.strictEqual(previewExplicitRes.ok, false, "CHECK_SCHEMA_COMPATIBILITY=1 must enforce strict fail-closed even in preview");
+  assert.strictEqual(previewExplicitRes.strict, true);
+
+  // 8. In production with unreachable database, fails closed
+  const prodNetworkFailRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "secret-key-1234",
+    },
+    logger: mockLogger,
+    fetchFn: networkErrorFetch,
+  });
+  assert.strictEqual(prodNetworkFailRes.ok, false, "Production build gate must fail if database is unreachable");
+  assert.strictEqual(prodNetworkFailRes.strict, true);
 });
+
