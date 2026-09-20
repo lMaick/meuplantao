@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/verify-production-schema.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint src/",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs"
+    "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs",
+    "db:smoke": "node scripts/smoke-test-schema.mjs",
+    "db:verify": "node scripts/verify-production-schema.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
