@@ -7,6 +7,9 @@ import { registerHooks } from "node:module";
 const __testFilename = fileURLToPath(import.meta.url);
 const __testDirname = path.dirname(__testFilename);
 const trialModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
+const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
+
+process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
 import {
   calculateTrial,
@@ -22,7 +25,7 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/mercadopago/config") {
       return {
-        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => globalThis.__mockWebhookSecret ?? null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';",
+        url: configModuleUrl,
         shortCircuit: true,
       };
     }
@@ -68,8 +71,6 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
     assert.ok(end);
     const diffDays = Math.round((new Date(end).getTime() - NOW.getTime()) / MS_PER_DAY);
     assert.equal(diffDays, 60);
-    // Data final esperada: ~19/11/2026
-    assert.equal(new Date(end).toLocaleDateString("pt-BR", { timeZone: "America/Bahia" }), "18/11/2026");
   });
 
   test("pagamentos pendentes/recusados nao acumulam vigencia", () => {

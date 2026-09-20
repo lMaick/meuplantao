@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
+import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/stripe/supabase";
 import { calculateCumulativePeriodEnd } from "@/lib/subscription/trial";
 
@@ -24,6 +24,8 @@ interface MercadoPagoSearchResult {
     metadata?: { user_id?: string; userId?: string; months?: number };
   }>;
 }
+
+export { paymentBelongsToUser };
 
 export async function POST(request: NextRequest) {
   const sessionResponse = NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
@@ -53,9 +55,7 @@ export async function POST(request: NextRequest) {
 
     const matchesUser = (p: NonNullable<MercadoPagoSearchResult["results"]>[number]) => {
       if (p.status !== "approved") return false;
-      const [paymentUserId] = (p.external_reference || "").split("#");
-      const ref = p.external_reference || p.metadata?.user_id || p.metadata?.userId;
-      return !ref || ref === user.id || paymentUserId === user.id || p.metadata?.user_id === user.id || p.metadata?.userId === user.id;
+      return paymentBelongsToUser(p, user.id);
     };
 
     let searchData = (await paymentResponse.json()) as MercadoPagoSearchResult;

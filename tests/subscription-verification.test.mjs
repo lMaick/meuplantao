@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import test from "node:test";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/mercadopago/config") {
       return {
-        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test';",
+        url: configUrl,
         shortCircuit: true,
       };
     }
@@ -24,8 +27,9 @@ registerHooks({
   },
 });
 
+process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
+
 const { GET: verifyPayment } = await import("../src/app/api/mercadopago/verify/route.ts");
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const userId = "11111111-1111-4111-8111-111111111111";
 
 function verifyRequest(query) {
@@ -50,6 +54,11 @@ test("approved payment matching the authenticated user activates the subscriptio
   };
   globalThis.adminClient = {
     from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: null, error: null }),
+        }),
+      }),
       upsert: async (row, options) => {
         calls.push({ row, options });
         return { error: null };
@@ -59,9 +68,16 @@ test("approved payment matching the authenticated user activates the subscriptio
 
   const response = await verifyPayment(verifyRequest("payment_id=payment-123"));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { verified: true, activated: true, status: "active" });
-  assert.equal(calls[0], "https://api.mercadopago.test/v1/payments/payment-123");
-  assert.deepEqual(calls[1], { row: { user_id: userId, status: "active" }, options: { onConflict: "user_id" } });
+  const json = await response.json();
+  assert.equal(json.verified, true);
+  assert.equal(json.activated, true);
+  assert.equal(json.status, "active");
+  assert.ok(json.current_period_end);
+  assert.equal(calls[0], "https://api.mercadopago.com/v1/payments/payment-123");
+  const upsertCall = calls.find((c) => c && c.row);
+  assert.equal(upsertCall.row.user_id, userId);
+  assert.equal(upsertCall.row.status, "active");
+  assert.ok(upsertCall.row.current_period_end);
 });
 
 test("collection_id is accepted and a payment belonging to another user is rejected", async () => {

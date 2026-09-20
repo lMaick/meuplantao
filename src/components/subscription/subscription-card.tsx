@@ -52,7 +52,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         if (payload.activated) {
           await refresh();
           if (!cancelled) {
-            setFeedbackMessage("Pagamento confirmado. Seu plano Pro já está ativo.");
+            setFeedbackMessage("Pagamento confirmado. Seu plano Pro já está ativo e atualizado.");
             setFeedbackType("success");
           }
         } else {
@@ -94,8 +94,6 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
       setIsProcessing(false);
       return;
     }
-
-    setIsProcessing(false);
   };
 
   const handleSync = async () => {
@@ -120,10 +118,10 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
 
       if (payload.synced) {
         await refresh();
-        setFeedbackMessage("Assinatura sincronizada e ativada com sucesso! Seu plano Pro já está liberado.");
+        setFeedbackMessage("Assinatura sincronizada e atualizada com sucesso! Seu plano Pro está liberado.");
         setFeedbackType("success");
       } else {
-        setFeedbackMessage("Nenhum pagamento aprovado foi identificado ainda. Se você pagou via PIX, aguarde alguns instantes e tente novamente.");
+        setFeedbackMessage("Nenhum pagamento aprovado vinculado a esta conta foi identificado. Se você acabou de pagar via PIX, aguarde alguns instantes e tente novamente.");
         setFeedbackType("info");
       }
     } catch (err) {
@@ -221,7 +219,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
                   : "Plano Pro Ativo"}
               </p>
               <p className="mt-0.5 text-xs opacity-90">
-                Cada pagamento aprovado de R$ 12,90 adiciona 30 dias automaticamente à sua vigência.
+                Você pode estender ou renovar sua assinatura a qualquer momento; os novos dias serão somados à sua vigência atual.
               </p>
             </div>
           </div>
@@ -324,13 +322,13 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
           </div>
         </div>
 
-        <PlanPeriodSelector value={selectedMonths} onChange={setSelectedMonths} disabled={isProcessing || isSyncing || (trial?.isActive ?? false)} />
+        <PlanPeriodSelector value={selectedMonths} onChange={setSelectedMonths} disabled={isProcessing || isSyncing} />
 
         {/* Action Button & Feedback */}
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap">
           <Button
             onClick={handleSubscribe}
-            disabled={isProcessing || isSyncing || (trial?.isActive ?? false)}
+            disabled={isProcessing || isSyncing}
             size="lg"
             className="w-full sm:w-auto min-h-[44px] bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold shadow-md shadow-emerald-700/20 text-sm gap-2 active:scale-[0.99] transition-all touch-manipulation cursor-pointer"
           >
@@ -341,8 +339,9 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
               </span>
             ) : trial?.isActive ? (
               <span className="flex items-center gap-2">
-                <ShieldCheck className="size-4" />
-                Plano Pro Ativo
+                <Zap className="size-4 fill-white" />
+                Estender Plano Pro — {selectedPeriod.label}, R$ {selectedPeriod.price.toFixed(2).replace(".", ",")}
+                <ArrowRight className="size-4" />
               </span>
             ) : (
               <span className="flex items-center gap-2">
@@ -353,33 +352,31 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
             )}
           </Button>
 
-          {/* Sincronizar assinatura ativa */}
-          {!trial?.isActive && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleSync}
-              disabled={isSyncing || isProcessing}
-              size="lg"
-              className="w-full sm:w-auto min-h-[44px] border-border/80 hover:bg-muted/50 text-foreground font-semibold text-xs sm:text-sm gap-2 active:scale-[0.99] transition-all touch-manipulation cursor-pointer"
-            >
-              {isSyncing ? (
-                <span className="flex items-center gap-2">
-                  <RefreshCw className="size-4 animate-spin text-primary" />
-                  Sincronizando...
-                </span>
-              ) : (
-                <span className="flex items-center gap-2">
-                  <RefreshCw className="size-4 text-muted-foreground" />
-                  Já fez o pagamento? Sincronizar assinatura
-                </span>
-              )}
-            </Button>
-          )}
+          {/* Sincronizar pagamentos */}
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleSync}
+            disabled={isSyncing || isProcessing}
+            size="lg"
+            className="w-full sm:w-auto min-h-[44px] border-border/80 hover:bg-muted/50 text-foreground font-semibold text-xs sm:text-sm gap-2 active:scale-[0.99] transition-all touch-manipulation cursor-pointer"
+          >
+            {isSyncing ? (
+              <span className="flex items-center gap-2">
+                <RefreshCw className="size-4 animate-spin text-primary" />
+                Sincronizando...
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <RefreshCw className="size-4 text-muted-foreground" />
+                {trial?.isActive ? "Sincronizar pagamentos" : "Já fez o pagamento? Sincronizar assinatura"}
+              </span>
+            )}
+          </Button>
 
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CreditCard className="size-4 text-muted-foreground shrink-0" />
-            <span>PIX ou Cartão • Cobrança mensal sem surpresas</span>
+            <span>PIX ou Cartão • Pagamento seguro via Mercado Pago</span>
           </div>
         </div>
 
