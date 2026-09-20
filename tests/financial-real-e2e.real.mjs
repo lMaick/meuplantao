@@ -23,8 +23,38 @@ test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   const hasEntitlement = (token, p_user_id = null) => request(token, "rpc/has_active_entitlement", { method: "POST", body: JSON.stringify(p_user_id ? { p_user_id } : {}) });
   const rpcRow = (body) => Array.isArray(body) ? body[0] : body;
   const concreteRpcShift = (body, label) => { const row = rpcRow(body); assert.ok(row && typeof row.id === "string" && row.id.length > 0, `${label}: RPC retornou shift inválido ${JSON.stringify(body)}`); return row; };
-  const createShift = async (token, values = {}) => concreteRpcShift(await ok(await saveShift(token, { p_shift_id: null, p_place_id: values.place_id || values.p_place_id || place.id, p_data: values.data || values.p_data || date, p_hora_inicio: values.hora_inicio || values.p_hora_inicio || "08:00", p_hora_fim: values.hora_fim || values.p_hora_fim || "09:00", p_valor_previsto: values.valor_previsto ?? values.p_valor_previsto ?? 100, p_status: values.status ?? values.p_status ?? "agendado", p_data_prevista: null, p_responsavel_place_id: null, p_responsavel_contact_id: null, ...values }), "criar plantão RPC"), "criar plantão RPC");
-  const realize = async (token, id, values = {}) => concreteRpcShift(await ok(await saveShift(token, { p_shift_id: id, p_place_id: values.place_id || values.p_place_id || place.id, p_data: values.data || values.p_data || date, p_hora_inicio: values.hora_inicio || values.p_hora_inicio || "08:00", p_hora_fim: values.hora_fim || values.p_hora_fim || "09:00", p_valor_previsto: values.valor_previsto ?? values.p_valor_previsto ?? 100, p_status: "realizado", p_data_prevista: values.data_prevista || values.p_data_prevista || date, p_responsavel_place_id: values.responsavel_place_id !== undefined ? values.responsavel_place_id : place.id, p_responsavel_contact_id: null, ...values }), "realizar plantão RPC"), "realizar plantão RPC");
+  const createShift = async (token, values = {}) => {
+    const payload = {
+      p_shift_id: values.p_shift_id ?? null,
+      p_place_id: values.p_place_id ?? values.place_id ?? place.id,
+      p_data: values.p_data ?? values.data ?? date,
+      p_hora_inicio: values.p_hora_inicio ?? values.hora_inicio ?? "08:00",
+      p_hora_fim: values.p_hora_fim ?? values.hora_fim ?? "09:00",
+      p_valor_previsto: values.p_valor_previsto ?? values.valor_previsto ?? 100,
+      p_status: values.p_status ?? values.status ?? "agendado",
+      p_data_prevista: values.p_data_prevista ?? values.data_prevista ?? null,
+      p_responsavel_place_id: values.p_responsavel_place_id ?? values.responsavel_place_id ?? null,
+      p_responsavel_contact_id: values.p_responsavel_contact_id ?? values.responsavel_contact_id ?? null,
+      p_idempotency_key: values.p_idempotency_key ?? values.idempotency_key ?? null,
+    };
+    return concreteRpcShift(await ok(await saveShift(token, payload), "criar plantão RPC"), "criar plantão RPC");
+  };
+  const realize = async (token, id, values = {}) => {
+    const payload = {
+      p_shift_id: id,
+      p_place_id: values.p_place_id ?? values.place_id ?? place.id,
+      p_data: values.p_data ?? values.data ?? date,
+      p_hora_inicio: values.p_hora_inicio ?? values.hora_inicio ?? "08:00",
+      p_hora_fim: values.p_hora_fim ?? values.hora_fim ?? "09:00",
+      p_valor_previsto: values.p_valor_previsto ?? values.valor_previsto ?? 100,
+      p_status: "realizado",
+      p_data_prevista: values.p_data_prevista ?? values.data_prevista ?? date,
+      p_responsavel_place_id: values.p_responsavel_place_id !== undefined ? values.p_responsavel_place_id : (values.responsavel_place_id !== undefined ? values.responsavel_place_id : place.id),
+      p_responsavel_contact_id: values.p_responsavel_contact_id ?? values.responsavel_contact_id ?? null,
+      p_idempotency_key: values.p_idempotency_key ?? values.idempotency_key ?? null,
+    };
+    return concreteRpcShift(await ok(await saveShift(token, payload), "realizar plantão RPC"), "realizar plantão RPC");
+  };
   const assertRejected42501 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "42501", `${label}: privilegio inesperado`); return response; };
   const assertRejected23514 = async (result, label) => { const response = await rejected(result, label); assert.equal(response.body.code, "23514", `${label}: código SQL inesperado`); return response; };
 
