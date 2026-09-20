@@ -163,29 +163,8 @@ export function calculateTrial(
     }
   }
 
-  const statusNormalized = subscriptionStatus?.trim().toLowerCase();
-
-  // If user has an active subscription (legado sem current_period_end)
-  if (
-    statusNormalized === "active" ||
-    statusNormalized === "pro" ||
-    statusNormalized === "subscribed"
-  ) {
-    const fallbackEnd = new Date(now.getTime() + DAYS_PER_PRO_PAYMENT * MS_PER_DAY).toISOString();
-    return {
-      status: "active",
-      daysRemaining: DAYS_PER_PRO_PAYMENT,
-      trialEndsAt: fallbackEnd,
-      isTrialing: false,
-      isExpired: false,
-      isActive: true,
-      totalDays: TRIAL_DURATION_DAYS,
-      currentPeriodEnd: currentPeriodEnd ? new Date(currentPeriodEnd).toISOString() : null,
-      proDaysRemaining: DAYS_PER_PRO_PAYMENT,
-      proEndsAt: fallbackEnd,
-    };
-  }
-
+  // Sem current_period_end válido e futuro, NÃO inventa vigência Pro artificialmente.
+  // O acesso segue o ciclo natural de trial da conta (ativo se < 14 dias, expirado se >= 14 dias).
   return buildFromDates(createdAt, now, null);
 }
 
