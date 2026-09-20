@@ -47,10 +47,10 @@ delete from public.places where user_id in ('$USER_A', '$USER_B');
 delete from auth.users where id in ('$USER_A', '$USER_B');
 
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
-values ('$USER_A', 'authenticated', 'authenticated', 'user-c1@example.test', 'fixture', now(), now());
+values ('$USER_A', 'authenticated', 'authenticated', 'user-c1@example.test', 'fixture', now(), now(), now());
 
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
-values ('$USER_B', 'authenticated', 'authenticated', 'user-c2@example.test', 'fixture', now(), now());
+values ('$USER_B', 'authenticated', 'authenticated', 'user-c2@example.test', 'fixture', now(), now(), now());
 
 insert into public.places (id, user_id, nome) values ('$PLACE_A', '$USER_A', 'Hospital C');
 commit;
