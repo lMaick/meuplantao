@@ -364,6 +364,10 @@ export async function runSmokeTest(options = {}) {
   const env = options.env || process.env;
   const fetchFn = options.fetchFn || globalThis.fetch;
 
+  const isVercelProduction = env.VERCEL_ENV === "production";
+  const isExplicit = env.CHECK_SCHEMA_COMPATIBILITY === "1";
+  const isStrict = options.strict !== undefined ? Boolean(options.strict) : Boolean(isVercelProduction || isExplicit);
+
   const supabaseUrl = (options.supabaseUrl || env.NEXT_PUBLIC_SUPABASE_URL || env.SUPABASE_URL || "").trim();
   const serviceRoleKey = (options.serviceRoleKey || env.SUPABASE_SERVICE_ROLE_KEY || env.SERVICE_ROLE_KEY || "").trim();
   const anonKey = (options.anonKey || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || "").trim();
@@ -375,7 +379,47 @@ export async function runSmokeTest(options = {}) {
   logger.log(" MeuPlantao — Production Schema & RPC Smoke Test ");
   logger.log("=================================================");
 
-  // Mode 1: Check via psql if DATABASE_URL is provided and psql is installed
+  // Mode 1: Strict mode requires DATABASE_URL and pg_proc verification (NO fallback to REST)
+  if (isStrict) {
+    if (!databaseUrl) {
+      const msg = "[FAIL-CLOSED] Strict mode requires DATABASE_URL to verify exact RPC signatures via PostgreSQL pg_proc. REST cannot guarantee exact signature validation.";
+      logger.error(msg);
+      return { ok: false, strict: true, error: msg };
+    }
+    if (options.usePsql === false) {
+      const msg = "[FAIL-CLOSED] Strict mode requires PostgreSQL pg_proc verification (usePsql cannot be false).";
+      logger.error(msg);
+      return { ok: false, strict: true, error: msg };
+    }
+
+    logger.log("[SMOKE] Checking functions directly via PostgreSQL (psql)...");
+    const psqlRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });
+    if (!psqlRes.ok) {
+      const msg = `[FAIL-CLOSED] PostgreSQL pg_proc verification failed in strict mode: ${psqlRes.error}`;
+      logger.error(msg);
+      return { ok: false, strict: true, method: "psql", error: psqlRes.error, status: psqlRes.status || RPC_STATUS.SERVER_ERROR };
+    }
+
+    let missingCount = 0;
+    for (const rpc of CRITICAL_RPCS) {
+      const res = psqlRes.results[rpc.name];
+      if (res?.status === RPC_STATUS.FOUND) {
+        logger.log(`  ✓ ${rpc.name}: FOUND (${res.argsCount} args) - ${rpc.description}`);
+      } else {
+        logger.error(`  ✗ ${rpc.name}: ${res?.details || "MISSING in public schema!"}`);
+        missingCount++;
+      }
+    }
+    if (missingCount === 0) {
+      logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
+      return { ok: true, strict: true, method: "psql", results: psqlRes.results };
+    } else {
+      logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
+      return { ok: false, strict: true, missingCount, method: "psql", results: psqlRes.results };
+    }
+  }
+
+  // Mode 1 (non-strict): Check via psql if DATABASE_URL is provided and psql is installed
   if (databaseUrl && options.usePsql !== false) {
     logger.log("[SMOKE] Checking functions directly via PostgreSQL (psql)...");
     const psqlRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });

@@ -260,7 +260,7 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   assert.strictEqual(psqlWrongTypeRes.ok, false, "Must fail closed if save_shift_with_obligation has 11 args but wrong types");
   assert.strictEqual(psqlWrongTypeRes.missingCount, 1);
 
-  // 2. REST mode without SUPABASE_SERVICE_ROLE_KEY -> SKIPPED webhook RPCs -> MUST return ok: false in strict mode
+  // 2. REST mode (non-strict) without SUPABASE_SERVICE_ROLE_KEY -> SKIPPED webhook RPCs -> MUST return ok: false
   const fetchOk = async () => ({ status: 200, json: async () => ({}) });
   const anonOnlyRes = await runSmokeTest({
     supabaseUrl: "https://test.supabase.co",
@@ -269,8 +269,9 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
     logger: mockLogger,
     fetchFn: fetchOk,
     usePsql: false,
+    strict: false,
   });
-  assert.strictEqual(anonOnlyRes.ok, false, "Strict smoke test must fail when required webhook RPCs are SKIPPED");
+  assert.strictEqual(anonOnlyRes.ok, false, "Smoke test must fail when required webhook RPCs are SKIPPED");
   assert.strictEqual(anonOnlyRes.skippedCount, 2);
 
   // 3. PostgreSQL mode with full valid signatures -> MUST return ok: true
@@ -287,24 +288,73 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   });
   assert.strictEqual(psqlValidRes.ok, true);
 
-  // 4. REST mode with service role key and all FOUND -> MUST return ok: true
+  // 4. REST mode (non-strict) with service role key and all FOUND -> MUST return ok: true
   const allFoundRes = await runSmokeTest({
     supabaseUrl: "https://test.supabase.co",
     serviceRoleKey: "valid-service-role-key",
     logger: mockLogger,
     fetchFn: fetchOk,
     usePsql: false,
+    strict: false,
   });
   assert.strictEqual(allFoundRes.ok, true);
+
+  // 5. Strict mode without DATABASE_URL -> MUST return ok: false
+  const strictNoDbRes = await runSmokeTest({
+    supabaseUrl: "https://test.supabase.co",
+    serviceRoleKey: "valid-service-role-key",
+    logger: mockLogger,
+    fetchFn: fetchOk,
+    strict: true,
+  });
+  assert.strictEqual(strictNoDbRes.ok, false);
+  assert.strictEqual(strictNoDbRes.strict, true);
+
+  // 6. Strict mode with DATABASE_URL, but psql throws -> MUST return ok: false without REST fallback
+  let fetchCalledInStrictPsqlFail = false;
+  const failingPsqlExec = () => { throw new Error("psql: connection refused"); };
+  const strictPsqlFailRes = await runSmokeTest({
+    databaseUrl: "postgresql://localhost:5432/postgres",
+    supabaseUrl: "https://test.supabase.co",
+    serviceRoleKey: "valid-service-role-key",
+    execPsqlFn: failingPsqlExec,
+    fetchFn: async () => {
+      fetchCalledInStrictPsqlFail = true;
+      return { status: 200, json: async () => ({}) };
+    },
+    logger: mockLogger,
+    strict: true,
+  });
+  assert.strictEqual(strictPsqlFailRes.ok, false);
+  assert.strictEqual(strictPsqlFailRes.strict, true);
+  assert.strictEqual(fetchCalledInStrictPsqlFail, false, "Must NOT fall back to REST in strict mode when psql fails");
 });
 
 test("smoke-test-schema: verifyProductionSchema respects strict production gates and preview diagnostics", async () => {
   const mockLogger = { log: () => {}, error: () => {}, warn: () => {} };
   const fetch200 = async () => ({ status: 200, json: async () => ({}) });
   const fetch404 = async () => ({ status: 404, json: async () => ({ code: "PGRST202" }) });
+  const validPsqlExec = () => `
+save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
 
-  // 1. Production with full valid configuration -> PASS
-  const prodValidRes = await verifyProductionSchema({
+  // 1. production + DATABASE_URL válido + assinaturas corretas -> ok:true
+  const test1 = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:secret@db.project.supabase.co:5432/postgres",
+    },
+    logger: mockLogger,
+    execPsqlFn: validPsqlExec,
+  });
+  assert.strictEqual(test1.ok, true, "1. production + DATABASE_URL válido + assinaturas corretas must be ok: true");
+  assert.strictEqual(test1.strict, true);
+
+  // 2. production sem DATABASE_URL, mesmo com REST retornando HTTP 200 -> ok:false
+  const test2 = await verifyProductionSchema({
     env: {
       VERCEL_ENV: "production",
       NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
@@ -313,36 +363,57 @@ test("smoke-test-schema: verifyProductionSchema respects strict production gates
     logger: mockLogger,
     fetchFn: fetch200,
   });
-  assert.strictEqual(prodValidRes.ok, true);
-  assert.strictEqual(prodValidRes.strict, true);
+  assert.strictEqual(test2.ok, false, "2. production sem DATABASE_URL, mesmo com REST 200 must be ok: false");
+  assert.strictEqual(test2.strict, true);
 
-  // 2. Production with missing SUPABASE_SERVICE_ROLE_KEY (causes SKIPPED RPCs) -> FAIL CLOSED (ok: false)
-  const prodSkippedRes = await verifyProductionSchema({
+  // 3. production com DATABASE_URL, mas psql falha -> ok:false, sem fallback REST
+  let test3RestCalled = false;
+  const failingPsql = () => { throw new Error("psql: connection refused"); };
+  const test3 = await verifyProductionSchema({
     env: {
       VERCEL_ENV: "production",
-      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key-only",
-    },
-    logger: mockLogger,
-    fetchFn: fetch200,
-  });
-  assert.strictEqual(prodSkippedRes.ok, false, "Production gate must fail when service role key is missing and RPCs are skipped");
-  assert.strictEqual(prodSkippedRes.strict, true);
-
-  // 3. Production with missing RPC -> FAIL CLOSED (ok: false)
-  const prodMissingRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:secret@db.project.supabase.co:5432/postgres",
       NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "valid-key-1234",
     },
     logger: mockLogger,
-    fetchFn: fetch404,
+    execPsqlFn: failingPsql,
+    fetchFn: async () => {
+      test3RestCalled = true;
+      return { status: 200, json: async () => ({}) };
+    },
   });
-  assert.strictEqual(prodMissingRes.ok, false);
-  assert.strictEqual(prodMissingRes.strict, true);
+  assert.strictEqual(test3.ok, false, "3. production com DATABASE_URL, mas psql falha must be ok: false");
+  assert.strictEqual(test3.strict, true);
+  assert.strictEqual(test3RestCalled, false, "3. Must NOT fall back to REST in production when psql fails");
 
-  // 4. Preview with missing RPC -> PASS with warning (does not block preview build)
+  // 4. preview sem DATABASE_URL + REST funcionando -> continua não bloqueante
+  const test4 = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "preview",
+      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "valid-key-1234",
+    },
+    logger: mockLogger,
+    fetchFn: fetch200,
+  });
+  assert.strictEqual(test4.ok, true, "4. preview sem DATABASE_URL + REST funcionando must be ok: true");
+  assert.strictEqual(test4.preview, true);
+
+  // 5. CHECK_SCHEMA_COMPATIBILITY=1 sem DATABASE_URL -> ok:false
+  const test5 = await verifyProductionSchema({
+    env: {
+      CHECK_SCHEMA_COMPATIBILITY: "1",
+      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "valid-key-1234",
+    },
+    logger: mockLogger,
+    fetchFn: fetch200,
+  });
+  assert.strictEqual(test5.ok, false, "5. CHECK_SCHEMA_COMPATIBILITY=1 sem DATABASE_URL must be ok: false");
+  assert.strictEqual(test5.strict, true);
+
+  // 6. Preview with missing RPC -> PASS with warning (does not block preview build)
   const previewWarnRes = await verifyProductionSchema({
     env: {
       VERCEL_ENV: "preview",
@@ -352,11 +423,11 @@ test("smoke-test-schema: verifyProductionSchema respects strict production gates
     logger: mockLogger,
     fetchFn: fetch404,
   });
-  assert.strictEqual(previewWarnRes.ok, true, "Preview build must NOT be blocked");
+  assert.strictEqual(previewWarnRes.ok, true, "Preview build must NOT be blocked on missing RPC");
   assert.strictEqual(previewWarnRes.warned, true);
   assert.strictEqual(previewWarnRes.preview, true);
 
-  // 5. Local development build without remote DB -> PASS (bypassed)
+  // 7. Local development build without remote DB -> PASS (bypassed)
   const localRes = await verifyProductionSchema({
     env: { NEXT_PUBLIC_SUPABASE_URL: "http://localhost:54321" },
     logger: mockLogger,
