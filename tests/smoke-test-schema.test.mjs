@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   redactSecrets,
   checkRpcViaRest,
+  normalizeArgTypes,
   parsePsqlProcOutput,
   checkRpcsViaPsql,
   runSmokeTest,
@@ -10,6 +11,26 @@ import {
   RPC_STATUS,
 } from "../scripts/smoke-test-schema.mjs";
 import { verifyProductionSchema } from "../scripts/verify-production-schema.mjs";
+
+test("smoke-test-schema: normalizeArgTypes normalizes postgres aliases and parameter signatures", () => {
+  const types1 = normalizeArgTypes("p_user_id uuid, p_start_time time without time zone, p_created_at timestamptz, p_count int4, p_flag bool DEFAULT false");
+  assert.deepStrictEqual(types1, [
+    "uuid",
+    "time without time zone",
+    "timestamp with time zone",
+    "integer",
+    "boolean",
+  ]);
+
+  const types2 = normalizeArgTypes(["time", "timestamptz", "int", "numeric", "varchar"]);
+  assert.deepStrictEqual(types2, [
+    "time without time zone",
+    "timestamp with time zone",
+    "integer",
+    "numeric",
+    "text",
+  ]);
+});
 
 test("smoke-test-schema: CRITICAL_RPCS contract and expected argument counts", () => {
   const map = new Map(CRITICAL_RPCS.map((r) => [r.name, r]));
@@ -87,9 +108,23 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   assert.strictEqual(outdatedResults.save_shift_with_obligation.status, RPC_STATUS.MISSING, "Outdated 10-arg signature must NOT be FOUND");
   assert.strictEqual(outdatedResults.save_shift_with_obligation.exists, false);
   assert.strictEqual(outdatedResults.save_shift_with_obligation.incompatible, true);
-  assert.ok(outdatedResults.save_shift_with_obligation.details.includes("expected 11"));
+  assert.ok(outdatedResults.save_shift_with_obligation.details.includes("10"));
 
-  // 3. Completely missing function
+  // 3. Same name + same argument count (11 args) + WRONG types (last arg uuid instead of text) -> MUST NOT BE FOUND
+  const wrongTypesPsqlOutput = `
+save_shift_with_obligation|11|uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, uuid
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamp with time zone, boolean
+  `;
+
+  const wrongTypesResults = parsePsqlProcOutput(wrongTypesPsqlOutput);
+  assert.strictEqual(wrongTypesResults.save_shift_with_obligation.status, RPC_STATUS.MISSING, "11-arg signature with wrong type (uuid instead of text) must NOT be FOUND");
+  assert.strictEqual(wrongTypesResults.save_shift_with_obligation.exists, false);
+  assert.strictEqual(wrongTypesResults.save_shift_with_obligation.incompatible, true);
+  assert.ok(wrongTypesResults.save_shift_with_obligation.details.includes("Incompatible signature argument types"));
+
+  // 4. Completely missing function
   const missingPsqlOutput = `
 register_payment|3|uuid, numeric, date
   `;
@@ -122,6 +157,18 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   assert.strictEqual(validCheck.ok, true);
   assert.strictEqual(validCheck.results.save_shift_with_obligation.status, RPC_STATUS.FOUND);
   assert.strictEqual(validCheck.results.save_shift_with_obligation.exists, true);
+
+  // Mismatched types (11 args, but last is uuid instead of text)
+  const wrongTypeExec = () => `
+save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, uuid
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
+  const wrongTypeCheck = checkRpcsViaPsql("postgresql://localhost:5432/postgres", { execFn: wrongTypeExec });
+  assert.strictEqual(wrongTypeCheck.ok, true);
+  assert.strictEqual(wrongTypeCheck.results.save_shift_with_obligation.status, RPC_STATUS.MISSING);
+  assert.strictEqual(wrongTypeCheck.results.save_shift_with_obligation.exists, false);
 });
 
 test("smoke-test-schema: checkRpcViaRest strictly requires unequivocal evidence for FOUND", async () => {
@@ -196,6 +243,22 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   });
   assert.strictEqual(psqlOutdatedRes.ok, false, "Must fail closed if save_shift_with_obligation has only 10 args");
   assert.strictEqual(psqlOutdatedRes.missingCount, 1);
+
+  // 1b. PostgreSQL mode with 11 arguments but incompatible types -> MUST return ok: false
+  const psqlWrongTypeExec = () => `
+save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, uuid
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
+
+  const psqlWrongTypeRes = await runSmokeTest({
+    databaseUrl: "postgresql://localhost:5432/postgres",
+    execPsqlFn: psqlWrongTypeExec,
+    logger: mockLogger,
+  });
+  assert.strictEqual(psqlWrongTypeRes.ok, false, "Must fail closed if save_shift_with_obligation has 11 args but wrong types");
+  assert.strictEqual(psqlWrongTypeRes.missingCount, 1);
 
   // 2. REST mode without SUPABASE_SERVICE_ROLE_KEY -> SKIPPED webhook RPCs -> MUST return ok: false in strict mode
   const fetchOk = async () => ({ status: 200, json: async () => ({}) });

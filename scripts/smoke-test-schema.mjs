@@ -26,24 +26,50 @@ export const CRITICAL_RPCS = [
     description: "Atomic shift creation/update & obligation synchronization",
     requiresServiceRole: false,
     expectedArgsCount: 11,
+    expectedArgTypes: [
+      "uuid",
+      "uuid",
+      "date",
+      "time without time zone",
+      "time without time zone",
+      "numeric",
+      "text",
+      "date",
+      "uuid",
+      "uuid",
+      "text",
+    ],
   },
   {
     name: "register_payment",
     description: "Atomic payment registration & balance update",
     requiresServiceRole: false,
     expectedArgsCount: 3,
+    expectedArgTypes: ["uuid", "numeric", "date"],
   },
   {
     name: "process_mercadopago_subscription_payment",
     description: "Mercado Pago subscription payment webhook processing & idempotency",
     requiresServiceRole: true,
     expectedArgsCount: 6,
+    expectedArgTypes: ["text", "uuid", "integer", "integer", "numeric", "text"],
   },
   {
     name: "process_stripe_subscription_event",
     description: "Stripe subscription webhook processing (legacy fallback)",
     requiresServiceRole: true,
     expectedArgsCount: 9,
+    expectedArgTypes: [
+      "text",
+      "text",
+      "uuid",
+      "text",
+      "text",
+      "text",
+      "text",
+      "timestamp with time zone",
+      "boolean",
+    ],
   },
 ];
 
@@ -83,6 +109,40 @@ export const RPC_STATUS = {
   NETWORK_ERROR: "NETWORK_ERROR",
   SERVER_ERROR: "SERVER_ERROR",
 };
+
+/**
+ * Normalizes PostgreSQL type names for robust, canonical comparison.
+ */
+export function normalizeArgTypes(input) {
+  const list = Array.isArray(input)
+    ? input
+    : typeof input === "string"
+      ? input.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+
+  return list.map((raw) => {
+    let t = raw.toLowerCase().trim();
+    if (t.startsWith("p_") || t.includes(" default ")) {
+      t = t.replace(/\s+default\s+.*$/i, "").trim();
+      const parts = t.split(/\s+/);
+      if (parts.length > 1) {
+        t = parts.slice(1).join(" ");
+      }
+    }
+
+    if (t === "time" || t === "time without time zone") return "time without time zone";
+    if (t === "timestamptz" || t === "timestamp with time zone") return "timestamp with time zone";
+    if (t === "timestamp" || t === "timestamp without time zone") return "timestamp without time zone";
+    if (t === "int" || t === "int4" || t === "integer") return "integer";
+    if (t === "int8" || t === "bigint") return "bigint";
+    if (t === "numeric" || t === "decimal") return "numeric";
+    if (t === "bool" || t === "boolean") return "boolean";
+    if (t === "text" || t === "varchar" || t === "character varying") return "text";
+    if (t === "uuid") return "uuid";
+    if (t === "jsonb" || t === "json") return "jsonb";
+    return t;
+  });
+}
 
 /**
  * Checks an RPC using PostgREST REST API.
@@ -197,7 +257,7 @@ export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = global
 }
 
 /**
- * Parses psql query output and verifies RPC existence matching expected name and argument count.
+ * Parses psql query output and verifies RPC existence matching expected name, argument count, AND exact type sequence.
  */
 export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
   const lines = output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -209,36 +269,52 @@ export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
       const name = parts[0];
       const argsCount = parseInt(parts[1], 10);
       const identityArgs = parts.slice(2).join("|");
+      const normalizedTypes = normalizeArgTypes(identityArgs);
       if (!foundProcs.has(name)) {
         foundProcs.set(name, []);
       }
-      foundProcs.get(name).push({ argsCount, identityArgs });
+      foundProcs.get(name).push({ argsCount, identityArgs, normalizedTypes });
     }
   }
 
   const results = {};
   for (const rpc of rpcs) {
+    const expectedTypes = normalizeArgTypes(rpc.expectedArgTypes);
     const matchingList = foundProcs.get(rpc.name) || [];
-    const exactMatch = matchingList.find((p) => p.argsCount === rpc.expectedArgsCount);
+
+    // Find proc that matches BOTH argument count AND exact sequence of argument types
+    const exactMatch = matchingList.find((p) => {
+      if (p.argsCount !== rpc.expectedArgsCount) return false;
+      if (p.normalizedTypes.length !== expectedTypes.length) return false;
+      return p.normalizedTypes.every((t, i) => t === expectedTypes[i]);
+    });
 
     if (exactMatch) {
       results[rpc.name] = {
         status: RPC_STATUS.FOUND,
         exists: true,
         argsCount: exactMatch.argsCount,
+        argTypes: exactMatch.normalizedTypes,
         identityArgs: exactMatch.identityArgs,
         source: "psql",
       };
     } else if (matchingList.length > 0) {
-      // Function exists by name but has an outdated / incompatible signature (e.g. 10 args instead of 11)
-      const foundCount = matchingList[0].argsCount;
+      // Function exists by name, but argument count or type sequence is incompatible
+      const firstFound = matchingList[0];
+      const countMismatch = firstFound.argsCount !== rpc.expectedArgsCount;
+      const details = countMismatch
+        ? `Incompatible signature argument count: found ${firstFound.argsCount}, expected ${rpc.expectedArgsCount}`
+        : `Incompatible signature argument types: found (${firstFound.normalizedTypes.join(", ")}), expected (${expectedTypes.join(", ")})`;
+
       results[rpc.name] = {
         status: RPC_STATUS.MISSING,
         exists: false,
         incompatible: true,
-        argsCount: foundCount,
+        argsCount: firstFound.argsCount,
         expectedArgsCount: rpc.expectedArgsCount,
-        details: `Incompatible signature: found ${foundCount} argument(s), expected ${rpc.expectedArgsCount}`,
+        foundTypes: firstFound.normalizedTypes,
+        expectedTypes,
+        details,
         source: "psql",
       };
     } else {
@@ -256,13 +332,13 @@ export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
 
 /**
  * Checks RPC existence directly in Postgres via psql if DATABASE_URL is available.
- * Validates function name AND exact expected argument count.
+ * Validates function name, argument count, AND exact argument type sequence.
  */
 export function checkRpcsViaPsql(databaseUrl, options = {}) {
   try {
     const execFn = options.execFn || execFileSync;
     const rpcListSql = CRITICAL_RPCS.map((r) => `'${r.name}'`).join(", ");
-    const sql = `select p.proname, p.pronargs, coalesce(pg_get_function_identity_arguments(p.oid), '') from pg_proc p join pg_namespace n on p.pronamespace = n.oid where n.nspname = 'public' and p.proname in (${rpcListSql});`;
+    const sql = `select p.proname, p.pronargs, coalesce(oidvectortypes(p.proargtypes), pg_get_function_identity_arguments(p.oid), '') from pg_proc p join pg_namespace n on p.pronamespace = n.oid where n.nspname = 'public' and p.proname in (${rpcListSql});`;
 
     const output = execFn("psql", [databaseUrl, "-F", "|", "-Atqc", sql], {
       encoding: "utf-8",
