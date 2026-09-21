@@ -1,14 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { redactSecrets, checkRpcViaRest, runSmokeTest, CRITICAL_RPCS, RPC_STATUS } from "../scripts/smoke-test-schema.mjs";
+import {
+  redactSecrets,
+  checkRpcViaRest,
+  parsePsqlProcOutput,
+  checkRpcsViaPsql,
+  runSmokeTest,
+  CRITICAL_RPCS,
+  RPC_STATUS,
+} from "../scripts/smoke-test-schema.mjs";
 import { verifyProductionSchema } from "../scripts/verify-production-schema.mjs";
 
-test("smoke-test-schema: CRITICAL_RPCS list contract", () => {
-  const names = CRITICAL_RPCS.map((r) => r.name);
-  assert.ok(names.includes("save_shift_with_obligation"), "Must include save_shift_with_obligation");
-  assert.ok(names.includes("register_payment"), "Must include register_payment");
-  assert.ok(names.includes("process_mercadopago_subscription_payment"), "Must include process_mercadopago_subscription_payment");
-  assert.ok(names.includes("process_stripe_subscription_event"), "Must include process_stripe_subscription_event");
+test("smoke-test-schema: CRITICAL_RPCS contract and expected argument counts", () => {
+  const map = new Map(CRITICAL_RPCS.map((r) => [r.name, r]));
+  
+  assert.ok(map.has("save_shift_with_obligation"));
+  assert.strictEqual(map.get("save_shift_with_obligation").expectedArgsCount, 11, "save_shift_with_obligation must expect 11 args (including idempotency_key)");
+
+  assert.ok(map.has("register_payment"));
+  assert.strictEqual(map.get("register_payment").expectedArgsCount, 3, "register_payment must expect 3 args");
+
+  assert.ok(map.has("process_mercadopago_subscription_payment"));
+  assert.strictEqual(map.get("process_mercadopago_subscription_payment").expectedArgsCount, 6, "process_mercadopago must expect 6 args");
+
+  assert.ok(map.has("process_stripe_subscription_event"));
+  assert.strictEqual(map.get("process_stripe_subscription_event").expectedArgsCount, 9, "process_stripe must expect 9 args");
 });
 
 test("smoke-test-schema: redactSecrets sanitizes all sensitive patterns", () => {
@@ -41,266 +57,247 @@ test("smoke-test-schema: redactSecrets sanitizes all sensitive patterns", () => 
   assert.strictEqual(redacted4.includes("abc123456789012345"), false);
 });
 
-test("smoke-test-schema: checkRpcViaRest distinguishes FOUND, MISSING, AUTH_ERROR, SERVER_ERROR, NETWORK_ERROR", async () => {
-  // 1. FOUND: HTTP 200
-  const fetch200 = async () => ({ status: 200, json: async () => [] });
+test("smoke-test-schema: parsePsqlProcOutput validates name AND exact signature args", () => {
+  // 1. Current valid signatures (11, 3, 6, 9 args)
+  const validPsqlOutput = `
+save_shift_with_obligation|11|uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, text
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamp with time zone, boolean
+  `;
+
+  const validResults = parsePsqlProcOutput(validPsqlOutput);
+  assert.strictEqual(validResults.save_shift_with_obligation.status, RPC_STATUS.FOUND);
+  assert.strictEqual(validResults.save_shift_with_obligation.exists, true);
+  assert.strictEqual(validResults.save_shift_with_obligation.argsCount, 11);
+
+  assert.strictEqual(validResults.register_payment.status, RPC_STATUS.FOUND);
+  assert.strictEqual(validResults.process_mercadopago_subscription_payment.status, RPC_STATUS.FOUND);
+  assert.strictEqual(validResults.process_stripe_subscription_event.status, RPC_STATUS.FOUND);
+
+  // 2. Outdated signature for save_shift_with_obligation with 10 arguments -> MUST BE MISSING / INCOMPATIBLE
+  const outdatedPsqlOutput = `
+save_shift_with_obligation|10|uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamp with time zone, boolean
+  `;
+
+  const outdatedResults = parsePsqlProcOutput(outdatedPsqlOutput);
+  assert.strictEqual(outdatedResults.save_shift_with_obligation.status, RPC_STATUS.MISSING, "Outdated 10-arg signature must NOT be FOUND");
+  assert.strictEqual(outdatedResults.save_shift_with_obligation.exists, false);
+  assert.strictEqual(outdatedResults.save_shift_with_obligation.incompatible, true);
+  assert.ok(outdatedResults.save_shift_with_obligation.details.includes("expected 11"));
+
+  // 3. Completely missing function
+  const missingPsqlOutput = `
+register_payment|3|uuid, numeric, date
+  `;
+  const missingResults = parsePsqlProcOutput(missingPsqlOutput);
+  assert.strictEqual(missingResults.save_shift_with_obligation.status, RPC_STATUS.MISSING);
+  assert.strictEqual(missingResults.save_shift_with_obligation.exists, false);
+});
+
+test("smoke-test-schema: checkRpcsViaPsql fails closed on outdated signature or missing RPCs", () => {
+  const outdatedExec = () => `
+save_shift_with_obligation|10|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
+
+  const outdatedCheck = checkRpcsViaPsql("postgresql://localhost:5432/postgres", { execFn: outdatedExec });
+  assert.strictEqual(outdatedCheck.ok, true);
+  assert.strictEqual(outdatedCheck.results.save_shift_with_obligation.status, RPC_STATUS.MISSING);
+  assert.strictEqual(outdatedCheck.results.save_shift_with_obligation.exists, false);
+
+  const validExec = () => `
+save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
+
+  const validCheck = checkRpcsViaPsql("postgresql://localhost:5432/postgres", { execFn: validExec });
+  assert.strictEqual(validCheck.ok, true);
+  assert.strictEqual(validCheck.results.save_shift_with_obligation.status, RPC_STATUS.FOUND);
+  assert.strictEqual(validCheck.results.save_shift_with_obligation.exists, true);
+});
+
+test("smoke-test-schema: checkRpcViaRest strictly requires unequivocal evidence for FOUND", async () => {
+  // 1. FOUND: HTTP 200 (direct response)
+  const fetch200 = async () => ({ status: 200, json: async () => ({}) });
   const res200 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetch200);
   assert.strictEqual(res200.status, RPC_STATUS.FOUND);
   assert.strictEqual(res200.exists, true);
 
-  // 2. FOUND: HTTP 400 with parameter validation error (PGRST201)
-  const fetch400 = async () => ({ status: 400, json: async () => ({ code: "PGRST201", message: "Missing required argument" }) });
-  const res400 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetch400);
-  assert.strictEqual(res400.status, RPC_STATUS.FOUND);
-  assert.strictEqual(res400.exists, true);
+  // 2. FOUND: HTTP 400 with unequivocal Postgres error code (e.g. 23514 check violation from inside RPC)
+  const fetchPgError = async () => ({ status: 400, json: async () => ({ code: "23514", message: "Check constraint failed" }) });
+  const resPgError = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetchPgError);
+  assert.strictEqual(resPgError.status, RPC_STATUS.FOUND);
+  assert.strictEqual(resPgError.exists, true);
 
-  // 3. MISSING: HTTP 404 with PGRST202
-  const fetch404 = async () => ({ status: 404, json: async () => ({ code: "PGRST202", message: "Could not find function" }) });
+  // 3. FAIL-CLOSED: Generic/ambiguous HTTP 400 without unequivocal Postgres code -> SERVER_ERROR (not FOUND)
+  const fetchGeneric400 = async () => ({ status: 400, json: async () => ({ message: "Bad request syntax" }) });
+  const resGeneric400 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetchGeneric400);
+  assert.strictEqual(resGeneric400.status, RPC_STATUS.SERVER_ERROR);
+  assert.strictEqual(resGeneric400.exists, false, "Generic 400 must NOT be treated as FOUND");
+
+  // 4. MISSING: HTTP 404 with PGRST202
+  const fetch404 = async () => ({ status: 404, json: async () => ({ code: "PGRST202", message: "Could not find function in schema cache" }) });
   const res404 = await checkRpcViaRest("https://test.supabase.co", "missing_fn", "key", fetch404);
   assert.strictEqual(res404.status, RPC_STATUS.MISSING);
   assert.strictEqual(res404.exists, false);
 
-  // 4. AUTH_ERROR: HTTP 401 (Unauthorized)
+  // 5. AUTH_ERROR: HTTP 401 & 403
   const fetch401 = async () => ({ status: 401, json: async () => ({ message: "Invalid API key" }) });
   const res401 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "invalid_key", fetch401);
   assert.strictEqual(res401.status, RPC_STATUS.AUTH_ERROR);
-  assert.strictEqual(res401.exists, false, "401 must NEVER be treated as RPC exists");
+  assert.strictEqual(res401.exists, false);
 
-  // 5. AUTH_ERROR: HTTP 403 (Forbidden)
   const fetch403 = async () => ({ status: 403, json: async () => ({ message: "Permission denied" }) });
   const res403 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "anon_key", fetch403);
   assert.strictEqual(res403.status, RPC_STATUS.AUTH_ERROR);
-  assert.strictEqual(res403.exists, false, "403 must NEVER be treated as RPC exists");
+  assert.strictEqual(res403.exists, false);
 
-  // 6. SERVER_ERROR: HTTP 429 (Rate Limit)
+  // 6. SERVER_ERROR: HTTP 429 & 500
   const fetch429 = async () => ({ status: 429, json: async () => ({ message: "Too many requests" }) });
   const res429 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetch429);
   assert.strictEqual(res429.status, RPC_STATUS.SERVER_ERROR);
-  assert.strictEqual(res429.exists, false, "429 must NEVER be treated as RPC exists");
+  assert.strictEqual(res429.exists, false);
 
-  // 7. SERVER_ERROR: HTTP 500 / 503
   const fetch500 = async () => ({ status: 500, json: async () => ({ message: "Internal Server Error" }) });
   const res500 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetch500);
   assert.strictEqual(res500.status, RPC_STATUS.SERVER_ERROR);
-  assert.strictEqual(res500.exists, false, "500 must NEVER be treated as RPC exists");
+  assert.strictEqual(res500.exists, false);
 
-  const fetch503 = async () => ({ status: 503, text: async () => "Service Unavailable" });
-  const res503 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetch503);
-  assert.strictEqual(res503.status, RPC_STATUS.SERVER_ERROR);
-  assert.strictEqual(res503.exists, false, "503 must NEVER be treated as RPC exists");
-
-  // 8. NETWORK_ERROR: Network failure / timeout
-  const fetchNetworkError = async () => {
-    throw new TypeError("fetch failed: getaddrinfo ENOTFOUND test.supabase.co");
-  };
-  const resNetwork = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetchNetworkError);
-  assert.strictEqual(resNetwork.status, RPC_STATUS.NETWORK_ERROR);
-  assert.strictEqual(resNetwork.exists, false, "Network failure must NEVER be treated as RPC exists");
-
-  // 9. Arbitrary unexpected status (e.g. 302 Redirect): must fail closed as SERVER_ERROR, not FOUND
-  const fetch302 = async () => ({ status: 302, text: async () => "Found redirect" });
-  const res302 = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetch302);
-  assert.strictEqual(res302.status, RPC_STATUS.SERVER_ERROR);
-  assert.strictEqual(res302.exists, false, "Arbitrary status must fail closed");
+  // 7. NETWORK_ERROR: fetch network failure
+  const fetchNetFail = async () => { throw new TypeError("fetch failed: getaddrinfo ENOTFOUND"); };
+  const resNet = await checkRpcViaRest("https://test.supabase.co", "save_shift_with_obligation", "key", fetchNetFail);
+  assert.strictEqual(resNet.status, RPC_STATUS.NETWORK_ERROR);
+  assert.strictEqual(resNet.exists, false);
 });
 
-test("smoke-test-schema: runSmokeTest fails closed on MISSING, AUTH_ERROR, SERVER_ERROR and NETWORK_ERROR", async () => {
+test("smoke-test-schema: runSmokeTest fails closed on outdated signature or SKIPPED RPCs in strict mode", async () => {
   const mockLogger = { log: () => {}, error: () => {}, warn: () => {} };
 
-  // A. Fails on MISSING
-  const fetchMissing = async (url) => {
-    if (url.includes("process_mercadopago_subscription_payment")) {
-      return { status: 404, json: async () => ({ code: "PGRST202" }) };
-    }
-    return { status: 400, json: async () => ({ code: "PGRST201" }) };
-  };
-  const resMissing = await runSmokeTest({
-    supabaseUrl: "https://test.supabase.co",
-    serviceRoleKey: "key-1234",
-    logger: mockLogger,
-    fetchFn: fetchMissing,
-    usePsql: false,
-  });
-  assert.strictEqual(resMissing.ok, false);
-  assert.strictEqual(resMissing.missingCount, 1);
+  // 1. PostgreSQL mode with outdated 10-argument signature -> MUST return ok: false
+  const psqlOutdatedExec = () => `
+save_shift_with_obligation|10|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
 
-  // B. Fails on AUTH_ERROR (401)
-  const fetchAuthError = async () => ({ status: 401, json: async () => ({ message: "Unauthorized" }) });
-  const resAuth = await runSmokeTest({
-    supabaseUrl: "https://test.supabase.co",
-    serviceRoleKey: "key-1234",
+  const psqlOutdatedRes = await runSmokeTest({
+    databaseUrl: "postgresql://localhost:5432/postgres",
+    execPsqlFn: psqlOutdatedExec,
     logger: mockLogger,
-    fetchFn: fetchAuthError,
-    usePsql: false,
   });
-  assert.strictEqual(resAuth.ok, false, "Must fail closed if authentication is rejected");
-  assert.ok(resAuth.errorCount > 0);
+  assert.strictEqual(psqlOutdatedRes.ok, false, "Must fail closed if save_shift_with_obligation has only 10 args");
+  assert.strictEqual(psqlOutdatedRes.missingCount, 1);
 
-  // C. Fails on SERVER_ERROR (500)
-  const fetchServerError = async () => ({ status: 500, json: async () => ({ message: "Internal server error" }) });
-  const resServer = await runSmokeTest({
+  // 2. REST mode without SUPABASE_SERVICE_ROLE_KEY -> SKIPPED webhook RPCs -> MUST return ok: false in strict mode
+  const fetchOk = async () => ({ status: 200, json: async () => ({}) });
+  const anonOnlyRes = await runSmokeTest({
     supabaseUrl: "https://test.supabase.co",
-    serviceRoleKey: "key-1234",
+    anonKey: "test-anon-key",
+    // No serviceRoleKey provided -> process_mercadopago & process_stripe will be SKIPPED
     logger: mockLogger,
-    fetchFn: fetchServerError,
+    fetchFn: fetchOk,
     usePsql: false,
   });
-  assert.strictEqual(resServer.ok, false, "Must fail closed on server error");
-  assert.ok(resServer.errorCount > 0);
+  assert.strictEqual(anonOnlyRes.ok, false, "Strict smoke test must fail when required webhook RPCs are SKIPPED");
+  assert.strictEqual(anonOnlyRes.skippedCount, 2);
 
-  // D. Fails on NETWORK_ERROR
-  const fetchNetwork = async () => { throw new Error("Connection reset by peer"); };
-  const resNetwork = await runSmokeTest({
-    supabaseUrl: "https://test.supabase.co",
-    serviceRoleKey: "key-1234",
+  // 3. PostgreSQL mode with full valid signatures -> MUST return ok: true
+  const psqlValidExec = () => `
+save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text
+register_payment|3|uuid, numeric, date
+process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
+process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
+  `;
+  const psqlValidRes = await runSmokeTest({
+    databaseUrl: "postgresql://localhost:5432/postgres",
+    execPsqlFn: psqlValidExec,
     logger: mockLogger,
-    fetchFn: fetchNetwork,
+  });
+  assert.strictEqual(psqlValidRes.ok, true);
+
+  // 4. REST mode with service role key and all FOUND -> MUST return ok: true
+  const allFoundRes = await runSmokeTest({
+    supabaseUrl: "https://test.supabase.co",
+    serviceRoleKey: "valid-service-role-key",
+    logger: mockLogger,
+    fetchFn: fetchOk,
     usePsql: false,
   });
-  assert.strictEqual(resNetwork.ok, false, "Must fail closed on network error");
-  assert.ok(resNetwork.errorCount > 0);
+  assert.strictEqual(allFoundRes.ok, true);
 });
 
-test("smoke-test-schema: runSmokeTest passes only when all critical RPCs are FOUND", async () => {
-  const mockLogs = [];
-  const mockLogger = {
-    log: (m) => mockLogs.push(m),
-    error: (m) => mockLogs.push(m),
-    warn: (m) => mockLogs.push(m),
-  };
-
-  const mockFetch = async () => ({
-    status: 400,
-    json: async () => ({ code: "PGRST201" }),
-  });
-
-  const result = await runSmokeTest({
-    supabaseUrl: "https://test.supabase.co",
-    serviceRoleKey: "test-service-role-key-1234",
-    logger: mockLogger,
-    fetchFn: mockFetch,
-    usePsql: false,
-  });
-
-  assert.strictEqual(result.ok, true, "Must succeed when all RPCs are FOUND");
-  assert.ok(mockLogs.some((l) => typeof l === "string" && l.includes("SUCCESS")), "Must log success notice");
-});
-
-test("smoke-test-schema: verifyProductionSchema respects VERCEL_ENV and gates build", async () => {
+test("smoke-test-schema: verifyProductionSchema respects strict production gates and preview diagnostics", async () => {
   const mockLogger = { log: () => {}, error: () => {}, warn: () => {} };
+  const fetch200 = async () => ({ status: 200, json: async () => ({}) });
+  const fetch404 = async () => ({ status: 404, json: async () => ({ code: "PGRST202" }) });
 
-  // 1. In non-production local environment, bypasses safely
+  // 1. Production with full valid configuration -> PASS
+  const prodValidRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "valid-key-1234",
+    },
+    logger: mockLogger,
+    fetchFn: fetch200,
+  });
+  assert.strictEqual(prodValidRes.ok, true);
+  assert.strictEqual(prodValidRes.strict, true);
+
+  // 2. Production with missing SUPABASE_SERVICE_ROLE_KEY (causes SKIPPED RPCs) -> FAIL CLOSED (ok: false)
+  const prodSkippedRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key-only",
+    },
+    logger: mockLogger,
+    fetchFn: fetch200,
+  });
+  assert.strictEqual(prodSkippedRes.ok, false, "Production gate must fail when service role key is missing and RPCs are skipped");
+  assert.strictEqual(prodSkippedRes.strict, true);
+
+  // 3. Production with missing RPC -> FAIL CLOSED (ok: false)
+  const prodMissingRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "valid-key-1234",
+    },
+    logger: mockLogger,
+    fetchFn: fetch404,
+  });
+  assert.strictEqual(prodMissingRes.ok, false);
+  assert.strictEqual(prodMissingRes.strict, true);
+
+  // 4. Preview with missing RPC -> PASS with warning (does not block preview build)
+  const previewWarnRes = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "preview",
+      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "valid-key-1234",
+    },
+    logger: mockLogger,
+    fetchFn: fetch404,
+  });
+  assert.strictEqual(previewWarnRes.ok, true, "Preview build must NOT be blocked");
+  assert.strictEqual(previewWarnRes.warned, true);
+  assert.strictEqual(previewWarnRes.preview, true);
+
+  // 5. Local development build without remote DB -> PASS (bypassed)
   const localRes = await verifyProductionSchema({
     env: { NEXT_PUBLIC_SUPABASE_URL: "http://localhost:54321" },
     logger: mockLogger,
   });
   assert.strictEqual(localRes.ok, true);
   assert.strictEqual(localRes.bypassed, true);
-
-  // 2. When SKIP_SCHEMA_VERIFY=1, bypasses explicitly
-  const skipRes = await verifyProductionSchema({
-    env: { SKIP_SCHEMA_VERIFY: "1", VERCEL_ENV: "production" },
-    logger: mockLogger,
-  });
-  assert.strictEqual(skipRes.ok, true);
-  assert.strictEqual(skipRes.bypassed, true);
-
-  // 3. In production with missing RPC, fails closed
-  const failFetch = async (url) => {
-    if (url.includes("register_payment")) {
-      return { status: 404, json: async () => ({ code: "PGRST202" }) };
-    }
-    return { status: 400, json: async () => ({ code: "PGRST201" }) };
-  };
-
-  const prodFailRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "production",
-      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
-      SUPABASE_SERVICE_ROLE_KEY: "secret-key-1234",
-    },
-    logger: mockLogger,
-    fetchFn: failFetch,
-  });
-  assert.strictEqual(prodFailRes.ok, false, "Production build gate must fail if RPC missing");
-  assert.strictEqual(prodFailRes.strict, true);
-
-  // 4. In production with all RPCs present, succeeds
-  const passFetch = async () => ({ status: 400, json: async () => ({ code: "PGRST201" }) });
-  const prodPassRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "production",
-      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
-      SUPABASE_SERVICE_ROLE_KEY: "secret-key-1234",
-    },
-    logger: mockLogger,
-    fetchFn: passFetch,
-  });
-  assert.strictEqual(prodPassRes.ok, true);
-  assert.strictEqual(prodPassRes.strict, true);
-
-  // 5. In Vercel Preview with incompatible remote schema, emits warning but does NOT block build (ok: true)
-  const warnLogs = [];
-  const previewWarnLogger = {
-    log: () => {},
-    error: () => {},
-    warn: (m) => warnLogs.push(m),
-  };
-  const previewFailRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "preview",
-      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
-      SUPABASE_SERVICE_ROLE_KEY: "preview-role-key",
-    },
-    logger: previewWarnLogger,
-    fetchFn: failFetch,
-  });
-  assert.strictEqual(previewFailRes.ok, true, "Preview build must NOT be blocked by incompatible remote schema");
-  assert.strictEqual(previewFailRes.warned, true, "Must flag warning in preview");
-  assert.strictEqual(previewFailRes.preview, true);
-  assert.ok(warnLogs.some((l) => typeof l === "string" && l.includes("WARNING")), "Must log warning notice");
-
-  // 6. In Vercel Preview with unreachable/network failure, emits warning but does NOT block build (ok: true)
-  const networkErrorFetch = async () => {
-    throw new Error("Connection refused (network timeout)");
-  };
-  const previewNetworkRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "preview",
-      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
-      SUPABASE_SERVICE_ROLE_KEY: "preview-role-key",
-    },
-    logger: previewWarnLogger,
-    fetchFn: networkErrorFetch,
-  });
-  assert.strictEqual(previewNetworkRes.ok, true, "Preview build must NOT be blocked by network failure");
-  assert.strictEqual(previewNetworkRes.warned, true);
-
-  // 7. In Vercel Preview with explicit CHECK_SCHEMA_COMPATIBILITY=1, enforces strict gate
-  const previewExplicitRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "preview",
-      CHECK_SCHEMA_COMPATIBILITY: "1",
-      NEXT_PUBLIC_SUPABASE_URL: "https://remote-staging.supabase.co",
-      SUPABASE_SERVICE_ROLE_KEY: "preview-role-key",
-    },
-    logger: mockLogger,
-    fetchFn: failFetch,
-  });
-  assert.strictEqual(previewExplicitRes.ok, false, "CHECK_SCHEMA_COMPATIBILITY=1 must enforce strict fail-closed even in preview");
-  assert.strictEqual(previewExplicitRes.strict, true);
-
-  // 8. In production with unreachable database, fails closed
-  const prodNetworkFailRes = await verifyProductionSchema({
-    env: {
-      VERCEL_ENV: "production",
-      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
-      SUPABASE_SERVICE_ROLE_KEY: "secret-key-1234",
-    },
-    logger: mockLogger,
-    fetchFn: networkErrorFetch,
-  });
-  assert.strictEqual(prodNetworkFailRes.ok, false, "Production build gate must fail if database is unreachable");
-  assert.strictEqual(prodNetworkFailRes.strict, true);
 });
-

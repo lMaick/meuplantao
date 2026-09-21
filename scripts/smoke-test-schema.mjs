@@ -25,21 +25,25 @@ export const CRITICAL_RPCS = [
     name: "save_shift_with_obligation",
     description: "Atomic shift creation/update & obligation synchronization",
     requiresServiceRole: false,
+    expectedArgsCount: 11,
   },
   {
     name: "register_payment",
     description: "Atomic payment registration & balance update",
     requiresServiceRole: false,
+    expectedArgsCount: 3,
   },
   {
     name: "process_mercadopago_subscription_payment",
     description: "Mercado Pago subscription payment webhook processing & idempotency",
     requiresServiceRole: true,
+    expectedArgsCount: 6,
   },
   {
     name: "process_stripe_subscription_event",
     description: "Stripe subscription webhook processing (legacy fallback)",
     requiresServiceRole: true,
+    expectedArgsCount: 9,
   },
 ];
 
@@ -82,14 +86,11 @@ export const RPC_STATUS = {
 
 /**
  * Checks an RPC using PostgREST REST API.
- * PostgREST returns HTTP 404 with code PGRST202 if the function does not exist in schema cache.
- * PostgREST returns HTTP 400 (missing parameters PGRST201) if the function exists.
- *
  * Granular classification:
- *  - FOUND: HTTP 200, or HTTP 400/422 proving function exists in schema cache.
+ *  - FOUND: HTTP 200, or HTTP 400/422 with unequivocal Postgres error code (e.g. 23514, 42501) proving function execution.
  *  - MISSING: HTTP 404 with PGRST202 or route not found.
  *  - AUTH_ERROR: HTTP 401 or 403 (invalid key / permission denied before function resolution).
- *  - SERVER_ERROR: HTTP 429 (rate limit) or 5xx (server/gateway error).
+ *  - SERVER_ERROR: HTTP 429 (rate limit), 5xx (gateway/server error), or ambiguous 400/422 without unequivocal Postgres proof.
  *  - NETWORK_ERROR: fetch exception, DNS error, timeout.
  */
 export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = globalThis.fetch) {
@@ -139,7 +140,7 @@ export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = global
     }
 
     // 3. HTTP 404: Not found (PGRST202 function not in schema cache)
-    if (httpStatus === 404) {
+    if (httpStatus === 404 || bodyJson?.code === "PGRST202") {
       return {
         status: RPC_STATUS.MISSING,
         exists: false,
@@ -157,23 +158,25 @@ export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = global
       };
     }
 
-    // 5. HTTP 400 or 422: Parameter validation or signature error by PostgREST
-    // PostgREST returns 400 with PGRST201 ("Missing required argument") or 422 ("PGRST..."),
-    // or Postgres error from function body, which proves the function exists in schema cache.
+    // 5. HTTP 400 or 422:
+    // Only accept unequivocal PostgreSQL execution errors generated inside the function body.
+    // Ambiguous errors or generic 400/422 without unequivocal Postgres proof must fail closed.
     if (httpStatus === 400 || httpStatus === 422) {
-      if (bodyJson?.code === "PGRST202") {
+      const pgCode = bodyJson?.code;
+      const unequivocalPgCodes = ["23514", "23503", "23505", "23502", "42501", "P0001"];
+      if (pgCode && unequivocalPgCodes.includes(pgCode)) {
         return {
-          status: RPC_STATUS.MISSING,
-          exists: false,
+          status: RPC_STATUS.FOUND,
+          exists: true,
           httpStatus,
           details: redactSecrets(bodyText, [apiKey]),
         };
       }
       return {
-        status: RPC_STATUS.FOUND,
-        exists: true,
+        status: RPC_STATUS.SERVER_ERROR,
+        exists: false,
         httpStatus,
-        details: redactSecrets(bodyText, [apiKey]),
+        details: redactSecrets(bodyText || "Ambiguous response without unequivocal PostgreSQL execution proof", [apiKey]),
       };
     }
 
@@ -194,30 +197,79 @@ export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = global
 }
 
 /**
- * Checks RPC existence directly in Postgres via psql if DATABASE_URL is available.
+ * Parses psql query output and verifies RPC existence matching expected name and argument count.
  */
-export function checkRpcsViaPsql(databaseUrl) {
-  try {
-    const rpcListSql = CRITICAL_RPCS.map((r) => `'${r.name}'`).join(", ");
-    const sql = `select proname from pg_proc join pg_namespace on pg_proc.pronamespace = pg_namespace.oid where nspname = 'public' and proname in (${rpcListSql});`;
+export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
+  const lines = output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const foundProcs = new Map();
 
-    const output = execFileSync("psql", [databaseUrl, "-Atqc", sql], {
+  for (const line of lines) {
+    const parts = line.split("|").map((p) => p.trim());
+    if (parts.length >= 2) {
+      const name = parts[0];
+      const argsCount = parseInt(parts[1], 10);
+      const identityArgs = parts.slice(2).join("|");
+      if (!foundProcs.has(name)) {
+        foundProcs.set(name, []);
+      }
+      foundProcs.get(name).push({ argsCount, identityArgs });
+    }
+  }
+
+  const results = {};
+  for (const rpc of rpcs) {
+    const matchingList = foundProcs.get(rpc.name) || [];
+    const exactMatch = matchingList.find((p) => p.argsCount === rpc.expectedArgsCount);
+
+    if (exactMatch) {
+      results[rpc.name] = {
+        status: RPC_STATUS.FOUND,
+        exists: true,
+        argsCount: exactMatch.argsCount,
+        identityArgs: exactMatch.identityArgs,
+        source: "psql",
+      };
+    } else if (matchingList.length > 0) {
+      // Function exists by name but has an outdated / incompatible signature (e.g. 10 args instead of 11)
+      const foundCount = matchingList[0].argsCount;
+      results[rpc.name] = {
+        status: RPC_STATUS.MISSING,
+        exists: false,
+        incompatible: true,
+        argsCount: foundCount,
+        expectedArgsCount: rpc.expectedArgsCount,
+        details: `Incompatible signature: found ${foundCount} argument(s), expected ${rpc.expectedArgsCount}`,
+        source: "psql",
+      };
+    } else {
+      results[rpc.name] = {
+        status: RPC_STATUS.MISSING,
+        exists: false,
+        details: "Function not found in public schema",
+        source: "psql",
+      };
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Checks RPC existence directly in Postgres via psql if DATABASE_URL is available.
+ * Validates function name AND exact expected argument count.
+ */
+export function checkRpcsViaPsql(databaseUrl, options = {}) {
+  try {
+    const execFn = options.execFn || execFileSync;
+    const rpcListSql = CRITICAL_RPCS.map((r) => `'${r.name}'`).join(", ");
+    const sql = `select p.proname, p.pronargs, coalesce(pg_get_function_identity_arguments(p.oid), '') from pg_proc p join pg_namespace n on p.pronamespace = n.oid where n.nspname = 'public' and p.proname in (${rpcListSql});`;
+
+    const output = execFn("psql", [databaseUrl, "-F", "|", "-Atqc", sql], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    const foundNames = new Set(output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
-    const results = {};
-
-    for (const rpc of CRITICAL_RPCS) {
-      const exists = foundNames.has(rpc.name);
-      results[rpc.name] = {
-        status: exists ? RPC_STATUS.FOUND : RPC_STATUS.MISSING,
-        exists,
-        source: "psql",
-      };
-    }
-
+    const results = parsePsqlProcOutput(String(output), CRITICAL_RPCS);
     return { ok: true, results };
   } catch (err) {
     return {
@@ -250,23 +302,23 @@ export async function runSmokeTest(options = {}) {
   // Mode 1: Check via psql if DATABASE_URL is provided and psql is installed
   if (databaseUrl && options.usePsql !== false) {
     logger.log("[SMOKE] Checking functions directly via PostgreSQL (psql)...");
-    const psqlRes = checkRpcsViaPsql(databaseUrl);
+    const psqlRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });
     if (psqlRes.ok) {
       let missingCount = 0;
       for (const rpc of CRITICAL_RPCS) {
         const res = psqlRes.results[rpc.name];
         if (res?.status === RPC_STATUS.FOUND) {
-          logger.log(`  ✓ ${rpc.name}: FOUND (${rpc.description})`);
+          logger.log(`  ✓ ${rpc.name}: FOUND (${res.argsCount} args) - ${rpc.description}`);
         } else {
-          logger.error(`  ✗ ${rpc.name}: MISSING in public schema!`);
+          logger.error(`  ✗ ${rpc.name}: ${res?.details || "MISSING in public schema!"}`);
           missingCount++;
         }
       }
       if (missingCount === 0) {
-        logger.log("\n[SUCCESS] All critical RPCs confirmed present in PostgreSQL!");
+        logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
         return { ok: true, method: "psql", results: psqlRes.results };
       } else {
-        logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing from database.`);
+        logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
         return { ok: false, missingCount, method: "psql", results: psqlRes.results };
       }
     } else {
@@ -292,18 +344,16 @@ export async function runSmokeTest(options = {}) {
   logger.log(`[SMOKE] Target URL: ${redactSecrets(supabaseUrl, extraSecrets)}`);
   logger.log(`[SMOKE] Auth Mode: ${isServiceRole ? "service_role (Full verification)" : "anon key (Limited verification)"}`);
 
-  if (!isServiceRole) {
-    logger.warn("[WARNING] Running smoke test without SUPABASE_SERVICE_ROLE_KEY. Webhook-only RPCs (Mercado Pago / Stripe) cannot be verified with anon key.");
-  }
-
   let missingCount = 0;
   let errorCount = 0;
+  let skippedCount = 0;
   const results = {};
 
   for (const rpc of CRITICAL_RPCS) {
     if (rpc.requiresServiceRole && !isServiceRole) {
-      logger.log(`  - ${rpc.name}: SKIPPED (Requires SUPABASE_SERVICE_ROLE_KEY)`);
+      logger.warn(`  ✗ ${rpc.name}: SKIPPED (Requires SUPABASE_SERVICE_ROLE_KEY)`);
       results[rpc.name] = { status: "SKIPPED", skipped: true, reason: "requires_service_role", exists: false };
+      skippedCount++;
       continue;
     }
 
@@ -330,11 +380,11 @@ export async function runSmokeTest(options = {}) {
     }
   }
 
-  const totalFailures = missingCount + errorCount;
+  const totalFailures = missingCount + errorCount + skippedCount;
   if (totalFailures > 0) {
-    logger.error(`\n[FAIL-CLOSED] Schema verification failed: ${missingCount} missing, ${errorCount} error(s) on ${redactSecrets(supabaseUrl, extraSecrets)}.`);
+    logger.error(`\n[FAIL-CLOSED] Schema verification failed: ${missingCount} missing, ${errorCount} error(s), ${skippedCount} skipped on ${redactSecrets(supabaseUrl, extraSecrets)}.`);
     logger.error("Only functions with verified FOUND status are accepted. Deploy cannot proceed.");
-    return { ok: false, missingCount, errorCount, totalFailures, results };
+    return { ok: false, missingCount, errorCount, skippedCount, totalFailures, results };
   }
 
   logger.log("\n[SUCCESS] All verified critical RPCs are present in Supabase schema cache (FOUND)!");
