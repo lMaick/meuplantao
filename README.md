@@ -123,7 +123,7 @@ Os testes de configuração não usam credenciais reais nem acessam o banco.
 
 ### Migrations e Schema de Produção (DevOps)
 
-O fluxo de aplicação de migrations, verificação pré-build na Vercel e o smoke test fail-closed de RPCs críticas (`save_shift_with_obligation`, `register_payment`, `process_mercadopago_subscription_payment`, `process_stripe_subscription_event`) estão documentados em detalhes em **[`docs/DEVOPS_MIGRATIONS.md`](docs/DEVOPS_MIGRATIONS.md)**.
+O fluxo de aplicação de migrations, verificação pré-build na Vercel e o smoke test fail-closed de RPCs críticas (`save_shift_with_obligation`, `register_payment`, `process_mercadopago_subscription_payment`) estão documentados em detalhes em **[`docs/DEVOPS_MIGRATIONS.md`](docs/DEVOPS_MIGRATIONS.md)**.
 
 
 ### Recuperação de sessão inválida (MAI-41)

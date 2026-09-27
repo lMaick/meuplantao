@@ -17,9 +17,9 @@ O sistema opera sob o princípio estrito de **fail-closed**:
 
 ---
 
-## 2. O Fluxo Canônico de Release
+## 2. O Fluxo de Release & Concorrência GitHub Actions vs. Vercel
 
-O ciclo de vida de qualquer alteração de código ou schema segue rigorosamente a seguinte esteira:
+O ciclo de vida de qualquer alteração de código ou schema segue o seguinte modelo:
 
 ```
 [1. GitHub Issue]
@@ -30,27 +30,36 @@ O ciclo de vida de qualquer alteração de código ou schema segue rigorosamente
         ↓
 [4. Revisão Humana & Merge em main] (Apenas Maick faz o merge)
         ↓
-[5. Aplicar / Verificar Migrations em Produção] (supabase db push)
-        ↓
-[6. Deploy do App] (Vercel build com prebuild schema gate)
-        ↓
-[7. Smoke Test de RPCs Críticas] (Fail-closed verification)
+   ┌───────────────────────────────────────────────┐
+   │ Evento de Push em 'main' dispara em PARALELO: │
+   └───────────────────────────────────────────────┘
+            │                               │
+            ▼                               ▼
+[GitHub Actions: deploy-production.yml]  [Vercel: Production Build]
+  - Executa 'supabase db push'            - Executa 'prebuild' (verify-production-schema)
+  - Aplica migrations em produção         - Conecta no PostgreSQL via node-postgres
+  - Executa smoke test de validação       - Se faltar migration/RPC: FAIL-CLOSED (exit 1)
+                                          - Se schema OK: compila Next.js e faz o deploy
 ```
+
+> [!IMPORTANT]
+> **Por que o Prebuild é o Mecanismo de Coordenação Obrigatório?**
+> A ideia simplificada de `CI → merge → migration → deploy` sugere uma fila linear estrita. No entanto, GitHub Actions e Vercel iniciam **simultaneamente e de forma concorrente** após o push em `main`.
+> O `prebuild` (`scripts/verify-production-schema.mjs`) atua como a **barreira síncrona fail-closed** dentro da Vercel: se o build da Vercel começar antes que o GitHub Actions conclua a aplicação de novas migrations, o `prebuild` detecta a ausência/incompatibilidade no `pg_catalog.pg_proc` e **aborta imediatamente o build com `exit 1`**. Isso garante matematicamente que nenhuma versão nova de código vá ao ar incompatível com o banco de produção.
 
 ---
 
-## 3. As 4 RPCs Críticas Monitoradas
+## 3. As 3 RPCs Críticas Monitoradas (Pós-Stripe)
 
-O smoke test (`scripts/smoke-test-schema.mjs`) valida compulsoriamente a presença e a disponibilidade das 4 funções nucleares da plataforma:
+Com o descomissionamento definitivo do Stripe (PR #94 e PR #103), a RPC legada `process_stripe_subscription_event` foi removida da esteira obrigatória. O smoke test (`scripts/smoke-test-schema.mjs`) valida compulsoriamente a presença, quantidade e ordem exata dos tipos de argumentos das 3 funções nucleares da plataforma:
 
-| RPC | Responsabilidade no Sistema | Permissões |
-| :--- | :--- | :--- |
-| `save_shift_with_obligation` | Criação/atualização atômica de plantões e sincronização financeira de obrigações. | `authenticated`, `service_role` |
-| `register_payment` | Registro de repasses e recálculo atômico de saldos financeiros. | `authenticated`, `service_role` |
-| `process_mercadopago_subscription_payment` | Processamento idempotente de webhooks do Mercado Pago e ativação de período Pro. | `service_role` |
-| `process_stripe_subscription_event` | Processamento legado de assinaturas Stripe (ativo enquanto Stripe existir). | `service_role` |
+| RPC | Responsabilidade no Sistema | Assinatura Obrigatória | Permissões |
+| :--- | :--- | :--- | :--- |
+| `save_shift_with_obligation` | Criação/atualização atômica de plantões e sincronização financeira de obrigações. | 11 argumentos (`uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text`) | `authenticated`, `service_role` |
+| `register_payment` | Registro de repasses e recálculo atômico de saldos financeiros. | 3 argumentos (`uuid, numeric, date`) | `authenticated`, `service_role` |
+| `process_mercadopago_subscription_payment` | Processamento idempotente de webhooks do Mercado Pago e ativação de período Pro. | 6 argumentos (`text, uuid, integer, integer, numeric, text`) | `service_role` |
 
-Se qualquer uma dessas funções retornar `404` (`PGRST202 - Could not find the function in schema cache`), o deploy/build aborta com **exit code 1**.
+Se qualquer uma dessas funções estiver ausente ou possuir assinatura incompatível, o deploy/build aborta com **exit code 1**.
 
 ---
 
@@ -105,11 +114,15 @@ No arquivo `package.json`, o script `prebuild` aciona `scripts/verify-production
 
 ### Comportamento por Ambiente:
 - **Produção na Vercel (`VERCEL_ENV=production`) ou Modo Explícito (`CHECK_SCHEMA_COMPATIBILITY=1`):**
-  - O script atua como uma barreira rígida (*strict gate*).
-  - Consulta o Supabase de produção configurado em `NEXT_PUBLIC_SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`.
-  - Se faltar qualquer RPC crítica ou a conexão falhar, o processo encerra com erro (`exit 1`), abortando a compilação na Vercel e impedindo que o deploy quebrado vá ao ar.
+  - O script atua como uma barreira rígida (*strict fail-closed gate*).
+  - Conecta diretamente ao banco de produção via Node.js (`node-postgres`) utilizando a variável `DATABASE_URL` (ou `PRODUCTION_DATABASE_URL`), que aponta para o Session Pooler do Supabase.
+  - Consulta `pg_catalog.pg_proc` e valida rigorosamente o nome, a quantidade e a sequência exata de tipos dos argumentos de cada RPC crítica.
+  - **Fallback para REST é proibido em produção**: REST não consegue atestar assinatura de tipos em nível de compilador.
+  - Se faltar qualquer RPC crítica, se a assinatura for incompatível ou se a conexão falhar, o processo encerra com erro (`exit 1`), abortando a compilação na Vercel e impedindo que o deploy quebrado vá ao ar.
 - **Desenvolvimento Local ou CI Quality (sem Supabase ativo):**
   - O script detecta automaticamente ambiente local (`localhost`) e libera a compilação de assets estáticos sem travar desenvolvedores offline.
+- **Vercel Preview (`VERCEL_ENV=preview`):**
+  - Realiza diagnóstico não-bloqueante; emite alertas informativos sem abortar o build.
 
 ---
 
