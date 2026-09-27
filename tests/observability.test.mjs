@@ -29,18 +29,27 @@ const {
   captureFinancialRpcError,
   sanitizeObject,
   sanitizePaymentId,
+  sanitizeStringValue,
+  sanitizeSentryEvent,
+  createSanitizedException,
   setLogSinkForTesting,
+  setSentryHookForTesting,
   webhookTracker,
 } = await import("../src/lib/observability/index.ts");
 
 describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
   let capturedLogs = [];
+  let capturedSentryExceptions = [];
 
   beforeEach(() => {
     capturedLogs = [];
+    capturedSentryExceptions = [];
     webhookTracker.reset();
     setLogSinkForTesting((log) => {
       capturedLogs.push(log);
+    });
+    setSentryHookForTesting((exception, hint) => {
+      capturedSentryExceptions.push({ exception, hint });
     });
   });
 
@@ -68,7 +77,7 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.deepEqual(log.context, { testParam: "value" });
   });
 
-  test("2. Sanitização estrita: remoção de tokens, service_role, senhas e cookies", () => {
+  test("2. Sanitização estrita: remoção de tokens, service_role, senhas e cookies em objetos", () => {
     const sensitivePayload = {
       user_id: "safe-user-id",
       access_token: "sbp_abcdef1234567890",
@@ -96,14 +105,134 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.equal(sanitized.nested.safeNote, "Clinica Salvador");
   });
 
-  test("3. Sanitização de paymentId seguro", () => {
+  test("3. Segurança: Error com Authorization: Bearer SECRET não vaza no log nem no Sentry", () => {
+    const secret = "SUPER_SECRET_BEARER_TOKEN_998877";
+    const rawError = new Error(`Request failed with Authorization: Bearer ${secret} in header`);
+
+    captureError(rawError, {
+      route: "/api/mercadopago/checkout",
+      httpStatus: 500,
+    });
+
+    assert.equal(capturedLogs.length, 1);
+    const log = capturedLogs[0];
+    assert.ok(!log.message.includes(secret), "O log estruturado não pode conter o token secreto");
+    assert.ok(log.message.includes("Bearer [REDACTED]"));
+
+    assert.equal(capturedSentryExceptions.length, 1);
+    const sentryErr = capturedSentryExceptions[0].exception;
+    assert.ok(sentryErr instanceof Error);
+    assert.ok(!sentryErr.message.includes(secret), "O erro enviado ao Sentry não pode conter o token secreto");
+    assert.ok(sentryErr.message.includes("Bearer [REDACTED]"));
+  });
+
+  test("4. Segurança: Error com service_role=SECRET não vaza no log nem no Sentry", () => {
+    const secret = "SUPABASE_SUPER_SECRET_ROLE_KEY_XYZ";
+    const rawError = new Error(`Supabase query rejected for service_role=${secret}`);
+
+    captureError(rawError, {
+      rpcName: "save_shift_with_obligation",
+    });
+
+    assert.equal(capturedLogs.length, 1);
+    const log = capturedLogs[0];
+    assert.ok(!log.message.includes(secret), "O log estruturado não pode conter o segredo service_role");
+    assert.ok(log.message.includes("service_role=[REDACTED]"));
+
+    assert.equal(capturedSentryExceptions.length, 1);
+    const sentryErr = capturedSentryExceptions[0].exception;
+    assert.ok(!sentryErr.message.includes(secret), "O erro enviado ao Sentry não pode conter o segredo service_role");
+    assert.ok(sentryErr.message.includes("service_role=[REDACTED]"));
+  });
+
+  test("5. Segurança: DATABASE_URL com senha não vaza no log nem no Sentry", () => {
+    const password = "my_extremely_confidential_postgres_password!456";
+    const rawError = new Error(
+      `Failed to connect to postgresql://postgres.rwatwitbqcjpmjmqtzxi:${password}@aws-0-sa-east-1.pooler.supabase.com:5432/postgres`
+    );
+
+    captureError(rawError, {
+      route: "/api/webhooks/mercadopago",
+    });
+
+    assert.equal(capturedLogs.length, 1);
+    const log = capturedLogs[0];
+    assert.ok(!log.message.includes(password), "O log estruturado não pode conter a senha da DATABASE_URL");
+    assert.ok(log.message.includes("[REDACTED_PASSWORD]"));
+
+    assert.equal(capturedSentryExceptions.length, 1);
+    const sentryErr = capturedSentryExceptions[0].exception;
+    assert.ok(!sentryErr.message.includes(password), "O erro enviado ao Sentry não pode conter a senha da DATABASE_URL");
+    assert.ok(sentryErr.message.includes("[REDACTED_PASSWORD]"));
+  });
+
+  test("6. Hook beforeSend do Sentry sanitiza headers, request body, extras, breadcrumbs e exceções", () => {
+    const sensitiveEvent = {
+      request: {
+        headers: {
+          authorization: "Bearer TOP_SECRET_AUTH_HEADER_VAL",
+          cookie: "sb-refresh-token=SECRET_COOKIE",
+          "x-custom-header": "SafeValue",
+        },
+        data: '{"database_url":"postgresql://postgres:secretDbPass@db.test.co:5432/postgres"}',
+      },
+      extra: {
+        api_secret: "SECRET_EXTRA_KEY_999",
+        safeExtra: "ok",
+      },
+      breadcrumbs: [
+        {
+          message: "Request executed with Authorization: Bearer SECRET_BREADCRUMB_TOKEN",
+          data: { token: "SECRET_INSIDE_BREADCRUMB" },
+        },
+      ],
+      exception: {
+        values: [
+          {
+            value: "Unhandled error with service_role=SECRET_EXCEPTION_VALUE",
+          },
+        ],
+      },
+      message: "Event message with password=SECRET_MSG_PASS",
+    };
+
+    const sanitizedEvent = sanitizeSentryEvent(sensitiveEvent);
+
+    // Headers
+    assert.equal(sanitizedEvent.request.headers.authorization, "[REDACTED]");
+    assert.equal(sanitizedEvent.request.headers.cookie, "[REDACTED]");
+    assert.equal(sanitizedEvent.request.headers["x-custom-header"], "SafeValue");
+
+    // Request data
+    assert.ok(!sanitizedEvent.request.data.includes("secretDbPass"));
+    assert.ok(sanitizedEvent.request.data.includes("[REDACTED_PASSWORD]"));
+
+    // Extras
+    assert.equal(sanitizedEvent.extra.api_secret, "[REDACTED]");
+    assert.equal(sanitizedEvent.extra.safeExtra, "ok");
+
+    // Breadcrumbs
+    assert.ok(!sanitizedEvent.breadcrumbs[0].message.includes("SECRET_BREADCRUMB_TOKEN"));
+    assert.ok(sanitizedEvent.breadcrumbs[0].message.includes("Bearer [REDACTED]"));
+    assert.equal(sanitizedEvent.breadcrumbs[0].data.token, "[REDACTED]");
+
+    // Exception values
+    assert.ok(!sanitizedEvent.exception.values[0].value.includes("SECRET_EXCEPTION_VALUE"));
+    assert.ok(sanitizedEvent.exception.values[0].value.includes("service_role=[REDACTED]"));
+
+    // Event message
+    assert.ok(!sanitizedEvent.message.includes("SECRET_MSG_PASS"));
+    assert.ok(sanitizedEvent.message.includes("password=[REDACTED]"));
+  });
+
+  test("7. Sanitização de paymentId seguro", () => {
     assert.equal(sanitizePaymentId("1234567890"), "1234567890");
     assert.equal(sanitizePaymentId("pay_abc-123_xyz"), "pay_abc-123_xyz");
     assert.equal(sanitizePaymentId("pay\nDROP TABLE--"), "[SANITIZED_ID]");
     assert.equal(sanitizePaymentId(undefined), undefined);
   });
 
-  test("4. Alerta checkout_5xx", () => {
+  test("8. Alerta checkout_5xx", () => {
     const error = new Error("Mercado Pago preference generation failed");
     captureCheckoutError(error, {
       userId: "user-checkout-1",
@@ -118,7 +247,7 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.equal(log.level, "error");
   });
 
-  test("5. Alerta sync_5xx", () => {
+  test("9. Alerta sync_5xx", () => {
     const error = new Error("Mercado Pago sync search failed with 500");
     captureSyncError(error, {
       userId: "user-sync-1",
@@ -132,7 +261,7 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.equal(log.level, "error");
   });
 
-  test("6. Alerta financial_rpc_error para RPCs críticas", () => {
+  test("10. Alerta financial_rpc_error para RPCs críticas", () => {
     const error = new Error("Unique constraint violation on obligation");
     captureFinancialRpcError(error, {
       rpcName: "save_shift_with_obligation",
@@ -147,25 +276,32 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.equal(log.level, "fatal");
   });
 
-  test("7. Alerta webhook_repeated_failure acionado após limiar de falhas", () => {
-    // 1ª falha: normal
+  test("11. Webhook: despacha route para agregação global no Sentry e mantém tracker local como auxiliar", () => {
+    // 1ª falha na instância local
     captureWebhookError(new Error("Timeout 1"), { paymentId: "pay-1" });
     assert.equal(capturedLogs[0].alert_rule, undefined);
     assert.equal(capturedLogs[0].level, "error");
+    assert.equal(capturedLogs[0].route, "/api/webhooks/mercadopago");
+    assert.equal(capturedLogs[0].context?.local_instance_failure_count, 1);
 
-    // 2ª falha: normal
+    // 2ª falha na instância local
     captureWebhookError(new Error("Timeout 2"), { paymentId: "pay-2" });
     assert.equal(capturedLogs[1].alert_rule, undefined);
+    assert.equal(capturedLogs[1].context?.local_instance_failure_count, 2);
 
-    // 3ª falha consecutiva: deve disparar o alerta webhook_repeated_failure e nível fatal
+    // 3ª falha consecutiva na mesma instância: dispara alerta auxiliar local
     captureWebhookError(new Error("Timeout 3"), { paymentId: "pay-3" });
     assert.equal(capturedLogs[2].alert_rule, "webhook_repeated_failure");
     assert.equal(capturedLogs[2].level, "fatal");
+    assert.equal(capturedLogs[2].context?.local_instance_failure_count, 3);
   });
 
-  test("8. Fail-safe: falha no sink ou Sentry não propaga erro para o chamador", () => {
+  test("12. Fail-safe: falha no sink ou Sentry não propaga erro para o chamador", () => {
     setLogSinkForTesting(() => {
       throw new Error("Broken logging infrastructure");
+    });
+    setSentryHookForTesting(() => {
+      throw new Error("Broken Sentry connection");
     });
 
     assert.doesNotThrow(() => {
