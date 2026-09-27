@@ -6,6 +6,10 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 
+import { hasRecoveryAmr, verifyRecoveryClaims } from "@/lib/auth/recovery";
+
+export { hasRecoveryAmr };
+
 export default function RedefinirSenhaPage() {
   const router = useRouter();
   const [password, setPassword] = useState("");
@@ -20,67 +24,42 @@ export default function RedefinirSenhaPage() {
     let isMounted = true;
     const supabase = createClient();
 
-    // Escuta o evento específico PASSWORD_RECOVERY do Supabase Auth
-    // para diferenciar explicitamente um contexto de recuperação de uma sessão comum já autenticada.
+    // 1. Caminho rápido: escuta o evento PASSWORD_RECOVERY emitido pelo Supabase Auth
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
+    } = supabase.auth.onAuthStateChange((event) => {
       if (!isMounted) return;
 
       if (event === "PASSWORD_RECOVERY") {
         setIsRecoveryContext(true);
         setChecking(false);
-        return;
-      }
-
-      // Verificação complementar para sessões trocadas via SSR callback:
-      // confere se os Authentication Method References (AMR) indicam recuperação
-      const userWithAmr = session?.user as Record<string, unknown> | undefined;
-      const amr = userWithAmr?.amr;
-      const isRecoveryAmr = Array.isArray(amr) && amr.some((entry) =>
-        (typeof entry === "string" && entry === "recovery") ||
-        (typeof entry === "object" && entry !== null && "method" in entry && entry.method === "recovery")
-      );
-
-      if (isRecoveryAmr) {
-        setIsRecoveryContext(true);
-        setChecking(false);
-        return;
       }
     });
 
-    // Se após inicialização não for identificado evento PASSWORD_RECOVERY nem AMR de recuperação,
-    // encerra a checagem mantendo isRecoveryContext como false (sessão normal ou ausente).
-    const timer = setTimeout(async () => {
-      if (!isMounted) return;
-
+    // 2. Fallback confiável para o fluxo PKCE/SSR:
+    // inspeciona as claims verificadas do JWT via getClaims() sem confiar em session.user.amr
+    async function checkClaims() {
       try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        const userWithAmr = session?.user as Record<string, unknown> | undefined;
-        const amr = userWithAmr?.amr;
-        const isRecoveryAmr = Array.isArray(amr) && amr.some((entry) =>
-          (typeof entry === "string" && entry === "recovery") ||
-          (typeof entry === "object" && entry !== null && "method" in entry && entry.method === "recovery")
-        );
+        const isRecovery = await verifyRecoveryClaims(supabase.auth);
+        if (!isMounted) return;
 
-        if (isRecoveryAmr) {
+        if (isRecovery) {
           setIsRecoveryContext(true);
         }
       } catch {
-        // Falha ao inspecionar sessão
+        // Falha ao obter claims; sessão permanece não autorizada
       } finally {
         if (isMounted) {
           setChecking(false);
         }
       }
-    }, 1200);
+    }
+
+    checkClaims();
 
     return () => {
       isMounted = false;
       subscription.unsubscribe();
-      clearTimeout(timer);
     };
   }, []);
 

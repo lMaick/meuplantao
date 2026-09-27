@@ -1,89 +1,196 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { hasRecoveryAmr, verifyRecoveryClaims } from "../src/lib/auth/recovery.ts";
 
 /**
- * Validação do contrato de segurança de /redefinir-senha:
- * O componente DEVE diferenciar tecnicamente uma sessão de recuperação (evento PASSWORD_RECOVERY ou AMR 'recovery')
- * de uma sessão normal já autenticada (INITIAL_SESSION/SIGNED_IN com method 'password'/'oauth').
+ * Validação rigorosa do contrato de segurança de /redefinir-senha:
+ * 1. PASSWORD_RECOVERY via evento rápido do Supabase Auth autoriza o contexto.
+ * 2. Fallback confiável inspeciona as claims verificadas do JWT (supabase.auth.getClaims().data.claims.amr).
+ * 3. amr é uma claim do JWT (RFC 8176), não uma propriedade documentada de User.
+ * 4. Jamais confia em session.user.amr ou propriedades artificiais em User.
  */
 
-function determineRecoveryContext({ event, session }) {
-  // 1. Evento específico PASSWORD_RECOVERY do Supabase Auth
+// Helper que simula a resolução completa do contexto (evento rápido + fallback getClaims)
+async function evaluateRecoveryAccess({ event, authMock }) {
+  // 1. Caminho rápido: evento PASSWORD_RECOVERY
   if (event === "PASSWORD_RECOVERY") {
     return true;
   }
 
-  // 2. AMR indicando 'recovery' (usado em hidratação SSR ou token de recuperação)
-  const amr = session?.user?.amr;
-  const isRecoveryAmr = Array.isArray(amr) && amr.some((entry) =>
-    (typeof entry === "string" && entry === "recovery") ||
-    (typeof entry === "object" && entry !== null && "method" in entry && entry.method === "recovery")
-  );
-
-  return Boolean(isRecoveryAmr);
+  // 2. Fallback confiável: chamada efetiva a auth.getClaims()
+  return await verifyRecoveryClaims(authMock);
 }
 
-test("Supabase PASSWORD_RECOVERY event establishes valid recovery context", () => {
-  const result = determineRecoveryContext({
+test("1. PASSWORD_RECOVERY event → autorizado", async () => {
+  const authMock = {
+    getClaims: async () => ({
+      data: null,
+      error: new Error("not called if event confirms"),
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
     event: "PASSWORD_RECOVERY",
-    session: {
-      user: { id: "user-123", email: "medico@hospital.com" },
-    },
+    authMock,
   });
 
-  assert.equal(result, true, "Evento PASSWORD_RECOVERY deve autorizar redefinição de senha");
+  assert.equal(isAuthorized, true, "Evento PASSWORD_RECOVERY deve autorizar o acesso de imediato");
 });
 
-test("Normal authenticated session (SIGNED_IN / password) DOES NOT establish recovery context", () => {
-  const result = determineRecoveryContext({
+test("2. claims.amr = [{ method: 'recovery' }] → autorizado", async () => {
+  const authMock = {
+    getClaims: async () => ({
+      data: {
+        claims: {
+          sub: "user-123",
+          email: "medico@hospital.com",
+          amr: [{ method: "recovery", timestamp: 1715766000 }],
+        },
+      },
+      error: null,
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
+    event: "INITIAL_SESSION",
+    authMock,
+  });
+
+  assert.equal(isAuthorized, true, "Claims JWT com AMR recovery devem ser autorizadas");
+});
+
+test("3. claims.amr = [{ method: 'password' }] → recusado", async () => {
+  const authMock = {
+    getClaims: async () => ({
+      data: {
+        claims: {
+          sub: "user-123",
+          email: "medico@hospital.com",
+          amr: [{ method: "password", timestamp: 1715766000 }],
+        },
+      },
+      error: null,
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
     event: "SIGNED_IN",
-    session: {
-      user: {
-        id: "user-123",
-        email: "medico@hospital.com",
-        amr: [{ method: "password", timestamp: 1700000000 }],
-      },
-    },
+    authMock,
   });
 
-  assert.equal(result, false, "Sessão normal já autenticada não pode ser tratada como recuperação");
+  assert.equal(isAuthorized, false, "Sessão normal autenticada por senha deve ser recusada");
 });
 
-test("Normal authenticated session (INITIAL_SESSION / oauth) DOES NOT establish recovery context", () => {
-  const result = determineRecoveryContext({
-    event: "INITIAL_SESSION",
-    session: {
-      user: {
-        id: "user-456",
-        email: "medico@hospital.com",
-        amr: [{ method: "oauth", provider: "google", timestamp: 1700000000 }],
+test("4. claims.amr = [{ method: 'oauth' }] → recusado", async () => {
+  const authMock = {
+    getClaims: async () => ({
+      data: {
+        claims: {
+          sub: "user-123",
+          email: "medico@hospital.com",
+          amr: [{ method: "oauth", provider: "google", timestamp: 1715766000 }],
+        },
       },
-    },
+      error: null,
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
+    event: "INITIAL_SESSION",
+    authMock,
   });
 
-  assert.equal(result, false, "Sessão OAuth normal não pode ser tratada como recuperação");
+  assert.equal(isAuthorized, false, "Sessão normal OAuth deve ser recusada");
 });
 
-test("Session with AMR 'recovery' establishes recovery context", () => {
-  const result = determineRecoveryContext({
-    event: "INITIAL_SESSION",
-    session: {
-      user: {
-        id: "user-789",
-        email: "medico@hospital.com",
-        amr: [{ method: "recovery", timestamp: 1700000000 }],
+test("5. sessão válida + user sem propriedade amr + JWT claims recovery → autorizado", async () => {
+  // Simula o formato canônico do Supabase onde User NÃO tem amr, mas as claims do JWT têm
+  const mockUser = {
+    id: "user-real-supabase",
+    email: "medico@hospital.com",
+    app_metadata: {},
+    user_metadata: {},
+    // NOTA: sem propriedade amr no objeto user!
+  };
+  assert.equal("amr" in mockUser, false, "User canônico não possui amr");
+
+  const authMock = {
+    getClaims: async () => ({
+      data: {
+        claims: {
+          sub: mockUser.id,
+          email: mockUser.email,
+          amr: [{ method: "recovery", timestamp: 1715766000 }],
+        },
       },
-    },
+      error: null,
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
+    event: "INITIAL_SESSION",
+    authMock,
   });
 
-  assert.equal(result, true, "Sessão com AMR recovery deve autorizar redefinição");
+  assert.equal(isAuthorized, true, "Deve autorizar pelas claims do JWT mesmo sem amr em user");
 });
 
-test("Unauthenticated visitor without session DOES NOT establish recovery context", () => {
-  const result = determineRecoveryContext({
+test("6. sessão válida + user artificialmente contendo amr=recovery + JWT claims sem recovery → NÃO deve ser autorizado", async () => {
+  // Simula um payload adulterado onde user possui amr='recovery', mas as claims do JWT NÃO contêm recovery
+  const fakeUser = {
+    id: "user-attacker",
+    email: "medico@hospital.com",
+    amr: [{ method: "recovery", timestamp: 1715766000 }], // Adulterado / artificial
+  };
+
+  const authMock = {
+    getClaims: async () => ({
+      data: {
+        claims: {
+          sub: fakeUser.id,
+          email: fakeUser.email,
+          amr: [{ method: "password", timestamp: 1715766000 }], // Real do JWT: login com senha!
+        },
+      },
+      error: null,
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
     event: "INITIAL_SESSION",
-    session: null,
+    authMock,
   });
 
-  assert.equal(result, false, "Visitante sem sessão não pode estabelecer contexto de recuperação");
+  assert.equal(
+    isAuthorized,
+    false,
+    "NÃO deve confiar em session.user.amr se as claims reais do JWT não contiverem recovery"
+  );
+});
+
+test("7. sem sessão/claims válidas → recusado", async () => {
+  const authMock = {
+    getClaims: async () => ({
+      data: null,
+      error: new Error("AuthSessionMissingError: Auth session missing!"),
+    }),
+  };
+
+  const isAuthorized = await evaluateRecoveryAccess({
+    event: "INITIAL_SESSION",
+    authMock,
+  });
+
+  assert.equal(isAuthorized, false, "Sem claims válidas a sessão deve ser recusada");
+});
+
+test("8. hasRecoveryAmr: validação isolada de formatos de amr aceitos e rejeitados", () => {
+  assert.equal(hasRecoveryAmr([{ method: "recovery" }]), true);
+  assert.equal(hasRecoveryAmr(["recovery"]), true);
+  assert.equal(hasRecoveryAmr([{ method: "password" }]), false);
+  assert.equal(hasRecoveryAmr([{ method: "oauth" }]), false);
+  assert.equal(hasRecoveryAmr([]), false);
+  assert.equal(hasRecoveryAmr(null), false);
+  assert.equal(hasRecoveryAmr(undefined), false);
+  assert.equal(hasRecoveryAmr("not-an-array"), false);
 });
