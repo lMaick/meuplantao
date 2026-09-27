@@ -1,0 +1,5 @@
+{
+  "apiKey": "${POSTIZ_API_KEY}",
+  "defaultIntegrationId": "",
+  "defaultChannelName": ""
+}

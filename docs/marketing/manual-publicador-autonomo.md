@@ -16,7 +16,8 @@ Garantir a execução pontual, sem falhas e padronizada de todas as publicaçõe
 - **Painel Web:** `http://localhost:4007`
 - **Canal Conectado:** `MeuPlantão.App` (ID: `cmu4hq1y50001oe9b342cye3w`, provider: `instagram-standalone`)
 - **Automação via CLI:** `ops/marketing/postiz-client.mjs`
-- **Configuração:** `ops/marketing/postiz-config.json`
+- **Configuração:** `ops/marketing/postiz-config.json` (arquivo local, protegido no `.gitignore`) ou variável de ambiente `POSTIZ_API_KEY` (em `.env.local`). Exemplo template versionado: `ops/marketing/postiz-config.example.json`.
+
 
 ### Comandos do Postiz & Pipeline de Publicação:
 ```bash
