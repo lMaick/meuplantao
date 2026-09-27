@@ -98,9 +98,9 @@ test("2. Assinatura inválida: rejeita com HTTP 401 quando HMAC for incorreto", 
 });
 
 // -------------------------------------------------------------
-// 3. Assinatura Correta
+// 3. Assinatura Correta (Segundos e Milissegundos)
 // -------------------------------------------------------------
-test("3. Assinatura correta: autentica com sucesso e processa o pagamento", async () => {
+test("3. Assinatura correta com timestamp em segundos (10 dígitos): autentica com sucesso e processa o pagamento", async () => {
   const secret = "test-webhook-secret";
   globalThis.__mockWebhookSecret = secret;
 
@@ -152,24 +152,76 @@ test("3. Assinatura correta: autentica com sucesso e processa o pagamento", asyn
   globalThis.__mockWebhookSecret = null;
 });
 
-// -------------------------------------------------------------
-// 4. Replay Attack
-// -------------------------------------------------------------
-test("4. Replay: rejeita com HTTP 401 se o timestamp for superior a 5 minutos", async () => {
+test("3b. Assinatura correta com timestamp em milissegundos (13 dígitos): autentica com sucesso e processa o pagamento", async () => {
   const secret = "test-webhook-secret";
   globalThis.__mockWebhookSecret = secret;
 
-  const paymentId = "payment-104";
-  const requestId = "req-test-104";
-  // Timestamp com 10 minutos (600s) no passado
-  const oldTs = Math.floor(Date.now() / 1000) - 600;
-  const validHashForOldTs = generateSignature(paymentId, requestId, oldTs, secret);
+  const paymentId = "payment-103-ms";
+  const requestId = "req-test-103-ms";
+  const currentTsMs = Date.now(); // 13 dígitos
+  const validHash = generateSignature(paymentId, requestId, currentTsMs, secret);
+
+  globalThis.fetch = async (url) => {
+    assert.equal(url, `https://api.mercadopago.test/v1/payments/${paymentId}`);
+    return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
+  };
+
+  const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      assert.equal(fn, "process_mercadopago_subscription_payment");
+      assert.equal(params.p_payment_id, paymentId);
+      assert.equal(params.p_user_id, validUserId);
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: futureEnd,
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
+  };
 
   const request = new Request("http://localhost/api/webhooks/mercadopago", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-signature": `ts=${oldTs},v1=${validHashForOldTs}`,
+      "x-signature": `ts=${currentTsMs},v1=${validHash}`,
+      "x-request-id": requestId,
+    },
+    body: JSON.stringify({ data: { id: paymentId }, type: "payment" }),
+  });
+
+  const response = await webhookPost(request);
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.received, true);
+  assert.equal(json.processed, true);
+  assert.equal(json.current_period_end, futureEnd);
+
+  globalThis.__mockWebhookSecret = null;
+});
+
+// -------------------------------------------------------------
+// 4. Replay Attack & Timestamp Validation
+// -------------------------------------------------------------
+test("4a. Replay: rejeita com HTTP 401 se o timestamp em segundos for superior a 5 minutos", async () => {
+  const secret = "test-webhook-secret";
+  globalThis.__mockWebhookSecret = secret;
+
+  const paymentId = "payment-104-sec";
+  const requestId = "req-test-104-sec";
+  // Timestamp com 10 minutos (600s) no passado em segundos
+  const oldTsSec = Math.floor(Date.now() / 1000) - 600;
+  const validHashForOldTs = generateSignature(paymentId, requestId, oldTsSec, secret);
+
+  const request = new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-signature": `ts=${oldTsSec},v1=${validHashForOldTs}`,
       "x-request-id": requestId,
     },
     body: JSON.stringify({ data: { id: paymentId }, type: "payment" }),
@@ -179,6 +231,115 @@ test("4. Replay: rejeita com HTTP 401 se o timestamp for superior a 5 minutos", 
   assert.equal(response.status, 401);
   const json = await response.json();
   assert.match(json.error, /expirada|replay/i);
+
+  globalThis.__mockWebhookSecret = null;
+});
+
+test("4b. Replay: rejeita com HTTP 401 se o timestamp em milissegundos for superior a 5 minutos", async () => {
+  const secret = "test-webhook-secret";
+  globalThis.__mockWebhookSecret = secret;
+
+  const paymentId = "payment-104-ms";
+  const requestId = "req-test-104-ms";
+  // Timestamp com 10 minutos (600.000ms) no passado em milissegundos
+  const oldTsMs = Date.now() - 600000;
+  const validHashForOldTs = generateSignature(paymentId, requestId, oldTsMs, secret);
+
+  const request = new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-signature": `ts=${oldTsMs},v1=${validHashForOldTs}`,
+      "x-request-id": requestId,
+    },
+    body: JSON.stringify({ data: { id: paymentId }, type: "payment" }),
+  });
+
+  const response = await webhookPost(request);
+  assert.equal(response.status, 401);
+  const json = await response.json();
+  assert.match(json.error, /expirada|replay/i);
+
+  globalThis.__mockWebhookSecret = null;
+});
+
+test("4c. Timestamp inválido (não numérico, <= 0): rejeita com HTTP 401", async () => {
+  const secret = "test-webhook-secret";
+  globalThis.__mockWebhookSecret = secret;
+
+  for (const invalidTs of ["not-a-number", "-1000", "0"]) {
+    const paymentId = "payment-invalid-ts";
+    const requestId = "req-test-inv-ts";
+    const hash = generateSignature(paymentId, requestId, invalidTs, secret);
+
+    const request = new Request("http://localhost/api/webhooks/mercadopago", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-signature": `ts=${invalidTs},v1=${hash}`,
+        "x-request-id": requestId,
+      },
+      body: JSON.stringify({ data: { id: paymentId }, type: "payment" }),
+    });
+
+    const response = await webhookPost(request);
+    assert.equal(response.status, 401, `Timestamp ${invalidTs} deve ser rejeitado com 401`);
+    const json = await response.json();
+    assert.match(json.error, /invalido/i);
+  }
+
+  globalThis.__mockWebhookSecret = null;
+});
+
+test("4d. Formato real de notificação: POST /api/webhooks/mercadopago?data.id=123456&type=payment preservando data.id no manifesto", async () => {
+  const secret = "test-webhook-secret";
+  globalThis.__mockWebhookSecret = secret;
+
+  const paymentId = "123456";
+  const requestId = "req-real-format-123456";
+  const currentTsMs = Date.now();
+  // Manifest usa o paymentId extraído de data.id da query: id:123456;request-id:...;ts:...;
+  const validHash = generateSignature(paymentId, requestId, currentTsMs, secret);
+
+  globalThis.fetch = async (url) => {
+    assert.equal(url, `https://api.mercadopago.test/v1/payments/${paymentId}`);
+    return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
+  };
+
+  const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      assert.equal(fn, "process_mercadopago_subscription_payment");
+      assert.equal(params.p_payment_id, paymentId);
+      assert.equal(params.p_user_id, validUserId);
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: futureEnd,
+          validity_days_added: 30,
+          status: "active",
+        },
+        error: null,
+      };
+    },
+  };
+
+  // Notificação no formato real enviado pelo Checkout Pro / Preferences API
+  const request = new Request(`http://localhost/api/webhooks/mercadopago?data.id=${paymentId}&type=payment`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-signature": `ts=${currentTsMs},v1=${validHash}`,
+      "x-request-id": requestId,
+    },
+    body: JSON.stringify({ action: "payment.created", api_version: "v1", data: { id: paymentId }, date_created: new Date().toISOString(), type: "payment" }),
+  });
+
+  const response = await webhookPost(request);
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.received, true);
+  assert.equal(json.processed, true);
 
   globalThis.__mockWebhookSecret = null;
 });
@@ -206,9 +367,9 @@ test("5. Payment_id inexistente: responde HTTP 200 ignored quando a API do MP re
 });
 
 // -------------------------------------------------------------
-// 6. Falha 5xx do Mercado Pago (Sinaliza Retry)
+// 6. Resiliência: Falha 5xx, Erro de Rede e Rate Limit (429)
 // -------------------------------------------------------------
-test("6. Falha 5xx do MP: responde HTTP 502 para forçar retry automático do provedor", async () => {
+test("6a. Falha 5xx do MP: responde HTTP 502 para forçar retry automático do provedor", async () => {
   globalThis.__mockWebhookSecret = null;
 
   // Simula indisponibilidade temporária no Mercado Pago (HTTP 500 ou 503)
@@ -224,6 +385,42 @@ test("6. Falha 5xx do MP: responde HTTP 502 para forçar retry automático do pr
   assert.equal(response.status, 502, "Deve retornar 502 Bad Gateway para o MP retentar");
   const json = await response.json();
   assert.match(json.error, /temporaria/i);
+});
+
+test("6b. Erro de rede/fetch: responde HTTP 502 para forçar retry automático do provedor", async () => {
+  globalThis.__mockWebhookSecret = null;
+
+  globalThis.fetch = async () => {
+    throw new Error("fetch failed: ECONNRESET");
+  };
+
+  const request = new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: { id: "payment-network-err" }, type: "payment" }),
+  });
+
+  const response = await webhookPost(request);
+  assert.equal(response.status, 502, "Erro de rede deve responder 502 para retry");
+  const json = await response.json();
+  assert.match(json.error, /temporaria|conexao/i);
+});
+
+test("6c. Rate Limit (429) do MP: responde HTTP 429 para retry posterior do provedor", async () => {
+  globalThis.__mockWebhookSecret = null;
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Too Many Requests" }), { status: 429 });
+
+  const request = new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: { id: "payment-rate-limited" }, type: "payment" }),
+  });
+
+  const response = await webhookPost(request);
+  assert.equal(response.status, 429, "Rate limit deve responder 429");
+  const json = await response.json();
+  assert.match(json.error, /rate limit/i);
 });
 
 // -------------------------------------------------------------

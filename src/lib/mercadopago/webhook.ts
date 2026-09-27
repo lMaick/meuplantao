@@ -107,14 +107,16 @@ export function validateWebhookSignature(
 
   // Proteção contra ataques de Replay
   const maxAgeSeconds = options.maxAgeSeconds ?? 300; // 5 minutos padrão
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const eventSeconds = Number(timestamp);
+  const tsNumber = Number(timestamp);
 
-  if (Number.isNaN(eventSeconds)) {
+  if (!Number.isFinite(tsNumber) || tsNumber <= 0) {
     return { valid: false, error: "Timestamp ts em x-signature invalido" };
   }
 
-  if (Math.abs(nowSeconds - eventSeconds) > maxAgeSeconds) {
+  const tsMs = tsNumber < 1e11 ? tsNumber * 1000 : tsNumber;
+  const driftSeconds = Math.abs(Date.now() - tsMs) / 1000;
+
+  if (driftSeconds > maxAgeSeconds) {
     return { valid: false, error: "Notificacao expirada (replay detectado)" };
   }
 
