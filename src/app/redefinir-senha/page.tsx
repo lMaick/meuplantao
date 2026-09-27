@@ -14,25 +14,74 @@ export default function RedefinirSenhaPage() {
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [noSession, setNoSession] = useState(false);
+  const [isRecoveryContext, setIsRecoveryContext] = useState(false);
 
   useEffect(() => {
-    async function checkAuthSession() {
+    let isMounted = true;
+    const supabase = createClient();
+
+    // Escuta o evento específico PASSWORD_RECOVERY do Supabase Auth
+    // para diferenciar explicitamente um contexto de recuperação de uma sessão comum já autenticada.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return;
+
+      if (event === "PASSWORD_RECOVERY") {
+        setIsRecoveryContext(true);
+        setChecking(false);
+        return;
+      }
+
+      // Verificação complementar para sessões trocadas via SSR callback:
+      // confere se os Authentication Method References (AMR) indicam recuperação
+      const userWithAmr = session?.user as Record<string, unknown> | undefined;
+      const amr = userWithAmr?.amr;
+      const isRecoveryAmr = Array.isArray(amr) && amr.some((entry) =>
+        (typeof entry === "string" && entry === "recovery") ||
+        (typeof entry === "object" && entry !== null && "method" in entry && entry.method === "recovery")
+      );
+
+      if (isRecoveryAmr) {
+        setIsRecoveryContext(true);
+        setChecking(false);
+        return;
+      }
+    });
+
+    // Se após inicialização não for identificado evento PASSWORD_RECOVERY nem AMR de recuperação,
+    // encerra a checagem mantendo isRecoveryContext como false (sessão normal ou ausente).
+    const timer = setTimeout(async () => {
+      if (!isMounted) return;
+
       try {
-        const supabase = createClient();
         const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          setNoSession(true);
+          data: { session },
+        } = await supabase.auth.getSession();
+        const userWithAmr = session?.user as Record<string, unknown> | undefined;
+        const amr = userWithAmr?.amr;
+        const isRecoveryAmr = Array.isArray(amr) && amr.some((entry) =>
+          (typeof entry === "string" && entry === "recovery") ||
+          (typeof entry === "object" && entry !== null && "method" in entry && entry.method === "recovery")
+        );
+
+        if (isRecoveryAmr) {
+          setIsRecoveryContext(true);
         }
       } catch {
-        setNoSession(true);
+        // Falha ao inspecionar sessão
       } finally {
-        setChecking(false);
+        if (isMounted) {
+          setChecking(false);
+        }
       }
-    }
-    checkAuthSession();
+    }, 1200);
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+      clearTimeout(timer);
+    };
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -92,7 +141,7 @@ export default function RedefinirSenhaPage() {
     );
   }
 
-  if (noSession) {
+  if (!isRecoveryContext) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/40 px-4 py-8">
         <section className="w-full max-w-md space-y-6 rounded-xl border bg-background p-6 shadow-sm sm:p-8">
