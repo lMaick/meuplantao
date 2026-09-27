@@ -39,12 +39,41 @@ export async function GET(request: NextRequest) {
     }
 
     const payment = (await paymentResponse.json()) as MercadoPagoPayment;
-    if (payment.status !== "approved") {
-      return NextResponse.json({ verified: true, activated: false, status: payment.status ?? "unknown" });
-    }
 
     if (!paymentBelongsToUser(payment, user.id)) {
       return NextResponse.json({ error: "Pagamento nao pertence a esta conta" }, { status: 403 });
+    }
+
+    if (payment.status !== "approved") {
+      let currentSub = null;
+      try {
+        const admin = createAdminClient();
+        const { data } = await admin
+          .from("subscriptions")
+          .select("status, current_period_end")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        currentSub = data;
+      } catch {
+        // Fallback gracioso
+      }
+
+      const now = new Date();
+      const isSubActive = Boolean(currentSub?.current_period_end && new Date(currentSub.current_period_end) > now);
+      const subStatus = isSubActive ? "active" : (currentSub?.status || payment.status || "pending");
+
+      return NextResponse.json({
+        verified: true,
+        payment_found: true,
+        payment_processed_now: false,
+        already_processed: false,
+        subscription_active: isSubActive,
+        subscription_status: subStatus,
+        current_period_end: currentSub?.current_period_end || null,
+        payment_status: payment.status ?? "unknown",
+        activated: false,
+        status: payment.status ?? "unknown",
+      });
     }
 
     const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
@@ -60,12 +89,25 @@ export async function GET(request: NextRequest) {
       status: payment.status ?? "approved",
     });
 
+    const now = new Date();
+    const hasFutureEnd = Boolean(result.current_period_end && new Date(result.current_period_end) > now);
+    const subscriptionActive = hasFutureEnd;
+    const subscriptionStatus = hasFutureEnd ? "active" : "expired";
+    const paymentProcessedNow = !result.already_processed;
+    const isAlreadyProcessed = Boolean(result.already_processed);
+
     return NextResponse.json({
       verified: true,
-      activated: !result.already_processed,
-      status: result.status,
-      already_processed: result.already_processed,
+      payment_found: true,
+      payment_processed_now: paymentProcessedNow,
+      already_processed: isAlreadyProcessed,
+      subscription_active: subscriptionActive,
+      subscription_status: subscriptionStatus,
       current_period_end: result.current_period_end,
+      payment_status: payment.status ?? "approved",
+      // Retrocompatibilidade
+      activated: subscriptionActive,
+      status: subscriptionStatus,
     });
   } catch (error) {
     console.error("Mercado Pago verification error", error instanceof Error ? error.message : "unknown");

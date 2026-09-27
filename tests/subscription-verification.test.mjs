@@ -78,6 +78,11 @@ test("approved payment matching the authenticated user activates the subscriptio
   assert.equal(response.status, 200);
   const json = await response.json();
   assert.equal(json.verified, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.payment_processed_now, true);
+  assert.equal(json.already_processed, false);
+  assert.equal(json.subscription_active, true);
+  assert.equal(json.subscription_status, "active");
   assert.equal(json.activated, true);
   assert.equal(json.status, "active");
   assert.ok(json.current_period_end);
@@ -86,6 +91,36 @@ test("approved payment matching the authenticated user activates the subscriptio
   assert.ok(rpcCall);
   assert.equal(rpcCall.params.p_user_id, userId);
   assert.equal(rpcCall.params.p_payment_id, "payment-123");
+});
+
+test("Caso 1: webhook processes payment first; verify returns already_processed=true but subscription_active=true", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: userId }), { status: 200 });
+
+  const futureDate = new Date(Date.now() + 30 * 86400000).toISOString();
+  globalThis.adminClient = {
+    rpc: async () => ({
+      data: {
+        already_processed: true,
+        current_period_end: futureDate,
+        validity_days_added: 0,
+        status: "active",
+      },
+      error: null,
+    }),
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=already-processed-payment"));
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.verified, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.already_processed, true, "already_processed deve ser true quando webhook ja processou");
+  assert.equal(json.payment_processed_now, false, "payment_processed_now deve ser false");
+  assert.equal(json.subscription_active, true, "subscription_active DEVE ser true porque a vigencia e futura");
+  assert.equal(json.subscription_status, "active", "subscription_status deve ser active");
+  assert.equal(json.activated, true, "activated deve ser true para manter o frontend em estado de sucesso");
+  assert.equal(json.current_period_end, futureDate);
 });
 
 test("collection_id is accepted and a payment belonging to another user is rejected", async () => {
@@ -100,12 +135,99 @@ test("collection_id is accepted and a payment belonging to another user is rejec
 
 test("non-approved payment is reported without changing the subscription", async () => {
   globalThis.authenticatedClient = authenticatedClient();
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending" }), { status: 200 });
-  globalThis.adminClient = { rpc: async () => { throw new Error("must not call rpc"); } };
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending", external_reference: userId }), { status: 200 });
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+  };
 
   const response = await verifyPayment(verifyRequest("payment_id=pending-789"));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { verified: true, activated: false, status: "pending" });
+  const json = await response.json();
+  assert.equal(json.verified, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.already_processed, false);
+  assert.equal(json.subscription_active, false);
+  assert.equal(json.activated, false);
+  assert.equal(json.status, "pending");
+  assert.equal(json.payment_status, "pending");
+});
+
+test("renewal with pending payment when user already has active Pro subscription returns subscription_active=true and payment_status=pending", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending", external_reference: userId }), { status: 200 });
+  const futureDate = new Date(Date.now() + 15 * 86400000).toISOString();
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { status: "active", current_period_end: futureDate },
+            error: null,
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=renewal-pending-123"));
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.verified, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.already_processed, false);
+  assert.equal(json.subscription_active, true, "deve manter subscription_active true pois periodo ainda e valido");
+  assert.equal(json.payment_status, "pending", "payment_status deve ser pending");
+  assert.equal(json.current_period_end, futureDate);
+});
+
+test("security: pending payment belonging to another user returns 403 without data leakage", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  const userB = "22222222-2222-4222-8222-222222222222";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "pending",
+    external_reference: userB,
+    transaction_amount: 99.90,
+  }), { status: 200 });
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => { throw new Error("must not query subscriptions table"); },
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=pending-belonging-to-user-b"));
+  assert.equal(response.status, 403);
+  const json = await response.json();
+  assert.deepEqual(json, { error: "Pagamento nao pertence a esta conta" });
+  assert.equal(json.payment_status, undefined, "Nao deve vazar payment_status");
+  assert.equal(json.payment_found, undefined, "Nao deve vazar payment_found");
+  assert.equal(json.subscription_active, undefined, "Nao deve vazar subscription_active");
+  assert.equal(json.verified, undefined, "Nao deve vazar verified");
+});
+
+test("security: rejected payment belonging to another user returns 403 without data leakage", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  const userB = "22222222-2222-4222-8222-222222222222";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "rejected",
+    external_reference: userB,
+    transaction_amount: 149.90,
+  }), { status: 200 });
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => { throw new Error("must not query subscriptions table"); },
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=rejected-belonging-to-user-b"));
+  assert.equal(response.status, 403);
+  const json = await response.json();
+  assert.deepEqual(json, { error: "Pagamento nao pertence a esta conta" });
+  assert.equal(json.payment_status, undefined, "Nao deve vazar payment_status");
+  assert.equal(json.payment_found, undefined, "Nao deve vazar payment_found");
+  assert.equal(json.subscription_active, undefined, "Nao deve vazar subscription_active");
+  assert.equal(json.verified, undefined, "Nao deve vazar verified");
 });
 
 test("subscription hook reads the RLS-protected row and subscribes to changes", () => {

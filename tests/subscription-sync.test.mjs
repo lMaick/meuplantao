@@ -203,7 +203,14 @@ test("sync route returns synced: false and status: trialing when no approved pay
 
   const response = await syncRoute(createMockRequest());
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { synced: false, status: "trialing" });
+  const json = await response.json();
+  assert.equal(json.synced, false);
+  assert.equal(json.payment_found, false);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.already_processed, false);
+  assert.equal(json.subscription_active, false);
+  assert.equal(json.subscription_status, "trialing");
+  assert.equal(json.status, "trialing");
 });
 
 test("sync route returns 502 if Mercado Pago API fails", async () => {
@@ -262,6 +269,11 @@ test("sync route returns status: expired when current_period_end has passed even
   assert.equal(response.status, 200);
   const json = await response.json();
   assert.equal(json.synced, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.already_processed, true);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.subscription_active, false, "Caso 2: subscription_active deve ser false quando vigencia expirou");
+  assert.equal(json.subscription_status, "expired");
   assert.equal(json.status, "expired");
   assert.equal(json.current_period_end, pastDate);
 });
