@@ -52,7 +52,7 @@ test("smoke-test-schema: CRITICAL_RPCS contract and expected argument counts", (
   assert.strictEqual(
     map.has("process_stripe_subscription_event"),
     false,
-    "process_stripe_subscription_event must be completely removed after Stripe decommissioning (#94 / #103)"
+    "process_stripe_subscription_event must be completely removed after Stripe decommissioning (PR #94, PR #104 / Issue #103)"
   );
 });
 

@@ -13,7 +13,7 @@ O sistema opera sob o princípio estrito de **fail-closed**:
 
 ### Cenário que esta arquitetura impede:
 - **Problema anterior:** GitHub CI verde (testando contra Supabase local descartável) → Vercel verde (compilando frontend) → Supabase de produção sem a migration/RPC aplicada → Usuários finais recebendo erros de banco e falhas silenciosas no registro de plantões.
-- **Solução implementada:** Barreira pré-build fail-closed (`prebuild`), automação de migrations no merge (`deploy-production.yml`), e smoke test mandatória das 4 RPCs críticas.
+- **Solução implementada:** Barreira pré-build fail-closed (`prebuild`), automação de migrations no merge (`deploy-production.yml`), e smoke test mandatório das 3 RPCs críticas.
 
 ---
 
@@ -30,28 +30,20 @@ O ciclo de vida de qualquer alteração de código ou schema segue o seguinte mo
         ↓
 [4. Revisão Humana & Merge em main] (Apenas Maick faz o merge)
         ↓
-   ┌───────────────────────────────────────────────┐
-   │ Evento de Push em 'main' dispara em PARALELO: │
-   └───────────────────────────────────────────────┘
-            │                               │
-            ▼                               ▼
-[GitHub Actions: deploy-production.yml]  [Vercel: Production Build]
-  - Executa 'supabase db push'            - Executa 'prebuild' (verify-production-schema)
-  - Aplica migrations em produção         - Conecta no PostgreSQL via node-postgres
-  - Executa smoke test de validação       - Se faltar migration/RPC: FAIL-CLOSED (exit 1)
-                                          - Se schema OK: compila Next.js e faz o deploy
+push main
+   ├── GitHub Actions → migrations (deploy-production.yml)
+   └── Vercel → build / prebuild (verify-production-schema)
 ```
 
 > [!IMPORTANT]
-> **Por que o Prebuild é o Mecanismo de Coordenação Obrigatório?**
-> A ideia simplificada de `CI → merge → migration → deploy` sugere uma fila linear estrita. No entanto, GitHub Actions e Vercel iniciam **simultaneamente e de forma concorrente** após o push em `main`.
-> O `prebuild` (`scripts/verify-production-schema.mjs`) atua como a **barreira síncrona fail-closed** dentro da Vercel: se o build da Vercel começar antes que o GitHub Actions conclua a aplicação de novas migrations, o `prebuild` detecta a ausência/incompatibilidade no `pg_catalog.pg_proc` e **aborta imediatamente o build com `exit 1`**. Isso garante matematicamente que nenhuma versão nova de código vá ao ar incompatível com o banco de produção.
+> **Barreira de Compatibilidade Fail-Closed (Sem Ordenação Automática)**
+> O `prebuild` atua como barreira de compatibilidade fail-closed. GitHub Actions e Vercel são disparados de forma independente e podem executar em paralelo. Se o build da Vercel atingir o schema gate antes da aplicação de uma migration necessária, o build falhará e a versão incompatível não será publicada. Após a migration ser aplicada, um novo build/deploy poderá ser necessário. Uma garantia estrita de ordenação migration → deploy exigiria mecanismo adicional de orquestração.
 
 ---
 
 ## 3. As 3 RPCs Críticas Monitoradas (Pós-Stripe)
 
-Com o descomissionamento definitivo do Stripe (PR #94 e PR #103), a RPC legada `process_stripe_subscription_event` foi removida da esteira obrigatória. O smoke test (`scripts/smoke-test-schema.mjs`) valida compulsoriamente a presença, quantidade e ordem exata dos tipos de argumentos das 3 funções nucleares da plataforma:
+Com o descomissionamento definitivo do Stripe (PR #94 e PR #104, referente à Issue #103), a RPC legada `process_stripe_subscription_event` foi removida da esteira obrigatória. O smoke test (`scripts/smoke-test-schema.mjs`) valida compulsoriamente a presença, quantidade e ordem exata dos tipos de argumentos das 3 funções nucleares da plataforma:
 
 | RPC | Responsabilidade no Sistema | Assinatura Obrigatória | Permissões |
 | :--- | :--- | :--- | :--- |
