@@ -85,5 +85,4 @@ jobs:
           echo "  - \`save_shift_with_obligation\`" >> $GITHUB_STEP_SUMMARY
           echo "  - \`register_payment\`" >> $GITHUB_STEP_SUMMARY
           echo "  - \`process_mercadopago_subscription_payment\`" >> $GITHUB_STEP_SUMMARY
-          echo "  - \`process_stripe_subscription_event\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Canonical Process:** See \`docs/DEVOPS_MIGRATIONS.md\`" >> $GITHUB_STEP_SUMMARY
