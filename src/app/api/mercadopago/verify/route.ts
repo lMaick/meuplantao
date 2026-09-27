@@ -39,6 +39,15 @@ export async function GET(request: NextRequest) {
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
     });
     if (!paymentResponse.ok) {
+      captureError(new Error(`Mercado Pago verify query failed with status ${paymentResponse.status}`), {
+        route: "/api/mercadopago/verify",
+        userId: user.id,
+        paymentId,
+        httpStatus: 502,
+        extra: {
+          upstream_status: paymentResponse.status,
+        },
+      });
       return NextResponse.json({ error: "Nao foi possivel consultar o pagamento no Mercado Pago" }, { status: 502 });
     }
 

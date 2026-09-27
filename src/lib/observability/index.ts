@@ -164,12 +164,35 @@ export function sanitizePaymentId(paymentId?: string | number): string | undefin
 }
 
 /**
+ * Extrai a mensagem de erro bruta preservando objetos PostgREST/Supabase com campo message.
+ */
+export function extractRawErrorMessage(error: unknown, fallbackMessage?: string): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string") {
+    return (error as { message: string }).message;
+  }
+  return fallbackMessage || String(error);
+}
+
+export function extractErrorType(error: unknown): string {
+  if (error instanceof Error) {
+    return error.name;
+  }
+  if (error && typeof error === "object" && "code" in error && typeof (error as { code: unknown }).code === "string") {
+    return `PostgrestError_${(error as { code: string }).code}`;
+  }
+  return typeof error;
+}
+
+/**
  * Cria uma nova instância de Error higienizada a partir do erro original,
  * assegurando que mensagens, stacks e causas não carreguem segredos antes de
  * serem despachadas ao Sentry ou log estruturado.
  */
 export function createSanitizedException(error: unknown, fallbackMessage?: string): Error {
-  const rawMessage = error instanceof Error ? error.message : (fallbackMessage || String(error));
+  const rawMessage = extractRawErrorMessage(error, fallbackMessage);
   const sanitizedMessage = sanitizeStringValue(rawMessage);
   const sanitizedError = new Error(sanitizedMessage);
 
@@ -329,7 +352,8 @@ function initSentryIfNeeded(): void {
     });
     sentryInitialized = true;
   } catch (err) {
-    console.error("Falha ao inicializar Sentry:", err);
+    const safeMsg = sanitizeStringValue(err instanceof Error ? err.message : String(err));
+    console.error(`Falha ao inicializar Sentry: ${safeMsg}`);
   }
 }
 
@@ -354,10 +378,10 @@ export function setSentryHookForTesting(hook: ((exception: unknown, hint?: unkno
 
 export function buildStructuredLog(error: unknown, context: ErrorContext = {}): StructuredLogEntry {
   const level: SeverityLevel = context.level || "error";
-  const rawMessage = error instanceof Error ? error.message : String(error);
+  const rawMessage = extractRawErrorMessage(error);
   // Garante sanitização de error.message antes do log estruturado
   const errorMessage = sanitizeStringValue(rawMessage);
-  const errorType = error instanceof Error ? error.name : typeof error;
+  const errorType = extractErrorType(error);
 
   const sanitizedExtra = context.extra ? sanitizeObject(context.extra) : undefined;
   const safePaymentId = sanitizePaymentId(context.paymentId);
@@ -424,7 +448,8 @@ export function captureError(error: unknown, context: ErrorContext = {}): Struct
       Sentry.captureException(sanitizedException, sentryHint);
     }
   } catch (sentryErr) {
-    console.error("Falha ao reportar erro para Sentry:", sentryErr);
+    const safeMsg = sanitizeStringValue(sentryErr instanceof Error ? sentryErr.message : String(sentryErr));
+    console.error(`Falha ao reportar erro para Sentry: ${safeMsg}`);
   }
 
   return logEntry;

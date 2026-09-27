@@ -42,6 +42,14 @@ export async function POST(request: NextRequest) {
     });
 
     if (!paymentResponse.ok) {
+      captureSyncError(new Error(`Mercado Pago search query failed with status ${paymentResponse.status}`), {
+        route: "/api/mercadopago/sync",
+        userId: user.id,
+        extra: {
+          upstream_status: paymentResponse.status,
+          search_stage: "user_payments_search",
+        },
+      });
       return NextResponse.json(
         { error: "Nao foi possivel consultar pagamentos no Mercado Pago" },
         { status: 502 },
@@ -60,10 +68,22 @@ export async function POST(request: NextRequest) {
       const packageSearchResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/search?sort=date_created&criteria=desc&limit=50`, {
         headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
       });
-      if (packageSearchResponse.ok) {
-        searchData = (await packageSearchResponse.json()) as MercadoPagoSearchResult;
-        userPayments = (searchData.results || []).filter(matchesUser);
+      if (!packageSearchResponse.ok) {
+        captureSyncError(new Error(`Mercado Pago fallback search failed with status ${packageSearchResponse.status}`), {
+          route: "/api/mercadopago/sync",
+          userId: user.id,
+          extra: {
+            upstream_status: packageSearchResponse.status,
+            search_stage: "fallback_payments_search",
+          },
+        });
+        return NextResponse.json(
+          { error: "Nao foi possivel consultar pagamentos no Mercado Pago" },
+          { status: 502 },
+        );
       }
+      searchData = (await packageSearchResponse.json()) as MercadoPagoSearchResult;
+      userPayments = (searchData.results || []).filter(matchesUser);
     }
 
     if (userPayments.length > 0) {

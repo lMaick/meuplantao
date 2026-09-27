@@ -12,6 +12,15 @@ registerHooks({
         shortCircuit: true,
       };
     }
+    if (specifier === "@/lib/observability") {
+      const target = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "lib", "observability", "index.ts");
+      return { url: pathToFileURL(target).href, shortCircuit: true };
+    }
+    if (specifier.startsWith("@/")) {
+      const rel = specifier.slice(2);
+      const target = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", rel.endsWith(".ts") ? rel : `${rel}.ts`);
+      return { url: pathToFileURL(target).href, shortCircuit: true };
+    }
     if (specifier.startsWith("./") && context.parentURL && context.parentURL.includes("observability")) {
       const parentDir = path.dirname(fileURLToPath(context.parentURL));
       const target = path.join(parentDir, specifier.endsWith(".ts") ? specifier : `${specifier}.ts`);
@@ -307,5 +316,73 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.doesNotThrow(() => {
       captureError(new Error("Original business error"), { route: "/api/test" });
     });
+  });
+
+  test("13. Erro na RPC de pagamentos: lanca erro generico, nao emite console.error com objeto bruto e mascara segredos", async () => {
+    const secretKey = "SECRET_SUPER_TOKEN_IN_ERROR_MESSAGE";
+    const rpcError = {
+      message: `Database connection error: Authorization: Bearer ${secretKey}`,
+      code: "23505",
+    };
+
+    let rawConsoleErrorEmitted = false;
+    const originalConsoleError = console.error;
+    console.error = (...args) => {
+      for (const arg of args) {
+        if (arg === rpcError) {
+          rawConsoleErrorEmitted = true;
+        }
+        const str = typeof arg === "string" ? arg : JSON.stringify(arg);
+        assert.ok(!str?.includes(secretKey), "console.error não pode conter o segredo");
+      }
+    };
+
+    const fakeAdmin = {
+      rpc: async () => ({ data: null, error: rpcError }),
+    };
+
+    const { processMercadoPagoPayment } = await import("../src/lib/mercadopago/payments.ts");
+
+    try {
+      await assert.rejects(
+        async () => {
+          await processMercadoPagoPayment(fakeAdmin, {
+            paymentId: "pay-test-1",
+            userId: "11111111-1111-4111-8111-111111111111",
+          });
+        },
+        (err) => {
+          assert.equal(err.message, "Falha no processamento atomico do pagamento");
+          assert.ok(!err.message.includes(secretKey));
+          return true;
+        }
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    assert.equal(rawConsoleErrorEmitted, false, "Nenhum console.error com objeto bruto pode ser emitido na RPC");
+
+    // Comprova que captureFinancialRpcError foi acionado
+    assert.equal(capturedLogs.length, 1);
+    const log = capturedLogs[0];
+    assert.equal(log.alert_rule, "financial_rpc_error");
+    assert.equal(log.rpc_name, "process_mercadopago_subscription_payment");
+    assert.ok(!log.message.includes(secretKey));
+    assert.ok(log.message.includes("Bearer [REDACTED]"));
+  });
+
+  test("14. Segredo presente em Error.message nao aparece no log, no Sentry nem no erro propagado", () => {
+    const leakedPassword = "my_leaked_database_password_987!";
+    const errorWithSecret = new Error(`Connection timeout: postgresql://postgres:${leakedPassword}@localhost:5432/db`);
+
+    const logEntry = captureError(errorWithSecret, { route: "/api/test" });
+    assert.ok(!logEntry.message.includes(leakedPassword));
+    assert.ok(logEntry.message.includes("[REDACTED_PASSWORD]"));
+
+    assert.equal(capturedSentryExceptions.length, 1);
+    const sentryException = capturedSentryExceptions[0].exception;
+    assert.ok(!sentryException.message.includes(leakedPassword));
+    assert.ok(sentryException.message.includes("[REDACTED_PASSWORD]"));
   });
 });

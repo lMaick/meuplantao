@@ -80,8 +80,7 @@ export async function processMercadoPagoPayment(
       userId,
       extra: { months, validityDays, amount, status },
     });
-    console.error("Erro na RPC de processamento atômico de pagamento:", error);
-    throw new Error(`Falha no processamento atomico do pagamento: ${error.message || "RPC error"}`);
+    throw new Error("Falha no processamento atomico do pagamento");
   }
 
   if (!data || typeof data !== "object") {

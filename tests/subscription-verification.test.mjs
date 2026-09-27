@@ -40,6 +40,7 @@ registerHooks({
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
 const { GET: verifyPayment } = await import("../src/app/api/mercadopago/verify/route.ts");
+const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts");
 const userId = "11111111-1111-4111-8111-111111111111";
 
 function verifyRequest(query) {
@@ -241,4 +242,25 @@ test("subscription hook reads the RLS-protected row and subscribes to changes", 
   assert.match(source, /eq\("user_id", data\.user\.id\)/);
   assert.match(source, /postgres_changes/);
   assert.match(source, /filter: `user_id=eq\.\$\{userId\}`/);
+});
+
+test("verify MP !ok: gera evento estruturado via captureError e responde HTTP 502", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  globalThis.fetch = async () => new Response("Service Unavailable", { status: 503 });
+
+  const response = await verifyPayment(verifyRequest("payment_id=payment-upstream-503"));
+  assert.equal(response.status, 502);
+  const json = await response.json();
+  assert.deepEqual(json, { error: "Nao foi possivel consultar o pagamento no Mercado Pago" });
+
+  assert.equal(capturedLogs.length, 1);
+  const log = capturedLogs[0];
+  assert.equal(log.route, "/api/mercadopago/verify");
+  assert.equal(log.http_status, 502);
+  assert.equal(log.payment_id, "payment-upstream-503");
+  assert.equal(log.context?.upstream_status, 503);
+  setLogSinkForTesting(null);
 });
