@@ -106,3 +106,42 @@ test("authenticated user can access /redefinir-senha, legal pages and dashboard 
     assert.equal(res.status, 200, `Expected ${path} to be allowed for authenticated user`);
   }
 });
+
+test("privacy policy accurately reflects data integrity, technical observability and transparency disclaimer", async () => {
+  const { readFileSync } = await import("node:fs");
+  const privacyContent = readFileSync(new URL("../src/app/privacidade/page.tsx", import.meta.url), "utf-8");
+  const publicPageContent = readFileSync(new URL("../src/components/public-page.tsx", import.meta.url), "utf-8");
+  const normalizedPrivacy = privacyContent.replace(/\s+/g, " ");
+
+  // Não deve usar o termo restritivo falso "exclusivamente para"
+  assert.ok(!normalizedPrivacy.includes("exclusivamente para"), "Não deve alegar uso exclusivo que oculte tratamento técnico");
+
+  // Tratamento técnico deve estar explícito
+  assert.ok(normalizedPrivacy.includes("segurança"), "Deve cobrir finalidade de segurança");
+  assert.ok(normalizedPrivacy.includes("diagnóstico de erros"), "Deve cobrir diagnóstico de erros");
+  assert.ok(normalizedPrivacy.includes("disponibilidade"), "Deve cobrir disponibilidade");
+  assert.ok(normalizedPrivacy.includes("prevenção de abuso"), "Deve cobrir prevenção de abuso");
+  assert.ok(normalizedPrivacy.includes("observabilidade"), "Deve cobrir observabilidade");
+
+  // Integridade financeira e exclusão responsável
+  assert.ok(
+    normalizedPrivacy.includes("conforme a natureza do dado e as regras de integridade aplicáveis, editar, cancelar ou excluir"),
+    "Deve ressalvar que edição/exclusão depende da natureza do dado e regras de integridade"
+  );
+  assert.ok(
+    normalizedPrivacy.includes("Solicitações relacionadas à exclusão da conta e dos dados associados podem ser feitas pelo suporte"),
+    "Deve indicar que exclusão ampla de conta pode ser solicitada via suporte"
+  );
+  assert.ok(
+    normalizedPrivacy.includes("necessidades legítimas de integridade, segurança e retenção"),
+    "Deve ressalvar necessidades legítimas de integridade, segurança e retenção"
+  );
+
+  // Aviso de revisão jurídica antes do lançamento comercial
+  const normalizedPublicPage = publicPageContent.replace(/\s+/g, " ");
+  assert.ok(
+    normalizedPublicPage.includes("revisão e validação jurídica formal antes da disponibilização em escala comercial"),
+    "Deve manter aviso de transparência sobre validação jurídica pré-lançamento público"
+  );
+});
+

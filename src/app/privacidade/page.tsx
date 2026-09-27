@@ -26,9 +26,15 @@ export default function PrivacidadePage() {
 
       <LegalSection title="2. Como usamos as informações">
         <p>
-          Utilizamos seus dados exclusivamente para: autenticar sua conta, exibir sua agenda de
-          trabalho, calcular saldos e atrasos de repasse a partir dos valores lançados e emitir os
-          alertas operacionais solicitados.
+          Utilizamos seus dados para a prestação das funcionalidades da plataforma: autenticar sua conta,
+          exibir sua agenda de trabalho, calcular saldos e prazos de repasse a partir dos valores lançados
+          e emitir os alertas operacionais configurados.
+        </p>
+        <p>
+          Adicionalmente, dados técnicos e eventos de execução podem ser tratados para finalidades estritas
+          de segurança, diagnóstico de erros, disponibilidade, prevenção de abuso e observabilidade do
+          serviço (incluindo registros de telemetria e rastreamento sanitizado de falhas via ferramentas especializadas
+          como o Sentry).
         </p>
         <p>
           O isolamento dos seus registros é garantido no banco de dados via políticas estritas de Row
@@ -49,14 +55,15 @@ export default function PrivacidadePage() {
         </p>
       </LegalSection>
 
-      <LegalSection title="4. Direitos do titular e exclusão de dados">
+      <LegalSection title="4. Direitos do titular e integridade dos dados">
         <p>
-          Em consonância com as boas práticas de proteção de dados (LGPD), você pode visualizar,
-          editar ou excluir seus registros a qualquer momento através da interface do aplicativo.
+          Você pode visualizar seus registros e, conforme a natureza do dado e as regras de
+          integridade aplicáveis, editar, cancelar ou excluir informações pela interface. Solicitações
+          relacionadas à exclusão da conta e dos dados associados podem ser feitas pelo suporte,
+          observadas as necessidades legítimas de integridade, segurança e retenção.
         </p>
         <p>
-          Caso deseje solicitar a exclusão definitiva da sua conta e de todos os registros associados,
-          ou tirar dúvidas sobre privacidade, entre em contato através da nossa página de{" "}
+          Para tirar dúvidas sobre privacidade ou exercer direitos sobre seus dados, entre em contato através da nossa página de{" "}
           <Link href="/suporte" className="font-medium text-foreground underline underline-offset-4">
             Suporte e Feedback
           </Link>{" "}
