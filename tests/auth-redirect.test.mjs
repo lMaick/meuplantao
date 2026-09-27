@@ -8,9 +8,14 @@ test("preserves local destination with query and fragment", () => {
 });
 
 test("rejects external redirects, malformed values and authentication loops", () => {
-  for (const value of [undefined, ["/locais"], "https://example.com", "//example.com", "/\\example.com", "/\n/example.com", "/login?next=/login", "/cadastro", ""]) {
+  for (const value of [undefined, ["/locais"], "https://example.com", "//example.com", "/\\example.com", "/\n/example.com", "/login?next=/login", "/cadastro", "/esqueci-senha", ""]) {
     assert.equal(safeNext(value), "/dashboard");
   }
+});
+
+test("allows recovery destination /redefinir-senha", () => {
+  assert.equal(safeNext("/redefinir-senha"), "/redefinir-senha");
+  assert.equal(safeNext("/redefinir-senha?code=test"), "/redefinir-senha?code=test");
 });
 
 test("builds a same-origin callback and sanitizes next", () => {
