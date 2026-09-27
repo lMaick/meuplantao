@@ -151,6 +151,37 @@ test("non-approved payment is reported without changing the subscription", async
   assert.equal(json.subscription_active, false);
   assert.equal(json.activated, false);
   assert.equal(json.status, "pending");
+  assert.equal(json.payment_status, "pending");
+});
+
+test("renewal with pending payment when user already has active Pro subscription returns subscription_active=true and payment_status=pending", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending" }), { status: 200 });
+  const futureDate = new Date(Date.now() + 15 * 86400000).toISOString();
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: { status: "active", current_period_end: futureDate },
+            error: null,
+          }),
+        }),
+      }),
+    }),
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=renewal-pending-123"));
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.verified, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.already_processed, false);
+  assert.equal(json.subscription_active, true, "deve manter subscription_active true pois periodo ainda e valido");
+  assert.equal(json.payment_status, "pending", "payment_status deve ser pending");
+  assert.equal(json.current_period_end, futureDate);
 });
 
 test("subscription hook reads the RLS-protected row and subscribes to changes", () => {

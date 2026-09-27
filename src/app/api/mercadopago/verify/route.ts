@@ -65,6 +65,7 @@ export async function GET(request: NextRequest) {
         subscription_active: isSubActive,
         subscription_status: subStatus,
         current_period_end: currentSub?.current_period_end || null,
+        payment_status: payment.status ?? "unknown",
         activated: false,
         status: payment.status ?? "unknown",
       });
@@ -102,6 +103,7 @@ export async function GET(request: NextRequest) {
       subscription_active: subscriptionActive,
       subscription_status: subscriptionStatus,
       current_period_end: result.current_period_end,
+      payment_status: payment.status ?? "approved",
       // Retrocompatibilidade
       activated: subscriptionActive,
       status: subscriptionStatus,

@@ -43,6 +43,7 @@ test("deriveVerifyFeedback: pagamento pendente", () => {
     already_processed: false,
     subscription_active: false,
     subscription_status: "pending",
+    payment_status: "pending",
     status: "pending",
   });
 
@@ -51,7 +52,67 @@ test("deriveVerifyFeedback: pagamento pendente", () => {
   assert.match(result.message, /ainda em processamento/i);
 });
 
-test("deriveVerifyFeedback: pagamento rejeitado", () => {
+test("deriveVerifyFeedback: Pro ativo + novo pagamento pending deve avisar que Pro continua ativo e pagamento processando", () => {
+  const result = deriveVerifyFeedback({
+    verified: true,
+    payment_found: true,
+    payment_processed_now: false,
+    already_processed: false,
+    subscription_active: true,
+    subscription_status: "active",
+    current_period_end: "2026-10-20T12:00:00.000Z",
+    payment_status: "pending",
+    status: "pending",
+  });
+
+  assert.equal(result.isProActive, true, "Pro deve continuar ativo pela assinatura existente");
+  assert.equal(result.type, "info");
+  assert.equal(
+    result.message,
+    "Seu Plano Pro continua ativo. O novo pagamento ainda está sendo processado."
+  );
+  assert.doesNotMatch(result.message, /ativado com sucesso|confirmado/i, "NUNCA deve dizer que o novo pagamento foi confirmado");
+});
+
+test("deriveVerifyFeedback: Pro ativo + novo pagamento approved e recem-processado deve confirmar ativacao/renovacao", () => {
+  const result = deriveVerifyFeedback({
+    verified: true,
+    payment_found: true,
+    payment_processed_now: true,
+    already_processed: false,
+    subscription_active: true,
+    subscription_status: "active",
+    current_period_end: "2026-11-20T12:00:00.000Z",
+    payment_status: "approved",
+    status: "active",
+  });
+
+  assert.equal(result.isProActive, true);
+  assert.equal(result.type, "success");
+  assert.match(result.message, /Pagamento confirmado! Seu plano Pro foi ativado com sucesso\./i);
+});
+
+test("deriveVerifyFeedback: pagamento rejected com Pro ativo NUNCA deve dizer que foi confirmado", () => {
+  const result = deriveVerifyFeedback({
+    verified: true,
+    payment_found: true,
+    payment_processed_now: false,
+    already_processed: false,
+    subscription_active: true,
+    subscription_status: "active",
+    current_period_end: "2026-10-20T12:00:00.000Z",
+    payment_status: "rejected",
+    status: "rejected",
+  });
+
+  assert.equal(result.isProActive, true, "Pro anterior continua ativo");
+  assert.equal(result.type, "error", "Tipo deve ser error para alertar a falha do novo pagamento");
+  assert.match(result.message, /não foi aprovado pelo Mercado Pago/i);
+  assert.match(result.message, /continua ativo|permanece ativo/i);
+  assert.doesNotMatch(result.message, /confirmado|ativado com sucesso/i, "NUNCA deve dizer que o pagamento foi confirmado");
+});
+
+test("deriveVerifyFeedback: pagamento rejeitado sem Pro ativo", () => {
   const result = deriveVerifyFeedback({
     verified: true,
     payment_found: true,
@@ -59,6 +120,7 @@ test("deriveVerifyFeedback: pagamento rejeitado", () => {
     already_processed: false,
     subscription_active: false,
     subscription_status: "rejected",
+    payment_status: "rejected",
     status: "rejected",
   });
 

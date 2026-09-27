@@ -14,7 +14,13 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { useSubscription, deriveVerifyFeedback, deriveSyncFeedback } from "@/lib/subscription";
+import {
+  useSubscription,
+  deriveVerifyFeedback,
+  deriveSyncFeedback,
+  type VerifyPayload,
+  type SyncPayload,
+} from "@/lib/subscription";
 import { getSubscriptionPeriod, type SubscriptionMonths } from "@/lib/subscription/types";
 import { PlanPeriodSelector } from "./plan-period-selector";
 import { cn } from "cn";
@@ -45,18 +51,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         const response = await fetch(`/api/mercadopago/verify?payment_id=${encodeURIComponent(paymentId)}`, {
           headers: { Accept: "application/json" },
         });
-        const payload = (await response.json()) as {
-          verified?: boolean;
-          payment_found?: boolean;
-          payment_processed_now?: boolean;
-          already_processed?: boolean;
-          subscription_active?: boolean;
-          subscription_status?: string;
-          current_period_end?: string | null;
-          activated?: boolean;
-          status?: string;
-          error?: string;
-        };
+        const payload = (await response.json()) as VerifyPayload;
         if (cancelled) return;
         if (!response.ok) throw new Error(payload.error || "Nao foi possivel confirmar o pagamento.");
 
@@ -115,19 +110,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
         method: "POST",
         headers: { Accept: "application/json" },
       });
-      const payload = (await response.json()) as {
-        synced?: boolean;
-        payment_found?: boolean;
-        payment_processed_now?: boolean;
-        already_processed?: boolean;
-        subscription_active?: boolean;
-        subscription_status?: string;
-        current_period_end?: string | null;
-        newly_processed?: number;
-        total_payments?: number;
-        status?: string;
-        error?: string;
-      };
+      const payload = (await response.json()) as SyncPayload;
 
       if (!response.ok) {
         throw new Error(payload.error || "Não foi possível verificar seu pagamento no momento.");

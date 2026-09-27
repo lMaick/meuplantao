@@ -6,6 +6,7 @@ export interface VerifyPayload {
   subscription_active?: boolean;
   subscription_status?: string;
   current_period_end?: string | null;
+  payment_status?: string;
   activated?: boolean;
   status?: string;
   error?: string;
@@ -33,29 +34,52 @@ export interface FeedbackResult {
 
 /**
  * Deriva a mensagem de feedback e o tipo da rota /api/mercadopago/verify
- * com base estrita no estado real da assinatura.
+ * separando estritamente a vigência da assinatura (subscription_active)
+ * da situação real do pagamento consultado (current_payment_approved / payment_status).
  */
 export function deriveVerifyFeedback(payload: VerifyPayload): FeedbackResult {
   const isProActive = Boolean(
-    payload.subscription_active ?? (payload.status === "active" || payload.activated)
+    payload.subscription_active ?? (payload.subscription_status === "active" || payload.status === "active" || payload.activated)
   );
 
-  if (isProActive) {
-    if (payload.already_processed && !payload.payment_processed_now) {
+  const rawPaymentStatus = (
+    payload.payment_status ||
+    (payload.status !== "active" && payload.status !== "expired" ? payload.status : undefined) ||
+    (payload.payment_processed_now || payload.already_processed ? "approved" : "")
+  ).toLowerCase();
+
+  const isApproved = rawPaymentStatus === "approved" || Boolean(payload.payment_processed_now);
+  const isPending = rawPaymentStatus === "pending" || rawPaymentStatus === "in_process";
+  const isRejected = rawPaymentStatus === "rejected" || rawPaymentStatus === "cancelled";
+  const isAlreadyProcessed = Boolean(payload.already_processed) && !payload.payment_processed_now;
+
+  // 1. Cenário: Pagamento rejeitado ou cancelado
+  // NUNCA dizer que foi confirmado, mesmo se a assinatura anterior ainda estiver ativa.
+  if (isRejected) {
+    if (isProActive) {
       return {
-        message: "Pagamento já confirmado anteriormente. Seu plano Pro está ativo e atualizado.",
-        type: "success",
+        message: "O novo pagamento não foi aprovado pelo Mercado Pago. Seu plano Pro permanece ativo pelo período atual, mas tente novamente com outro meio de pagamento para renovar.",
+        type: "error",
         isProActive: true,
       };
     }
     return {
-      message: "Pagamento confirmado! Seu plano Pro foi ativado com sucesso.",
-      type: "success",
-      isProActive: true,
+      message: "O pagamento não foi aprovado pelo Mercado Pago. Por favor, tente novamente com outro meio de pagamento.",
+      type: "error",
+      isProActive: false,
     };
   }
 
-  if (payload.status === "in_process" || payload.status === "pending") {
+  // 2. Cenário: Pagamento pendente ou em processamento
+  // Se Pro já estiver ativo por vigência anterior, informa que continua ativo enquanto o novo pagamento processa.
+  if (isPending) {
+    if (isProActive) {
+      return {
+        message: "Seu Plano Pro continua ativo. O novo pagamento ainda está sendo processado.",
+        type: "info",
+        isProActive: true,
+      };
+    }
     return {
       message: "Pagamento recebido e ainda em processamento. Atualizaremos seu plano assim que o Mercado Pago confirmar.",
       type: "info",
@@ -63,11 +87,37 @@ export function deriveVerifyFeedback(payload: VerifyPayload): FeedbackResult {
     };
   }
 
-  if (payload.status === "rejected" || payload.status === "cancelled") {
+  // 3. Cenário: Pagamento já processado anteriormente (already_processed)
+  if (isAlreadyProcessed) {
+    if (isProActive) {
+      return {
+        message: "Pagamento já confirmado anteriormente. Seu plano Pro está ativo e atualizado.",
+        type: "success",
+        isProActive: true,
+      };
+    }
     return {
-      message: "O pagamento não foi aprovado pelo Mercado Pago. Por favor, tente novamente com outro meio de pagamento.",
-      type: "error",
+      message: "Pagamento já confirmado anteriormente, mas a vigência do plano expirou.",
+      type: "info",
       isProActive: false,
+    };
+  }
+
+  // 4. Cenário: Pagamento aprovado e recém-processado
+  if (isApproved || payload.payment_processed_now) {
+    return {
+      message: "Pagamento confirmado! Seu plano Pro foi ativado com sucesso.",
+      type: "success",
+      isProActive: true,
+    };
+  }
+
+  // 5. Fallback geral
+  if (isProActive) {
+    return {
+      message: "Seu Plano Pro continua ativo. O novo pagamento ainda está sendo processado.",
+      type: "info",
+      isProActive: true,
     };
   }
 
