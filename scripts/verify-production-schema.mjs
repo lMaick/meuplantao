@@ -1,0 +1,118 @@
+#!/usr/bin/env node
+/**
+ * MeuPlantao — Production Schema Pre-Build & Deployment Verification Gate
+ *
+ * Runs before build / deployment to verify that the target database schema
+ * has all critical migrations and RPCs required by the application.
+ *
+ * Behavior:
+ *  - In Vercel Production (`VERCEL_ENV=production`) or explicit mode (`CHECK_SCHEMA_COMPATIBILITY=1`):
+ *    Strict fail-closed. If the schema is incompatible or unreachable, exit 1 to abort build.
+ *  - In local development or CI mock build (`SKIP_SCHEMA_VERIFY=1` or offline localhost):
+ *    Safe bypass with informative message, allowing Next.js static asset compilation.
+ */
+
+import { fileURLToPath } from "node:url";
+import { runSmokeTest, redactSecrets } from "./smoke-test-schema.mjs";
+
+export async function verifyProductionSchema(options = {}) {
+  const env = options.env || process.env;
+  const logger = options.logger || console;
+
+  const isVercelProduction = env.VERCEL_ENV === "production";
+  const isExplicit = env.CHECK_SCHEMA_COMPATIBILITY === "1";
+  const isSkip = env.SKIP_SCHEMA_VERIFY === "1";
+
+  if (isSkip) {
+    logger.log("[SCHEMA-GATE] Schema verification bypassed via SKIP_SCHEMA_VERIFY=1.");
+    return { ok: true, bypassed: true };
+  }
+
+  const supabaseUrl = (env.NEXT_PUBLIC_SUPABASE_URL || env.SUPABASE_URL || "").trim();
+  const isLocalOrPlaceholder =
+    !supabaseUrl ||
+    supabaseUrl.includes("localhost") ||
+    supabaseUrl.includes("127.0.0.1") ||
+    supabaseUrl.includes("your-project");
+
+  const isStrict = isExplicit || isVercelProduction;
+  const isVercelPreview = env.VERCEL_ENV === "preview";
+
+  const databaseUrl = (options.databaseUrl || env.DATABASE_URL || env.PRODUCTION_DATABASE_URL || env.SUPABASE_DB_URL || "").trim();
+  const usePsql = options.usePsql;
+
+  if (isStrict) {
+    logger.log("[SCHEMA-GATE] Strict schema verification active (Production / Explicit gate).");
+    if (!databaseUrl) {
+      const msg = "[SCHEMA-GATE] FATAL: DATABASE_URL is required in strict mode to verify exact RPC signatures via PostgreSQL/pg_proc. REST fallback is prohibited in production.";
+      logger.error(msg);
+      return { ok: false, strict: true, error: msg };
+    }
+
+    try {
+      const result = await runSmokeTest({
+        ...options,
+        env,
+        logger,
+        databaseUrl,
+        usePsql,
+        strict: true,
+      });
+      if (!result.ok) {
+        logger.error("[SCHEMA-GATE] FATAL: Production database schema verification failed!");
+        logger.error("[SCHEMA-GATE] Aborting build/deploy to prevent serving broken code to users.");
+        return { ok: false, strict: true, error: result.error, missingCount: result.missingCount, results: result.results };
+      }
+      logger.log("[SCHEMA-GATE] Production schema compatibility verified successfully.");
+      return { ok: true, strict: true, results: result.results };
+    } catch (err) {
+      logger.error("[SCHEMA-GATE] FATAL: Database unreachable during strict schema gate:", redactSecrets(err?.message || String(err)));
+      return { ok: false, strict: true, error: err?.message || String(err) };
+    }
+  }
+
+  // Non-strict mode (local build, CI quality test, or Vercel preview)
+  if (isLocalOrPlaceholder && !databaseUrl) {
+    logger.log("[SCHEMA-GATE] Non-production environment detected (local/mock config).");
+    logger.log("[SCHEMA-GATE] Skipping strict database schema gate for offline asset build.");
+    logger.log("[SCHEMA-GATE] Run 'npm run db:smoke' or set CHECK_SCHEMA_COMPATIBILITY=1 to test live database.");
+    return { ok: true, bypassed: true };
+  }
+
+  // If a remote URL is present in preview / non-strict mode, run optional diagnostic check
+  try {
+    logger.log(`[SCHEMA-GATE] Optional diagnostic schema check (${isVercelPreview ? "Vercel Preview" : "non-strict remote"})...`);
+    const result = await runSmokeTest({
+      ...options,
+      env,
+      logger,
+      databaseUrl,
+      usePsql,
+      strict: false,
+    });
+    if (!result.ok) {
+      logger.warn(`[SCHEMA-GATE] WARNING: Target database schema is missing ${result.missingCount || 1} migration(s)/RPC(s).`);
+      logger.warn("[SCHEMA-GATE] Build proceeding without blocking because this is a preview / non-strict environment.");
+      return { ok: true, warned: true, preview: isVercelPreview, missingCount: result.missingCount, results: result.results };
+    }
+    logger.log("[SCHEMA-GATE] Diagnostic schema check passed successfully.");
+    return { ok: true, preview: isVercelPreview, results: result.results };
+  } catch (err) {
+    logger.warn(`[SCHEMA-GATE] Diagnostic check warning (non-blocking): ${redactSecrets(err?.message || String(err))}`);
+    return { ok: true, warned: true, preview: isVercelPreview };
+  }
+}
+
+const isMain = process.argv[1] && fileURLToPath(import.meta.url).replace(/\\/g, "/").endsWith(process.argv[1].replace(/\\/g, "/"));
+if (isMain) {
+  verifyProductionSchema()
+    .then((res) => {
+      if (!res.ok) {
+        process.exit(1);
+      }
+    })
+    .catch((err) => {
+      console.error("[SCHEMA-GATE] Fatal error during schema gate:", redactSecrets(err?.message || String(err)));
+      process.exit(1);
+    });
+}

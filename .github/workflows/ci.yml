@@ -60,15 +60,13 @@ jobs:
           migration_second="supabase/migrations/20260909180000_obligation_immutability.sql"
           migration_third="supabase/migrations/20260909190000_financial_authority_definer.sql"
           migration_fourth="supabase/migrations/20260909200000_financial_authority_table_privileges.sql"
-          migration_backup_first="${RUNNER_TEMP}/20260908193728_financial_obligation_consistency.sql"
-          migration_backup_second="${RUNNER_TEMP}/20260909180000_obligation_immutability.sql"
-          migration_backup_third="${RUNNER_TEMP}/20260909190000_financial_authority_definer.sql"
-          migration_backup_fourth="${RUNNER_TEMP}/20260909200000_financial_authority_table_privileges.sql"
-          mv "${migration_first}" "${migration_backup_first}"
-          mv "${migration_second}" "${migration_backup_second}"
-          mv "${migration_third}" "${migration_backup_third}"
-          mv "${migration_fourth}" "${migration_backup_fourth}"
-          restore_migration() { if [ -f "${migration_backup_first}" ]; then mv "${migration_backup_first}" "${migration_first}"; fi; if [ -f "${migration_backup_second}" ]; then mv "${migration_backup_second}" "${migration_second}"; fi; if [ -f "${migration_backup_third}" ]; then mv "${migration_backup_third}" "${migration_third}"; fi; if [ -f "${migration_backup_fourth}" ]; then mv "${migration_backup_fourth}" "${migration_fourth}"; fi; }
+          mkdir -p "${RUNNER_TEMP}/post_legacy_migrations"
+          for f in supabase/migrations/20260908* supabase/migrations/20260909* supabase/migrations/20260919* supabase/migrations/20260920*; do
+            if [ -f "$f" ]; then
+              mv "$f" "${RUNNER_TEMP}/post_legacy_migrations/"
+            fi
+          done
+          restore_migration() { if [ -d "${RUNNER_TEMP}/post_legacy_migrations" ]; then mv "${RUNNER_TEMP}/post_legacy_migrations/"* supabase/migrations/ 2>/dev/null || true; fi; }
           trap 'restore_migration; npx --yes supabase@2.117.0 stop --no-backup >/dev/null 2>&1 || true' EXIT
           npx --yes supabase@2.117.0 start >/dev/null
 
@@ -88,9 +86,13 @@ jobs:
           export DATABASE_URL="${DB_URL}"
           restore_migration
           bash tests/financial-migration-upgrade-real.sh "${migration_first}" "${migration_second}" "${migration_third}" "${migration_fourth}"
-          npx --yes supabase@2.117.0 db reset --local --no-seed >/dev/null
+          npx --yes supabase@2.117.0 db reset --local --no-seed
+          bash tests/subscription-entitlement-real.sh "supabase/migrations/20260920120000_subscription_entitlement_boundary.sql"
+          bash tests/shifts-direct-write-prohibition-real.sh "supabase/migrations/20260920140000_shifts_direct_write_prohibition.sql"
+          npx --yes supabase@2.117.0 db reset --local --no-seed
           export NEXT_PUBLIC_SUPABASE_URL="${API_URL}"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}"
+          NEXT_PUBLIC_SUPABASE_URL="${API_URL}" NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}" SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}" DATABASE_URL="${DB_URL}" node scripts/smoke-test-schema.mjs
 
           suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 6)"
           export E2E_USER_A_EMAIL="e2e-a-${suffix}@example.test"

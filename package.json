@@ -4,29 +4,34 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/verify-production-schema.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint src/",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs"
+    "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs",
+    "db:smoke": "node scripts/smoke-test-schema.mjs",
+    "db:verify": "node scripts/verify-production-schema.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
+    "@sentry/nextjs": "^10.75.0",
     "@supabase/ssr": "^0.12.6",
     "@supabase/supabase-js": "^2.116.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.2.5",
     "lucide-react": "^1.41.0",
     "next": "16.3.4",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "shadcn": "^4.21.0",
-    "stripe": "^22.6.2",
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

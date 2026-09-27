@@ -8,12 +8,17 @@ const userId = "11111111-1111-4111-8111-111111111111";
 const subscriptionTypesUrl = pathToFileURL(resolve("src/lib/subscription/types.ts")).href;
 const subscriptionTrialUrl = pathToFileURL(resolve("src/lib/subscription/trial.ts")).href;
 const subscriptionPaymentsUrl = pathToFileURL(resolve("src/lib/mercadopago/payments.ts")).href;
+const subscriptionWebhookUrl = pathToFileURL(resolve("src/lib/mercadopago/webhook.ts")).href;
+const subscriptionObservabilityUrl = pathToFileURL(resolve("src/lib/observability/index.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
+    if (specifier === "@/lib/observability") return { url: subscriptionObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';", shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: subscriptionPaymentsUrl, shortCircuit: true };
-    if (specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/webhook") return { url: subscriptionWebhookUrl, shortCircuit: true };
+    if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: subscriptionTypesUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: subscriptionTrialUrl, shortCircuit: true };
     if (specifier === "next/server") return nextResolve("next/server.js", context);

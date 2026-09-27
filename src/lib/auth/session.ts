@@ -48,8 +48,9 @@ export async function updateSession(request: NextRequest) {
   const isPublicLegalOrSupport = pathname === "/privacidade" || pathname === "/termos" || pathname === "/suporte";
   const isPasswordResetPage = pathname === "/redefinir-senha";
   const isPublicAuthCallback = pathname === "/auth/callback";
-  const isPublicStripeWebhook = pathname === "/api/webhooks/stripe";
-  const isPublicMercadoPagoWebhook = pathname === "/api/webhooks/mercadopago";
+  const isPublicMercadoPagoWebhook =
+    pathname === "/api/webhooks/mercadopago" ||
+    pathname === "/api/webhooks/mercadopago/ipn";
 
   const isPublicAllowed =
     isLandingPage ||
@@ -57,7 +58,6 @@ export async function updateSession(request: NextRequest) {
     isPublicLegalOrSupport ||
     isPasswordResetPage ||
     isPublicAuthCallback ||
-    isPublicStripeWebhook ||
     isPublicMercadoPagoWebhook;
 
   if (!user && !isPublicAllowed) {

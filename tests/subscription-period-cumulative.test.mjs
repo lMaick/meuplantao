@@ -9,6 +9,8 @@ const __testDirname = path.dirname(__testFilename);
 const trialModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const paymentsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const webhookModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
+const observabilityModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
@@ -24,6 +26,8 @@ import {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
+    if (specifier === "@/lib/observability") return { url: observabilityModuleUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
         url: configModuleUrl,
@@ -36,7 +40,13 @@ registerHooks({
         shortCircuit: true,
       };
     }
-    if (specifier === "@/lib/stripe/supabase") {
+    if (specifier === "@/lib/mercadopago/webhook") {
+      return {
+        url: webhookModuleUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {
       return {
         url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;",
         shortCircuit: true,

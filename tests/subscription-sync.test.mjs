@@ -9,11 +9,14 @@ const __syncDirname = path.dirname(__syncTestFile);
 const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __syncObservabilityUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
+    if (specifier === "@/lib/observability") return { url: __syncObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") {
       return { url: __syncTrialUrl, shortCircuit: true };
     }
@@ -26,7 +29,7 @@ registerHooks({
         shortCircuit: true,
       };
     }
-    if (specifier === "@/lib/stripe/supabase") {
+    if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {
       return {
         url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;",
         shortCircuit: true,
@@ -38,6 +41,7 @@ registerHooks({
 });
 
 const { POST: syncRoute, paymentBelongsToUser } = await import("../src/app/api/mercadopago/sync/route.ts");
+const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts");
 
 const testUserId = "33333333-3333-4333-8333-333333333333";
 const otherUserId = "44444444-4444-4444-8444-444444444444";
@@ -203,7 +207,14 @@ test("sync route returns synced: false and status: trialing when no approved pay
 
   const response = await syncRoute(createMockRequest());
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { synced: false, status: "trialing" });
+  const json = await response.json();
+  assert.equal(json.synced, false);
+  assert.equal(json.payment_found, false);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.already_processed, false);
+  assert.equal(json.subscription_active, false);
+  assert.equal(json.subscription_status, "trialing");
+  assert.equal(json.status, "trialing");
 });
 
 test("sync route returns 502 if Mercado Pago API fails", async () => {
@@ -262,6 +273,92 @@ test("sync route returns status: expired when current_period_end has passed even
   assert.equal(response.status, 200);
   const json = await response.json();
   assert.equal(json.synced, true);
+  assert.equal(json.payment_found, true);
+  assert.equal(json.already_processed, true);
+  assert.equal(json.payment_processed_now, false);
+  assert.equal(json.subscription_active, false, "Caso 2: subscription_active deve ser false quando vigencia expirou");
+  assert.equal(json.subscription_status, "expired");
   assert.equal(json.status, "expired");
   assert.equal(json.current_period_end, pastDate);
+});
+
+test("sync MP search !ok: responde 502 temporario e registra captureSyncError com http_status 502", async () => {
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  globalThis.fetch = async () => new Response("Bad Gateway", { status: 502 });
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 502);
+  const json = await response.json();
+  assert.match(json.error, /consultar pagamentos/i);
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
+  assert.equal(capturedLogs[0].http_status, 502);
+  assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
+  assert.equal(capturedLogs[0].context?.search_stage, "user_payments_search");
+  setLogSinkForTesting(null);
+});
+
+test("sync fallback search !ok: nao retorna falsamente 'nenhum pagamento' e responde 502 com captureSyncError com http_status 502", async () => {
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  let callCount = 0;
+  globalThis.fetch = async (url) => {
+    callCount++;
+    if (callCount === 1) {
+      // Primeira busca retorna lista vazia
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    // Segunda busca (fallback geral) falha com 500
+    return new Response("Internal Error", { status: 500 });
+  };
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 502, "Fallback falhando deve retornar 502 e não falso 'nenhum pagamento'");
+  const json = await response.json();
+  assert.match(json.error, /consultar pagamentos/i);
+  assert.equal(json.payment_found, undefined, "Não deve retornar payment_found: false em caso de falha de upstream");
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
+  assert.equal(capturedLogs[0].http_status, 502);
+  assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
+  assert.equal(capturedLogs[0].context?.search_stage, "fallback_payments_search");
+  setLogSinkForTesting(null);
+});
+
+test("sync generic exception: responde 500 e registra captureSyncError com default http_status 500", async () => {
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  globalThis.fetch = async () => {
+    throw new Error("Unexpected network blowup");
+  };
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 500);
+  const json = await response.json();
+  assert.match(json.error, /Nao foi possivel sincronizar/i);
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
+  assert.equal(capturedLogs[0].http_status, 500);
+  assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
+  assert.equal(capturedLogs[0].level, "error");
+  setLogSinkForTesting(null);
 });
