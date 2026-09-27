@@ -2,7 +2,7 @@
 export function safeNext(value?: string | string[]): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\\\s]/.test(value)) return "/dashboard";
   const path = value.split(/[?#]/)[0];
-  if (path === "/login" || path === "/cadastro") return "/dashboard";
+  if (path === "/login" || path === "/cadastro" || path === "/esqueci-senha") return "/dashboard";
   return value;
 }
 

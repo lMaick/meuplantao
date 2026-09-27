@@ -68,7 +68,17 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
         <input id="email" name="email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
       </div>
       <div className="space-y-2">
-        <label htmlFor="password" className="text-sm font-medium">Senha</label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="password" className="text-sm font-medium">Senha</label>
+          {mode === "login" && (
+            <Link
+              href="/esqueci-senha"
+              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-4"
+            >
+              Esqueceu a senha?
+            </Link>
+          )}
+        </div>
         <input id="password" name="password" type="password" minLength={mode === "signup" ? 6 : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
       </div>
       {mode === "signup" && <p id="password-help" className="text-sm text-muted-foreground">Use pelo menos 6 caracteres. Podemos pedir a confirmação do seu e-mail antes do primeiro acesso.</p>}

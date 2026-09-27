@@ -47,6 +47,35 @@ for (const [name, exchange] of [["provider failure", async () => ({ error: new E
   });
 }
 
+test("callback redirects to /redefinir-senha on successful recovery exchange", async () => {
+  const calls = [];
+  globalThis.callbackClient = {
+    auth: {
+      exchangeCodeForSession: async (code) => {
+        calls.push(code);
+        globalThis.callbackOptions.cookies.setAll([{ name: "sb-access-token", value: "recovery-session", options: { httpOnly: true } }]);
+        return { error: null };
+      },
+    },
+  };
+  const response = await GET(request("code=recovery-code&next=%2Fredefinir-senha"));
+  assert.deepEqual(calls, ["recovery-code"]);
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("location"), "http://localhost/redefinir-senha");
+  assert.match(response.headers.get("set-cookie"), /sb-access-token=recovery-session/);
+});
+
+test("callback redirects to /esqueci-senha with link_expired when recovery flow exchange fails", async () => {
+  globalThis.callbackClient = {
+    auth: {
+      exchangeCodeForSession: async () => ({ error: new Error("otp_expired") }),
+    },
+  };
+  const response = await GET(request("code=bad-code&next=%2Fredefinir-senha"));
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("location"), "http://localhost/esqueci-senha?error=link_expired");
+});
+
 test("callback preserves safe next on provider cancellation", async () => {
   globalThis.callbackClient = { auth: { exchangeCodeForSession: async () => assert.fail("must not exchange cancelled flow") } };
   const response = await GET(request("error=access_denied&error_description=private&next=%2Fcalendario"));

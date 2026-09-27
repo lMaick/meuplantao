@@ -59,6 +59,15 @@ export function LandingFooter() {
             <Link href="#preco" className="hover:text-white transition-colors">
               Preço
             </Link>
+            <Link href="/privacidade" className="hover:text-white transition-colors">
+              Privacidade
+            </Link>
+            <Link href="/termos" className="hover:text-white transition-colors">
+              Termos
+            </Link>
+            <Link href="/suporte" className="hover:text-white transition-colors">
+              Suporte
+            </Link>
           </div>
         </div>
 
