@@ -36,7 +36,7 @@ registerHooks({
         shortCircuit: true,
       };
     }
-    if (specifier === "@/lib/stripe/supabase") {
+    if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {
       return {
         url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;",
         shortCircuit: true,
