@@ -4,7 +4,10 @@ import {
   redactSecrets,
   checkRpcViaRest,
   normalizeArgTypes,
+  parseProcRows,
   parsePsqlProcOutput,
+  getPgClientConfig,
+  checkRpcsViaPg,
   checkRpcsViaPsql,
   runSmokeTest,
   CRITICAL_RPCS,
@@ -435,3 +438,171 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   assert.strictEqual(localRes.ok, true);
   assert.strictEqual(localRes.bypassed, true);
 });
+
+test("smoke-test-schema: getPgClientConfig configures SSL and timeouts correctly", () => {
+  const remoteConfig = getPgClientConfig("postgresql://postgres:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres");
+  assert.strictEqual(remoteConfig.ssl.rejectUnauthorized, false);
+  assert.strictEqual(remoteConfig.connectionTimeoutMillis, 10000);
+
+  const localConfig = getPgClientConfig("postgresql://postgres:postgres@localhost:54322/postgres");
+  assert.strictEqual(localConfig.ssl, undefined);
+  assert.strictEqual(localConfig.connectionTimeoutMillis, 10000);
+});
+
+test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory scenarios)", async () => {
+  const mockLogger = { log: () => {}, error: () => {}, warn: () => {} };
+
+  const validRows = [
+    {
+      proname: "save_shift_with_obligation",
+      pronargs: 11,
+      argtypes: "uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, text",
+    },
+    {
+      proname: "register_payment",
+      pronargs: 3,
+      argtypes: "uuid, numeric, date",
+    },
+    {
+      proname: "process_mercadopago_subscription_payment",
+      pronargs: 6,
+      argtypes: "text, uuid, integer, integer, numeric, text",
+    },
+    {
+      proname: "process_stripe_subscription_event",
+      pronargs: 9,
+      argtypes: "text, text, uuid, text, text, text, text, timestamp with time zone, boolean",
+    },
+  ];
+
+  function createMockPgClient(rows = validRows, shouldThrow = false, errorMessage = "connect ECONNREFUSED") {
+    return class MockPgClient {
+      constructor(config) {
+        this.config = config;
+        this.connected = false;
+        this.ended = false;
+      }
+      async connect() {
+        if (shouldThrow) {
+          throw new Error(errorMessage);
+        }
+        this.connected = true;
+      }
+      async query(sql, params) {
+        if (shouldThrow) {
+          throw new Error(errorMessage);
+        }
+        return { rows };
+      }
+      async end() {
+        this.ended = true;
+      }
+    };
+  }
+
+  // Scenario 1: Strict + DB acessível + assinaturas corretas -> ok: true
+  const MockValidClient = createMockPgClient(validRows);
+  const scenario1 = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:secret@pooler.supabase.com:5432/postgres",
+    },
+    logger: mockLogger,
+    Client: MockValidClient,
+  });
+  assert.strictEqual(scenario1.ok, true, "Scenario 1: Strict + DB acessível + assinaturas corretas must be ok: true");
+  assert.strictEqual(scenario1.strict, true);
+
+  // Scenario 2: Strict + DB inacessível (ex: ECONNREFUSED) -> ok: false, sem fallback REST
+  let scenario2RestCalled = false;
+  const MockFailingClient = createMockPgClient([], true, "connect ECONNREFUSED ::1:5432");
+  const scenario2 = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:secret@pooler.supabase.com:5432/postgres",
+      NEXT_PUBLIC_SUPABASE_URL: "https://prod.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "valid-key-123",
+    },
+    logger: mockLogger,
+    Client: MockFailingClient,
+    fetchFn: async () => {
+      scenario2RestCalled = true;
+      return { status: 200, json: async () => ({}) };
+    },
+  });
+  assert.strictEqual(scenario2.ok, false, "Scenario 2: Strict + DB inacessível must be ok: false");
+  assert.strictEqual(scenario2.strict, true);
+  assert.strictEqual(scenario2RestCalled, false, "Scenario 2: Must NOT fall back to REST in strict mode when DB connection fails");
+
+  // Scenario 3: Strict + RPC ausente -> ok: false
+  const missingRows = validRows.filter((r) => r.proname !== "save_shift_with_obligation");
+  const MockMissingClient = createMockPgClient(missingRows);
+  const scenario3 = await verifyProductionSchema({
+    env: {
+      CHECK_SCHEMA_COMPATIBILITY: "1",
+      DATABASE_URL: "postgresql://postgres:secret@pooler.supabase.com:5432/postgres",
+    },
+    logger: mockLogger,
+    Client: MockMissingClient,
+  });
+  assert.strictEqual(scenario3.ok, false, "Scenario 3: Strict + RPC ausente must be ok: false");
+  assert.strictEqual(scenario3.missingCount, 1);
+
+  // Scenario 4: Strict + mesmo nome + mesma quantidade de argumentos + tipo errado -> ok: false
+  const wrongTypeRows = validRows.map((r) => {
+    if (r.proname === "save_shift_with_obligation") {
+      return {
+        ...r,
+        argtypes: "uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, uuid", // last is uuid instead of text
+      };
+    }
+    return r;
+  });
+  const MockWrongTypeClient = createMockPgClient(wrongTypeRows);
+  const scenario4 = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "production",
+      DATABASE_URL: "postgresql://postgres:secret@pooler.supabase.com:5432/postgres",
+    },
+    logger: mockLogger,
+    Client: MockWrongTypeClient,
+  });
+  assert.strictEqual(scenario4.ok, false, "Scenario 4: Strict + mesmo nome + mesma quantidade + tipo errado must be ok: false");
+  assert.strictEqual(scenario4.missingCount, 1);
+  assert.strictEqual(scenario4.results.save_shift_with_obligation.incompatible, true);
+
+  // Scenario 5: Strict + assinatura correta -> FOUND
+  const pgDirectCheck = await checkRpcsViaPg("postgresql://localhost:5432/postgres", {
+    Client: MockValidClient,
+  });
+  assert.strictEqual(pgDirectCheck.ok, true);
+  assert.strictEqual(pgDirectCheck.results.save_shift_with_obligation.status, RPC_STATUS.FOUND, "Scenario 5: save_shift_with_obligation must be FOUND");
+  assert.strictEqual(pgDirectCheck.results.register_payment.status, RPC_STATUS.FOUND);
+  assert.strictEqual(pgDirectCheck.results.process_mercadopago_subscription_payment.status, RPC_STATUS.FOUND);
+  assert.strictEqual(pgDirectCheck.results.process_stripe_subscription_event.status, RPC_STATUS.FOUND);
+
+  // Scenario 6: Confirmar que a execução não depende de psql instalado
+  // When no execPsqlFn is passed, runSmokeTest uses node-postgres (checkRpcsViaPg) exclusively and does not spawn psql
+  const scenario6 = await runSmokeTest({
+    databaseUrl: "postgresql://postgres:secret@pooler.supabase.com:5432/postgres",
+    logger: mockLogger,
+    Client: MockValidClient,
+    strict: true,
+  });
+  assert.strictEqual(scenario6.ok, true, "Scenario 6: Execution succeeds via node-postgres without psql");
+  assert.strictEqual(scenario6.method, "pg", "Execution method must be 'pg' rather than 'psql'");
+
+  // Scenario 7: Preview continua não-bloqueante
+  const scenario7 = await verifyProductionSchema({
+    env: {
+      VERCEL_ENV: "preview",
+      DATABASE_URL: "postgresql://postgres:secret@pooler.supabase.com:5432/postgres",
+    },
+    logger: mockLogger,
+    Client: MockMissingClient, // Missing RPC in preview should warn, not block
+  });
+  assert.strictEqual(scenario7.ok, true, "Scenario 7: Preview with missing RPC must NOT block build (ok: true)");
+  assert.strictEqual(scenario7.warned, true);
+  assert.strictEqual(scenario7.preview, true);
+});
+
