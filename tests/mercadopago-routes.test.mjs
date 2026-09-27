@@ -8,9 +8,12 @@ const __mpRoutesFile = fileURLToPath(import.meta.url);
 const __mpTrialUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "subscription", "trial.ts")).href;
 const __mpPaymentsUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
 const __mpWebhookUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "mercadopago", "webhook.ts")).href;
+const __mpObservabilityUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "observability", "index.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
+    if (specifier === "@/lib/observability") return { url: __mpObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") {
       return { url: __mpTrialUrl, shortCircuit: true };
     }

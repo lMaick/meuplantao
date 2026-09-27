@@ -9,9 +9,12 @@ const __whTestFile = fileURLToPath(import.meta.url);
 const __whTrialUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
 const __whPaymentsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
 const __whWebhookUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "webhook.ts")).href;
+const __whObservabilityUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "observability", "index.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
+    if (specifier === "@/lib/observability") return { url: __whObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") {
       return { url: __whTrialUrl, shortCircuit: true };
     }
@@ -40,6 +43,7 @@ registerHooks({
 
 const { GET: webhookGet, POST: webhookPost, validateWebhookSignature } = await import("../src/app/api/webhooks/mercadopago/route.ts");
 const { GET: ipnGet, POST: ipnPost } = await import("../src/app/api/webhooks/mercadopago/ipn/route.ts");
+const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts");
 
 const validUserId = "22222222-2222-4222-8222-222222222222";
 
@@ -369,8 +373,10 @@ test("5. Payment_id inexistente: responde HTTP 200 ignored quando a API do MP re
 // -------------------------------------------------------------
 // 6. Resiliência: Falha 5xx, Erro de Rede e Rate Limit (429)
 // -------------------------------------------------------------
-test("6a. Falha 5xx do MP: responde HTTP 502 para forçar retry automático do provedor", async () => {
+test("6a. Falha 5xx do MP: responde HTTP 502 e registra captureWebhookError", async () => {
   globalThis.__mockWebhookSecret = null;
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
 
   // Simula indisponibilidade temporária no Mercado Pago (HTTP 500 ou 503)
   globalThis.fetch = async () => new Response(JSON.stringify({ message: "Internal server error" }), { status: 503 });
@@ -385,10 +391,19 @@ test("6a. Falha 5xx do MP: responde HTTP 502 para forçar retry automático do p
   assert.equal(response.status, 502, "Deve retornar 502 Bad Gateway para o MP retentar");
   const json = await response.json();
   assert.match(json.error, /temporaria/i);
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/webhooks/mercadopago");
+  assert.equal(capturedLogs[0].http_status, 502);
+  assert.equal(capturedLogs[0].payment_id, "payment-503");
+  assert.equal(capturedLogs[0].context?.upstream_status, 503);
+  setLogSinkForTesting(null);
 });
 
-test("6b. Erro de rede/fetch: responde HTTP 502 para forçar retry automático do provedor", async () => {
+test("6b. Erro de rede/fetch: responde HTTP 502 e registra captureWebhookError", async () => {
   globalThis.__mockWebhookSecret = null;
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
 
   globalThis.fetch = async () => {
     throw new Error("fetch failed: ECONNRESET");
@@ -404,10 +419,19 @@ test("6b. Erro de rede/fetch: responde HTTP 502 para forçar retry automático d
   assert.equal(response.status, 502, "Erro de rede deve responder 502 para retry");
   const json = await response.json();
   assert.match(json.error, /temporaria|conexao/i);
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/webhooks/mercadopago");
+  assert.equal(capturedLogs[0].http_status, 502);
+  assert.equal(capturedLogs[0].payment_id, "payment-network-err");
+  assert.equal(capturedLogs[0].context?.failure_kind, "mercadopago_network");
+  setLogSinkForTesting(null);
 });
 
-test("6c. Rate Limit (429) do MP: responde HTTP 429 para retry posterior do provedor", async () => {
+test("6c. Rate Limit (429) do MP: responde HTTP 429 e registra captureWebhookError", async () => {
   globalThis.__mockWebhookSecret = null;
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
 
   globalThis.fetch = async () => new Response(JSON.stringify({ message: "Too Many Requests" }), { status: 429 });
 
@@ -421,6 +445,13 @@ test("6c. Rate Limit (429) do MP: responde HTTP 429 para retry posterior do prov
   assert.equal(response.status, 429, "Rate limit deve responder 429");
   const json = await response.json();
   assert.match(json.error, /rate limit/i);
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/webhooks/mercadopago");
+  assert.equal(capturedLogs[0].http_status, 429);
+  assert.equal(capturedLogs[0].payment_id, "payment-rate-limited");
+  assert.equal(capturedLogs[0].context?.upstream_status, 429);
+  setLogSinkForTesting(null);
 });
 
 // -------------------------------------------------------------

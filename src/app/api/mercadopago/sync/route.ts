@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { captureSyncError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -21,6 +22,7 @@ export { paymentBelongsToUser };
 
 export async function POST(request: NextRequest) {
   const sessionResponse = NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
+  let currentUserId: string | undefined;
 
   try {
     const supabase = createAuthenticatedClient(request, sessionResponse);
@@ -32,6 +34,7 @@ export async function POST(request: NextRequest) {
     if (userError || !user) {
       return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
     }
+    currentUserId = user.id;
 
     const searchUrl = `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=50`;
     const paymentResponse = await fetch(searchUrl, {
@@ -39,6 +42,15 @@ export async function POST(request: NextRequest) {
     });
 
     if (!paymentResponse.ok) {
+      captureSyncError(new Error(`Mercado Pago search query failed with status ${paymentResponse.status}`), {
+        route: "/api/mercadopago/sync",
+        userId: user.id,
+        httpStatus: 502,
+        extra: {
+          upstream_status: paymentResponse.status,
+          search_stage: "user_payments_search",
+        },
+      });
       return NextResponse.json(
         { error: "Nao foi possivel consultar pagamentos no Mercado Pago" },
         { status: 502 },
@@ -57,10 +69,23 @@ export async function POST(request: NextRequest) {
       const packageSearchResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/search?sort=date_created&criteria=desc&limit=50`, {
         headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
       });
-      if (packageSearchResponse.ok) {
-        searchData = (await packageSearchResponse.json()) as MercadoPagoSearchResult;
-        userPayments = (searchData.results || []).filter(matchesUser);
+      if (!packageSearchResponse.ok) {
+        captureSyncError(new Error(`Mercado Pago fallback search failed with status ${packageSearchResponse.status}`), {
+          route: "/api/mercadopago/sync",
+          userId: user.id,
+          httpStatus: 502,
+          extra: {
+            upstream_status: packageSearchResponse.status,
+            search_stage: "fallback_payments_search",
+          },
+        });
+        return NextResponse.json(
+          { error: "Nao foi possivel consultar pagamentos no Mercado Pago" },
+          { status: 502 },
+        );
       }
+      searchData = (await packageSearchResponse.json()) as MercadoPagoSearchResult;
+      userPayments = (searchData.results || []).filter(matchesUser);
     }
 
     if (userPayments.length > 0) {
@@ -173,7 +198,10 @@ export async function POST(request: NextRequest) {
       status: currentStatus,
     });
   } catch (error) {
-    console.error("Mercado Pago sync error", error instanceof Error ? error.message : "unknown");
+    captureSyncError(error, {
+      route: "/api/mercadopago/sync",
+      userId: currentUserId,
+    });
     return NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
   }
 }

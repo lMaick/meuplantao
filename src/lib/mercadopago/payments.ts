@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { captureFinancialRpcError } from "@/lib/observability";
 
 export const validityDaysByMonths = new Map<number, number>([
   [1, 30],
@@ -73,8 +74,13 @@ export async function processMercadoPagoPayment(
   });
 
   if (error) {
-    console.error("Erro na RPC de processamento atômico de pagamento:", error);
-    throw new Error(`Falha no processamento atomico do pagamento: ${error.message || "RPC error"}`);
+    captureFinancialRpcError(error, {
+      rpcName: "process_mercadopago_subscription_payment",
+      paymentId,
+      userId,
+      extra: { months, validityDays, amount, status },
+    });
+    throw new Error("Falha no processamento atomico do pagamento");
   }
 
   if (!data || typeof data !== "object") {

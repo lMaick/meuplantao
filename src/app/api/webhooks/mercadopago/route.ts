@@ -1,6 +1,7 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
+import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -33,8 +34,13 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
         headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
       });
     } catch (networkErr) {
-      console.error("Falha de rede ao consultar pagamento no Mercado Pago:", networkErr);
-      // Erro temporário de rede: retorna 502 para que o Mercado Pago execute retry
+      captureWebhookError(networkErr, {
+        paymentId,
+        httpStatus: 502,
+        extra: {
+          failure_kind: "mercadopago_network",
+        },
+      });
       return Response.json(
         { error: "Falha temporaria de conexao com a API do Mercado Pago" },
         { status: 502 },
@@ -43,7 +49,16 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
 
     // 1. Falhas temporárias da API do Mercado Pago (5xx)
     if (paymentResponse.status >= 500) {
-      console.error(`Mercado Pago retornou erro temporario de servidor: ${paymentResponse.status}`);
+      captureWebhookError(
+        new Error(`Mercado Pago upstream error ${paymentResponse.status}`),
+        {
+          paymentId,
+          httpStatus: 502,
+          extra: {
+            upstream_status: paymentResponse.status,
+          },
+        }
+      );
       return Response.json(
         { error: "Falha temporaria na API do Mercado Pago", status: paymentResponse.status },
         { status: 502 },
@@ -52,7 +67,16 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
 
     // 2. Rate Limit (429)
     if (paymentResponse.status === 429) {
-      console.error("Rate limit na API do Mercado Pago");
+      captureWebhookError(
+        new Error(`Mercado Pago upstream rate limit ${paymentResponse.status}`),
+        {
+          paymentId,
+          httpStatus: 429,
+          extra: {
+            upstream_status: paymentResponse.status,
+          },
+        }
+      );
       return Response.json(
         { error: "Rate limit excedido na API do Mercado Pago" },
         { status: 429 },
@@ -133,7 +157,11 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
       { status: 200 },
     );
   } catch (error) {
-    console.error("Mercado Pago webhook processing error", error instanceof Error ? error.message : "unknown");
+    captureWebhookError(error, {
+      route: "/api/webhooks/mercadopago",
+      paymentId,
+      httpStatus: 500,
+    });
     return Response.json({ error: "Nao foi possivel processar o evento Mercado Pago" }, { status: 500 });
   }
 }
