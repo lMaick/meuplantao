@@ -38,7 +38,7 @@ export async function verifyProductionSchema(options = {}) {
   const isStrict = isExplicit || isVercelProduction;
   const isVercelPreview = env.VERCEL_ENV === "preview";
 
-  const databaseUrl = (options.databaseUrl || env.DATABASE_URL || env.SUPABASE_DB_URL || "").trim();
+  const databaseUrl = (options.databaseUrl || env.DATABASE_URL || env.PRODUCTION_DATABASE_URL || env.SUPABASE_DB_URL || "").trim();
   const usePsql = options.usePsql;
 
   if (isStrict) {
