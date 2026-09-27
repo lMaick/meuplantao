@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
-import { createAdminClient } from "@/lib/stripe/supabase";
+import { createAdminClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 

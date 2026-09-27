@@ -13,7 +13,7 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';", shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: subscriptionPaymentsUrl, shortCircuit: true };
-    if (specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
+    if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: subscriptionTypesUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: subscriptionTrialUrl, shortCircuit: true };
     if (specifier === "next/server") return nextResolve("next/server.js", context);

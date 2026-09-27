@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getApplicationOrigin, getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
-import { createAuthenticatedClient } from "@/lib/stripe/supabase";
+import { createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
