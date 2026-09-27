@@ -19,6 +19,9 @@
 
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import pg from "pg";
+
+const { Client: PgClient } = pg;
 
 export const CRITICAL_RPCS = [
   {
@@ -257,23 +260,39 @@ export async function checkRpcViaRest(baseUrl, rpcName, apiKey, fetchFn = global
 }
 
 /**
- * Parses psql query output and verifies RPC existence matching expected name, argument count, AND exact type sequence.
+ * Parses query output (psql string or pg.Client rows) and verifies RPC existence matching
+ * expected name, argument count, AND exact type sequence.
  */
-export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
-  const lines = output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+export function parseProcRows(output, rpcs = CRITICAL_RPCS) {
   const foundProcs = new Map();
 
-  for (const line of lines) {
-    const parts = line.split("|").map((p) => p.trim());
-    if (parts.length >= 2) {
-      const name = parts[0];
-      const argsCount = parseInt(parts[1], 10);
-      const identityArgs = parts.slice(2).join("|");
-      const normalizedTypes = normalizeArgTypes(identityArgs);
-      if (!foundProcs.has(name)) {
-        foundProcs.set(name, []);
+  if (typeof output === "string") {
+    const lines = output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      const parts = line.split("|").map((p) => p.trim());
+      if (parts.length >= 2) {
+        const name = parts[0];
+        const argsCount = parseInt(parts[1], 10);
+        const identityArgs = parts.slice(2).join("|");
+        const normalizedTypes = normalizeArgTypes(identityArgs);
+        if (!foundProcs.has(name)) {
+          foundProcs.set(name, []);
+        }
+        foundProcs.get(name).push({ argsCount, identityArgs, normalizedTypes });
       }
-      foundProcs.get(name).push({ argsCount, identityArgs, normalizedTypes });
+    }
+  } else if (Array.isArray(output)) {
+    for (const row of output) {
+      const name = row.proname || row.name;
+      const argsCount = parseInt(row.pronargs ?? row.argsCount, 10);
+      const identityArgs = row.argtypes || row.identityArgs || "";
+      const normalizedTypes = normalizeArgTypes(identityArgs);
+      if (name) {
+        if (!foundProcs.has(name)) {
+          foundProcs.set(name, []);
+        }
+        foundProcs.get(name).push({ argsCount, identityArgs, normalizedTypes });
+      }
     }
   }
 
@@ -296,7 +315,7 @@ export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
         argsCount: exactMatch.argsCount,
         argTypes: exactMatch.normalizedTypes,
         identityArgs: exactMatch.identityArgs,
-        source: "psql",
+        source: "postgres",
       };
     } else if (matchingList.length > 0) {
       // Function exists by name, but argument count or type sequence is incompatible
@@ -315,14 +334,14 @@ export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
         foundTypes: firstFound.normalizedTypes,
         expectedTypes,
         details,
-        source: "psql",
+        source: "postgres",
       };
     } else {
       results[rpc.name] = {
         status: RPC_STATUS.MISSING,
         exists: false,
         details: "Function not found in public schema",
-        source: "psql",
+        source: "postgres",
       };
     }
   }
@@ -330,9 +349,84 @@ export function parsePsqlProcOutput(output, rpcs = CRITICAL_RPCS) {
   return results;
 }
 
+// Backward-compatible alias for existing callers/tests
+export const parsePsqlProcOutput = parseProcRows;
+
 /**
- * Checks RPC existence directly in Postgres via psql if DATABASE_URL is available.
- * Validates function name, argument count, AND exact argument type sequence.
+ * Resolves PostgreSQL connection configuration for pg.Client.
+ * Automatically configures SSL for cloud poolers (e.g. Supabase, AWS) while allowing local DBs without SSL.
+ */
+export function getPgClientConfig(databaseUrl) {
+  const isLocal =
+    !databaseUrl ||
+    databaseUrl.includes("localhost") ||
+    databaseUrl.includes("127.0.0.1") ||
+    databaseUrl.includes("@localhost") ||
+    databaseUrl.includes("@127.0.0.1");
+
+  const config = {
+    connectionString: databaseUrl,
+    connectionTimeoutMillis: 10000,
+  };
+
+  if (!isLocal) {
+    config.ssl = { rejectUnauthorized: false };
+  }
+
+  return config;
+}
+
+/**
+ * Checks RPC existence directly in Postgres via node-postgres (pg).
+ * Queries pg_catalog (pg_proc, pg_namespace) to validate function name, argument count, and argument type sequence.
+ */
+export async function checkRpcsViaPg(databaseUrl, options = {}) {
+  const ClientClass = options.Client || PgClient;
+  let client = options.client || null;
+  let shouldClose = false;
+
+  try {
+    if (!client) {
+      const config = options.clientConfig || getPgClientConfig(databaseUrl);
+      client = new ClientClass(config);
+      shouldClose = true;
+      await client.connect();
+    }
+
+    const rpcNames = CRITICAL_RPCS.map((r) => r.name);
+    const sql = `
+      select
+        p.proname,
+        p.pronargs,
+        coalesce(oidvectortypes(p.proargtypes), pg_get_function_identity_arguments(p.oid), '') as argtypes
+      from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = any($1);
+    `;
+
+    const res = await client.query(sql, [rpcNames]);
+    const results = parseProcRows(res.rows, CRITICAL_RPCS);
+    return { ok: true, results, method: "pg" };
+  } catch (err) {
+    return {
+      ok: false,
+      status: RPC_STATUS.SERVER_ERROR,
+      error: redactSecrets(err?.message || String(err), [databaseUrl]),
+      method: "pg",
+    };
+  } finally {
+    if (shouldClose && client && typeof client.end === "function") {
+      try {
+        await client.end();
+      } catch {
+        // Ignore disconnect cleanup errors
+      }
+    }
+  }
+}
+
+/**
+ * Optional/legacy check using psql CLI if explicitly requested.
  */
 export function checkRpcsViaPsql(databaseUrl, options = {}) {
   try {
@@ -345,13 +439,14 @@ export function checkRpcsViaPsql(databaseUrl, options = {}) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    const results = parsePsqlProcOutput(String(output), CRITICAL_RPCS);
-    return { ok: true, results };
+    const results = parseProcRows(String(output), CRITICAL_RPCS);
+    return { ok: true, results, method: "psql" };
   } catch (err) {
     return {
       ok: false,
       status: RPC_STATUS.SERVER_ERROR,
       error: redactSecrets(err?.message || String(err), [databaseUrl]),
+      method: "psql",
     };
   }
 }
@@ -371,7 +466,7 @@ export async function runSmokeTest(options = {}) {
   const supabaseUrl = (options.supabaseUrl || env.NEXT_PUBLIC_SUPABASE_URL || env.SUPABASE_URL || "").trim();
   const serviceRoleKey = (options.serviceRoleKey || env.SUPABASE_SERVICE_ROLE_KEY || env.SERVICE_ROLE_KEY || "").trim();
   const anonKey = (options.anonKey || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || "").trim();
-  const databaseUrl = (options.databaseUrl || env.DATABASE_URL || env.SUPABASE_DB_URL || "").trim();
+  const databaseUrl = (options.databaseUrl || env.DATABASE_URL || env.PRODUCTION_DATABASE_URL || env.SUPABASE_DB_URL || "").trim();
 
   const extraSecrets = [serviceRoleKey, anonKey, databaseUrl].filter(Boolean);
 
@@ -379,30 +474,35 @@ export async function runSmokeTest(options = {}) {
   logger.log(" MeuPlantao — Production Schema & RPC Smoke Test ");
   logger.log("=================================================");
 
-  // Mode 1: Strict mode requires DATABASE_URL and pg_proc verification (NO fallback to REST)
+  // Mode 1: Strict mode requires DATABASE_URL and pg_proc verification via node-postgres (NO fallback to REST)
   if (isStrict) {
     if (!databaseUrl) {
       const msg = "[FAIL-CLOSED] Strict mode requires DATABASE_URL to verify exact RPC signatures via PostgreSQL pg_proc. REST cannot guarantee exact signature validation.";
       logger.error(msg);
       return { ok: false, strict: true, error: msg };
     }
-    if (options.usePsql === false) {
-      const msg = "[FAIL-CLOSED] Strict mode requires PostgreSQL pg_proc verification (usePsql cannot be false).";
-      logger.error(msg);
-      return { ok: false, strict: true, error: msg };
+
+    logger.log("[SMOKE] Checking functions directly via PostgreSQL (pg_catalog)...");
+    let pgRes;
+    if (options.execPsqlFn) {
+      pgRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });
+    } else {
+      pgRes = await checkRpcsViaPg(databaseUrl, {
+        Client: options.Client,
+        client: options.pgClient || options.client,
+        clientConfig: options.clientConfig,
+      });
     }
 
-    logger.log("[SMOKE] Checking functions directly via PostgreSQL (psql)...");
-    const psqlRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });
-    if (!psqlRes.ok) {
-      const msg = `[FAIL-CLOSED] PostgreSQL pg_proc verification failed in strict mode: ${psqlRes.error}`;
+    if (!pgRes.ok) {
+      const msg = `[FAIL-CLOSED] PostgreSQL pg_proc verification failed in strict mode: ${pgRes.error}`;
       logger.error(msg);
-      return { ok: false, strict: true, method: "psql", error: psqlRes.error, status: psqlRes.status || RPC_STATUS.SERVER_ERROR };
+      return { ok: false, strict: true, method: pgRes.method || "pg", error: pgRes.error, status: pgRes.status || RPC_STATUS.SERVER_ERROR };
     }
 
     let missingCount = 0;
     for (const rpc of CRITICAL_RPCS) {
-      const res = psqlRes.results[rpc.name];
+      const res = pgRes.results[rpc.name];
       if (res?.status === RPC_STATUS.FOUND) {
         logger.log(`  ✓ ${rpc.name}: FOUND (${res.argsCount} args) - ${rpc.description}`);
       } else {
@@ -412,21 +512,31 @@ export async function runSmokeTest(options = {}) {
     }
     if (missingCount === 0) {
       logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
-      return { ok: true, strict: true, method: "psql", results: psqlRes.results };
+      return { ok: true, strict: true, method: pgRes.method || "pg", results: pgRes.results };
     } else {
       logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
-      return { ok: false, strict: true, missingCount, method: "psql", results: psqlRes.results };
+      return { ok: false, strict: true, missingCount, method: pgRes.method || "pg", results: pgRes.results };
     }
   }
 
-  // Mode 1 (non-strict): Check via psql if DATABASE_URL is provided and psql is installed
-  if (databaseUrl && options.usePsql !== false) {
-    logger.log("[SMOKE] Checking functions directly via PostgreSQL (psql)...");
-    const psqlRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });
-    if (psqlRes.ok) {
+  // Mode 1 (non-strict): Check via node-postgres if DATABASE_URL is provided
+  if (databaseUrl) {
+    logger.log("[SMOKE] Checking functions directly via PostgreSQL (pg_catalog)...");
+    let pgRes;
+    if (options.execPsqlFn) {
+      pgRes = checkRpcsViaPsql(databaseUrl, { execFn: options.execPsqlFn });
+    } else {
+      pgRes = await checkRpcsViaPg(databaseUrl, {
+        Client: options.Client,
+        client: options.pgClient || options.client,
+        clientConfig: options.clientConfig,
+      });
+    }
+
+    if (pgRes.ok) {
       let missingCount = 0;
       for (const rpc of CRITICAL_RPCS) {
-        const res = psqlRes.results[rpc.name];
+        const res = pgRes.results[rpc.name];
         if (res?.status === RPC_STATUS.FOUND) {
           logger.log(`  ✓ ${rpc.name}: FOUND (${res.argsCount} args) - ${rpc.description}`);
         } else {
@@ -436,13 +546,13 @@ export async function runSmokeTest(options = {}) {
       }
       if (missingCount === 0) {
         logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
-        return { ok: true, method: "psql", results: psqlRes.results };
+        return { ok: true, method: pgRes.method || "pg", results: pgRes.results };
       } else {
         logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
-        return { ok: false, missingCount, method: "psql", results: psqlRes.results };
+        return { ok: false, missingCount, method: pgRes.method || "pg", results: pgRes.results };
       }
     } else {
-      logger.log(`[SMOKE] psql check unavailable or failed (${psqlRes.error}). Falling back to REST API...`);
+      logger.log(`[SMOKE] PostgreSQL check unavailable or failed (${pgRes.error}). Falling back to REST API...`);
     }
   }
 
