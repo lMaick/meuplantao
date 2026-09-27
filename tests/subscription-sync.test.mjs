@@ -282,7 +282,7 @@ test("sync route returns status: expired when current_period_end has passed even
   assert.equal(json.current_period_end, pastDate);
 });
 
-test("sync MP search !ok: responde 502 temporario e registra captureSyncError", async () => {
+test("sync MP search !ok: responde 502 temporario e registra captureSyncError com http_status 502", async () => {
   globalThis.authenticatedClient = {
     auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
   };
@@ -299,13 +299,13 @@ test("sync MP search !ok: responde 502 temporario e registra captureSyncError", 
 
   assert.equal(capturedLogs.length, 1);
   assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
-  assert.equal(capturedLogs[0].http_status, 500);
+  assert.equal(capturedLogs[0].http_status, 502);
   assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
   assert.equal(capturedLogs[0].context?.search_stage, "user_payments_search");
   setLogSinkForTesting(null);
 });
 
-test("sync fallback search !ok: nao retorna falsamente 'nenhum pagamento' e responde 502 com captureSyncError", async () => {
+test("sync fallback search !ok: nao retorna falsamente 'nenhum pagamento' e responde 502 com captureSyncError com http_status 502", async () => {
   globalThis.authenticatedClient = {
     auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
   };
@@ -332,7 +332,33 @@ test("sync fallback search !ok: nao retorna falsamente 'nenhum pagamento' e resp
 
   assert.equal(capturedLogs.length, 1);
   assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
+  assert.equal(capturedLogs[0].http_status, 502);
   assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
   assert.equal(capturedLogs[0].context?.search_stage, "fallback_payments_search");
+  setLogSinkForTesting(null);
+});
+
+test("sync generic exception: responde 500 e registra captureSyncError com default http_status 500", async () => {
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
+  };
+
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  globalThis.fetch = async () => {
+    throw new Error("Unexpected network blowup");
+  };
+
+  const response = await syncRoute(createMockRequest());
+  assert.equal(response.status, 500);
+  const json = await response.json();
+  assert.match(json.error, /Nao foi possivel sincronizar/i);
+
+  assert.equal(capturedLogs.length, 1);
+  assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
+  assert.equal(capturedLogs[0].http_status, 500);
+  assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
+  assert.equal(capturedLogs[0].level, "error");
   setLogSinkForTesting(null);
 });

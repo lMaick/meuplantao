@@ -45,6 +45,7 @@ export async function POST(request: NextRequest) {
       captureSyncError(new Error(`Mercado Pago search query failed with status ${paymentResponse.status}`), {
         route: "/api/mercadopago/sync",
         userId: user.id,
+        httpStatus: 502,
         extra: {
           upstream_status: paymentResponse.status,
           search_stage: "user_payments_search",
@@ -72,6 +73,7 @@ export async function POST(request: NextRequest) {
         captureSyncError(new Error(`Mercado Pago fallback search failed with status ${packageSearchResponse.status}`), {
           route: "/api/mercadopago/sync",
           userId: user.id,
+          httpStatus: 502,
           extra: {
             upstream_status: packageSearchResponse.status,
             search_stage: "fallback_payments_search",

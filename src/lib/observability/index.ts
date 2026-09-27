@@ -481,12 +481,12 @@ export function captureCheckoutError(
 
 export function captureSyncError(
   error: unknown,
-  context: Omit<ErrorContext, "alertRule" | "level" | "httpStatus"> = {},
+  context: Omit<ErrorContext, "alertRule" | "level"> = {},
 ): StructuredLogEntry {
   return captureError(error, {
     ...context,
     route: context.route || "/api/mercadopago/sync",
-    httpStatus: 500,
+    httpStatus: context.httpStatus ?? 500,
     alertRule: "sync_5xx",
     level: "error",
   });

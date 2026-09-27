@@ -256,7 +256,7 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.equal(log.level, "error");
   });
 
-  test("9. Alerta sync_5xx", () => {
+  test("9. Alerta sync_5xx (default 500 e suporte a override 502)", () => {
     const error = new Error("Mercado Pago sync search failed with 500");
     captureSyncError(error, {
       userId: "user-sync-1",
@@ -268,6 +268,15 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.equal(log.http_status, 500);
     assert.equal(log.alert_rule, "sync_5xx");
     assert.equal(log.level, "error");
+
+    // Testa override para 502
+    captureSyncError(new Error("Mercado Pago upstream error 502"), {
+      userId: "user-sync-1",
+      httpStatus: 502,
+    });
+    assert.equal(capturedLogs.length, 2);
+    assert.equal(capturedLogs[1].http_status, 502);
+    assert.equal(capturedLogs[1].alert_rule, "sync_5xx");
   });
 
   test("10. Alerta financial_rpc_error para RPCs críticas", () => {
