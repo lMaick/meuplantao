@@ -9,7 +9,6 @@
  *  - save_shift_with_obligation
  *  - register_payment
  *  - process_mercadopago_subscription_payment
- *  - process_stripe_subscription_event (while Stripe exists)
  *
  * Fails closed (exit code 1) if any critical RPC is missing or if the database
  * is unreachable in verification mode.
@@ -56,23 +55,6 @@ export const CRITICAL_RPCS = [
     requiresServiceRole: true,
     expectedArgsCount: 6,
     expectedArgTypes: ["text", "uuid", "integer", "integer", "numeric", "text"],
-  },
-  {
-    name: "process_stripe_subscription_event",
-    description: "Stripe subscription webhook processing (legacy fallback)",
-    requiresServiceRole: true,
-    expectedArgsCount: 9,
-    expectedArgTypes: [
-      "text",
-      "text",
-      "uuid",
-      "text",
-      "text",
-      "text",
-      "text",
-      "timestamp with time zone",
-      "boolean",
-    ],
   },
 ];
 

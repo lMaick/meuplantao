@@ -38,6 +38,8 @@ test("smoke-test-schema: normalizeArgTypes normalizes postgres aliases and param
 test("smoke-test-schema: CRITICAL_RPCS contract and expected argument counts", () => {
   const map = new Map(CRITICAL_RPCS.map((r) => [r.name, r]));
   
+  assert.strictEqual(CRITICAL_RPCS.length, 3, "CRITICAL_RPCS must contain exactly 3 active RPCs");
+
   assert.ok(map.has("save_shift_with_obligation"));
   assert.strictEqual(map.get("save_shift_with_obligation").expectedArgsCount, 11, "save_shift_with_obligation must expect 11 args (including idempotency_key)");
 
@@ -47,8 +49,11 @@ test("smoke-test-schema: CRITICAL_RPCS contract and expected argument counts", (
   assert.ok(map.has("process_mercadopago_subscription_payment"));
   assert.strictEqual(map.get("process_mercadopago_subscription_payment").expectedArgsCount, 6, "process_mercadopago must expect 6 args");
 
-  assert.ok(map.has("process_stripe_subscription_event"));
-  assert.strictEqual(map.get("process_stripe_subscription_event").expectedArgsCount, 9, "process_stripe must expect 9 args");
+  assert.strictEqual(
+    map.has("process_stripe_subscription_event"),
+    false,
+    "process_stripe_subscription_event must be completely removed after Stripe decommissioning (PR #94, PR #104 / Issue #103)"
+  );
 });
 
 test("smoke-test-schema: redactSecrets sanitizes all sensitive patterns", () => {
@@ -82,12 +87,11 @@ test("smoke-test-schema: redactSecrets sanitizes all sensitive patterns", () => 
 });
 
 test("smoke-test-schema: parsePsqlProcOutput validates name AND exact signature args", () => {
-  // 1. Current valid signatures (11, 3, 6, 9 args)
+  // 1. Current valid signatures (11, 3, 6 args)
   const validPsqlOutput = `
 save_shift_with_obligation|11|uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, text
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamp with time zone, boolean
   `;
 
   const validResults = parsePsqlProcOutput(validPsqlOutput);
@@ -97,14 +101,12 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
 
   assert.strictEqual(validResults.register_payment.status, RPC_STATUS.FOUND);
   assert.strictEqual(validResults.process_mercadopago_subscription_payment.status, RPC_STATUS.FOUND);
-  assert.strictEqual(validResults.process_stripe_subscription_event.status, RPC_STATUS.FOUND);
 
   // 2. Outdated signature for save_shift_with_obligation with 10 arguments -> MUST BE MISSING / INCOMPATIBLE
   const outdatedPsqlOutput = `
 save_shift_with_obligation|10|uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamp with time zone, boolean
   `;
 
   const outdatedResults = parsePsqlProcOutput(outdatedPsqlOutput);
@@ -118,7 +120,6 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
 save_shift_with_obligation|11|uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, uuid
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamp with time zone, boolean
   `;
 
   const wrongTypesResults = parsePsqlProcOutput(wrongTypesPsqlOutput);
@@ -141,7 +142,6 @@ test("smoke-test-schema: checkRpcsViaPsql fails closed on outdated signature or 
 save_shift_with_obligation|10|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
 
   const outdatedCheck = checkRpcsViaPsql("postgresql://localhost:5432/postgres", { execFn: outdatedExec });
@@ -153,7 +153,6 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
 save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
 
   const validCheck = checkRpcsViaPsql("postgresql://localhost:5432/postgres", { execFn: validExec });
@@ -166,7 +165,6 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
 save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, uuid
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
   const wrongTypeCheck = checkRpcsViaPsql("postgresql://localhost:5432/postgres", { execFn: wrongTypeExec });
   assert.strictEqual(wrongTypeCheck.ok, true);
@@ -236,7 +234,6 @@ test("smoke-test-schema: runSmokeTest fails closed on outdated signature or SKIP
 save_shift_with_obligation|10|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
 
   const psqlOutdatedRes = await runSmokeTest({
@@ -252,7 +249,6 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
 save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, uuid
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
 
   const psqlWrongTypeRes = await runSmokeTest({
@@ -268,21 +264,20 @@ process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, ti
   const anonOnlyRes = await runSmokeTest({
     supabaseUrl: "https://test.supabase.co",
     anonKey: "test-anon-key",
-    // No serviceRoleKey provided -> process_mercadopago & process_stripe will be SKIPPED
+    // No serviceRoleKey provided -> process_mercadopago will be SKIPPED
     logger: mockLogger,
     fetchFn: fetchOk,
     usePsql: false,
     strict: false,
   });
   assert.strictEqual(anonOnlyRes.ok, false, "Smoke test must fail when required webhook RPCs are SKIPPED");
-  assert.strictEqual(anonOnlyRes.skippedCount, 2);
+  assert.strictEqual(anonOnlyRes.skippedCount, 1);
 
   // 3. PostgreSQL mode with full valid signatures -> MUST return ok: true
   const psqlValidExec = () => `
 save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
   const psqlValidRes = await runSmokeTest({
     databaseUrl: "postgresql://localhost:5432/postgres",
@@ -341,7 +336,6 @@ test("smoke-test-schema: verifyProductionSchema respects strict production gates
 save_shift_with_obligation|11|uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text
 register_payment|3|uuid, numeric, date
 process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric, text
-process_stripe_subscription_event|9|text, text, uuid, text, text, text, text, timestamptz, boolean
   `;
 
   // 1. production + DATABASE_URL válido + assinaturas corretas -> ok:true
@@ -468,11 +462,6 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
       pronargs: 6,
       argtypes: "text, uuid, integer, integer, numeric, text",
     },
-    {
-      proname: "process_stripe_subscription_event",
-      pronargs: 9,
-      argtypes: "text, text, uuid, text, text, text, text, timestamp with time zone, boolean",
-    },
   ];
 
   function createMockPgClient(rows = validRows, shouldThrow = false, errorMessage = "connect ECONNREFUSED") {
@@ -579,7 +568,6 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
   assert.strictEqual(pgDirectCheck.results.save_shift_with_obligation.status, RPC_STATUS.FOUND, "Scenario 5: save_shift_with_obligation must be FOUND");
   assert.strictEqual(pgDirectCheck.results.register_payment.status, RPC_STATUS.FOUND);
   assert.strictEqual(pgDirectCheck.results.process_mercadopago_subscription_payment.status, RPC_STATUS.FOUND);
-  assert.strictEqual(pgDirectCheck.results.process_stripe_subscription_event.status, RPC_STATUS.FOUND);
 
   // Scenario 6: Confirmar que a execução não depende de psql instalado
   // When no execPsqlFn is passed, runSmokeTest uses node-postgres (checkRpcsViaPg) exclusively and does not spawn psql
