@@ -135,7 +135,7 @@ test("collection_id is accepted and a payment belonging to another user is rejec
 
 test("non-approved payment is reported without changing the subscription", async () => {
   globalThis.authenticatedClient = authenticatedClient();
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending" }), { status: 200 });
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending", external_reference: userId }), { status: 200 });
   globalThis.adminClient = {
     rpc: async () => { throw new Error("must not call rpc"); },
     from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
@@ -156,7 +156,7 @@ test("non-approved payment is reported without changing the subscription", async
 
 test("renewal with pending payment when user already has active Pro subscription returns subscription_active=true and payment_status=pending", async () => {
   globalThis.authenticatedClient = authenticatedClient();
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending" }), { status: 200 });
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending", external_reference: userId }), { status: 200 });
   const futureDate = new Date(Date.now() + 15 * 86400000).toISOString();
   globalThis.adminClient = {
     rpc: async () => { throw new Error("must not call rpc"); },
@@ -182,6 +182,52 @@ test("renewal with pending payment when user already has active Pro subscription
   assert.equal(json.subscription_active, true, "deve manter subscription_active true pois periodo ainda e valido");
   assert.equal(json.payment_status, "pending", "payment_status deve ser pending");
   assert.equal(json.current_period_end, futureDate);
+});
+
+test("security: pending payment belonging to another user returns 403 without data leakage", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  const userB = "22222222-2222-4222-8222-222222222222";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "pending",
+    external_reference: userB,
+    transaction_amount: 99.90,
+  }), { status: 200 });
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => { throw new Error("must not query subscriptions table"); },
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=pending-belonging-to-user-b"));
+  assert.equal(response.status, 403);
+  const json = await response.json();
+  assert.deepEqual(json, { error: "Pagamento nao pertence a esta conta" });
+  assert.equal(json.payment_status, undefined, "Nao deve vazar payment_status");
+  assert.equal(json.payment_found, undefined, "Nao deve vazar payment_found");
+  assert.equal(json.subscription_active, undefined, "Nao deve vazar subscription_active");
+  assert.equal(json.verified, undefined, "Nao deve vazar verified");
+});
+
+test("security: rejected payment belonging to another user returns 403 without data leakage", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  const userB = "22222222-2222-4222-8222-222222222222";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "rejected",
+    external_reference: userB,
+    transaction_amount: 149.90,
+  }), { status: 200 });
+  globalThis.adminClient = {
+    rpc: async () => { throw new Error("must not call rpc"); },
+    from: () => { throw new Error("must not query subscriptions table"); },
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=rejected-belonging-to-user-b"));
+  assert.equal(response.status, 403);
+  const json = await response.json();
+  assert.deepEqual(json, { error: "Pagamento nao pertence a esta conta" });
+  assert.equal(json.payment_status, undefined, "Nao deve vazar payment_status");
+  assert.equal(json.payment_found, undefined, "Nao deve vazar payment_found");
+  assert.equal(json.subscription_active, undefined, "Nao deve vazar subscription_active");
+  assert.equal(json.verified, undefined, "Nao deve vazar verified");
 });
 
 test("subscription hook reads the RLS-protected row and subscribes to changes", () => {

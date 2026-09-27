@@ -39,6 +39,11 @@ export async function GET(request: NextRequest) {
     }
 
     const payment = (await paymentResponse.json()) as MercadoPagoPayment;
+
+    if (!paymentBelongsToUser(payment, user.id)) {
+      return NextResponse.json({ error: "Pagamento nao pertence a esta conta" }, { status: 403 });
+    }
+
     if (payment.status !== "approved") {
       let currentSub = null;
       try {
@@ -69,10 +74,6 @@ export async function GET(request: NextRequest) {
         activated: false,
         status: payment.status ?? "unknown",
       });
-    }
-
-    if (!paymentBelongsToUser(payment, user.id)) {
-      return NextResponse.json({ error: "Pagamento nao pertence a esta conta" }, { status: 403 });
     }
 
     const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
