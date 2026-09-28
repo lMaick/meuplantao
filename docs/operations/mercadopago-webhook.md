@@ -12,12 +12,14 @@ Nao contem segredos, tokens, URLs com credenciais ou stack traces.
 - A ausencia do secret em producao nunca libera o processamento por fallback
   silencioso.
 
-## 2. Dev/teste: comportamento sem secret exige opt-in explicito
+## 2. Dev/teste: comportamento sem secret e controlavel
 
-- Fora de producao, operar sem secret somente e permitido mediante
-  configuracao explicita de dev/teste.
-- Nao existe modo implicito "sem secret" herdado para producao.
-- O opt-in de dev/teste nunca deve ser copiado para variaveis de producao.
+- Fora de producao, o fallback sem secret pode permanecer habilitado para
+  desenvolvimento/teste local por padrao.
+- Defina `MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET=false` para exigir o secret
+  tambem fora de producao quando o ambiente de teste precisar de falha fechada.
+- Essa configuracao nunca libera a ausencia do secret em producao, e seu valor
+  nao deve ser copiado para variaveis de producao.
 
 ## 3. Webhook moderno x IPN legado (separacao)
 
@@ -54,7 +56,7 @@ Nao contem segredos, tokens, URLs com credenciais ou stack traces.
 ## 6. Checklist do operador
 
 1. Producao possui `MERCADO_PAGO_WEBHOOK_SECRET` definido no servidor.
-2. Dev/teste sem secret so existe com opt-in explicito documentado.
+2. Dev/teste sem secret segue a configuracao explicita de allow/deny documentada.
 3. Webhook moderno e IPN legado testados separadamente.
 4. Resposta publica de falha de configuracao conferida como generica.
 5. Nenhum segredo presente no repo, em UI client ou em evidencias.
