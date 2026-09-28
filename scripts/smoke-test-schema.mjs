@@ -19,6 +19,7 @@
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import pg from "pg";
+import { checkSecurityInvariantsViaPg } from "./check-rls-invariants.mjs";
 
 const { Client: PgClient } = pg;
 
@@ -494,7 +495,31 @@ export async function runSmokeTest(options = {}) {
     }
     if (missingCount === 0) {
       logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
-      return { ok: true, strict: true, method: pgRes.method || "pg", results: pgRes.results };
+      if (options.skipSecurityCheck === true) {
+        return { ok: true, strict: true, method: pgRes.method || "pg", results: pgRes.results };
+      }
+      logger.log("[SMOKE] Checking RLS & grants invariants via pg_catalog (read-only)...");
+      const secRes = await checkSecurityInvariantsViaPg(databaseUrl, {
+        Client: options.Client,
+        client: options.securityClient || options.pgClient || options.client,
+        clientConfig: options.clientConfig,
+        queryFn: options.securityQueryFn,
+        logger,
+      });
+      if (!secRes.ok) {
+        const detail = secRes.error || `${secRes.failureCount || 1} invariante(s) de segurança divergente(s)`;
+        logger.error(`[FAIL-CLOSED] RLS/grants invariants divergentes: ${detail}`);
+        return {
+          ok: false,
+          strict: true,
+          method: pgRes.method || "pg",
+          results: pgRes.results,
+          security: secRes,
+          error: `[FAIL-CLOSED] Security invariants failed: ${detail}`,
+        };
+      }
+      logger.log("[SUCCESS] RLS & grants invariants verified (read-only catalog).");
+      return { ok: true, strict: true, method: pgRes.method || "pg", results: pgRes.results, security: secRes };
     } else {
       logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
       return { ok: false, strict: true, missingCount, method: pgRes.method || "pg", results: pgRes.results };
@@ -528,6 +553,20 @@ export async function runSmokeTest(options = {}) {
       }
       if (missingCount === 0) {
         logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
+        if (options.skipSecurityCheck !== true) {
+          logger.log("[SMOKE] Diagnostic RLS & grants check via pg_catalog (read-only, non-blocking)...");
+          const secRes = await checkSecurityInvariantsViaPg(databaseUrl, {
+            Client: options.Client,
+            client: options.securityClient || options.pgClient || options.client,
+            clientConfig: options.clientConfig,
+            queryFn: options.securityQueryFn,
+            logger: { log: () => {}, error: () => {}, warn: () => {} },
+          });
+          if (!secRes.ok) {
+            logger.warn(`[SMOKE] WARNING: ${secRes.failureCount || 1} invariante(s) de segurança divergente(s) (diagnóstico não-bloqueante).`);
+            return { ok: true, warned: true, method: pgRes.method || "pg", results: pgRes.results, security: secRes };
+          }
+        }
         return { ok: true, method: pgRes.method || "pg", results: pgRes.results };
       } else {
         logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);

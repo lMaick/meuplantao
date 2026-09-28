@@ -36,6 +36,35 @@ jobs:
           python-version: '3.11'
       - run: python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v
 
+  security-invariants-e2e:
+    name: PostgreSQL Security Invariants E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SECURITY_REAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      SECURITY_REAL_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # REQUIRE_DB=1: o job falha (nunca skipa) se o PostgreSQL não subir.
+      # O safety guard do teste só aceita host local — nunca Supabase remoto.
+      - run: npm run test:security-real
+
   real-e2e:
     name: Supabase real E2E
     runs-on: ubuntu-latest
