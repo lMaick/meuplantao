@@ -1,4 +1,4 @@
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
+import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getWebhookSetupState } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { WEBHOOK_NOT_CONFIGURED_CODE, WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR, extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
 import { captureWebhookError } from "@/lib/observability";
@@ -8,12 +8,8 @@ export const runtime = "nodejs";
 
 export { extractPaymentInfo, validateWebhookSignature };
 
-function isProductionEnvironment(): boolean {
-  return process.env.VERCEL_ENV?.trim() === "production" || process.env.NODE_ENV?.trim() === "production";
-}
-
 export async function processPaymentWebhook(request: Request, rawBody: string) {
-  if (!getMercadoPagoWebhookSecret() && isProductionEnvironment()) {
+  if (getWebhookSetupState().failClosed) {
     return Response.json({ error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR }, { status: 503 });
   }
 

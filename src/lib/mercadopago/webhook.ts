@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
+import { getMercadoPagoWebhookSecret, isMissingWebhookSecretAllowed } from "@/lib/mercadopago/config";
 
 export const WEBHOOK_NOT_CONFIGURED_CODE = "webhook_not_configured";
 export const WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR = "Webhook indisponível no momento";
@@ -69,18 +69,6 @@ export interface SignatureValidationResult {
   error?: string;
 }
 
-function isProductionEnvironment(): boolean {
-  return process.env.VERCEL_ENV?.trim() === "production" || process.env.NODE_ENV?.trim() === "production";
-}
-
-function isMissingSecretBypassAllowed(): boolean {
-  if (isProductionEnvironment()) {
-    return false;
-  }
-  const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase();
-  return raw !== "false" && raw !== "0" && raw !== "no";
-}
-
 /**
  * Validação estrita de assinatura HMAC do Mercado Pago (x-signature e x-request-id)
  * com proteção contra replay attacks (janela de timestamp ts).
@@ -93,7 +81,7 @@ export function validateWebhookSignature(
   const secret = getMercadoPagoWebhookSecret();
 
   if (!secret) {
-    if (isMissingSecretBypassAllowed()) {
+    if (isMissingWebhookSecretAllowed()) {
       return { valid: true };
     }
     return { valid: false, code: WEBHOOK_NOT_CONFIGURED_CODE, error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR };
