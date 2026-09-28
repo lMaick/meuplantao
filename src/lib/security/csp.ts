@@ -16,9 +16,11 @@
  *   + equivalente `wss:` (Realtime). Incluída em `connect-src` somente quando a
  *   variável está configurada e válida.
  * - Mercado Pago: o browser nunca chama a API diretamente (proxy same-origin
- *   `/api/mercadopago/*` + redirect top-level via `init_point`). Mapeado em
- *   `form-action` (`https://www.mercadopago.com`, destino do redirect pós
- *   `/api/mercadopago/checkout`); nenhum `iframe` de terceiros é usado, por isso
+ *   `/api/mercadopago/*`). O checkout usa navegacao top-level via
+ *   `window.location.href = payload.init_point`
+ *   (`src/components/subscription/subscription-card.tsx`), nao submissao de
+ *   formulario - portanto nenhuma origem Mercado Pago e exigida em `form-action`,
+ *   que permanece `'self'`; nenhum `iframe` de terceiros e usado, por isso
  *   `frame-src` permanece `self`.
  * - Sentry: origem de ingestão derivada do DSN (`SENTRY_DSN` ou
  *   `NEXT_PUBLIC_SENTRY_DSN`), incluída em `connect-src` somente quando
@@ -29,8 +31,6 @@
  */
 
 export const CSP_REPORT_ONLY_HEADER = "Content-Security-Policy-Report-Only";
-
-export const MERCADO_PAGO_CHECKOUT_ORIGIN = "https://www.mercadopago.com";
 
 function parseHttpOrigin(raw: string | undefined): string | null {
   const value = raw?.trim();
@@ -108,7 +108,7 @@ export function buildCspReportOnlyValue(env: CspBuildEnv = process.env): string 
     "font-src 'self' data:",
     `connect-src ${connectSrc.join(" ")}`,
     "frame-src 'self'",
-    `form-action 'self' ${MERCADO_PAGO_CHECKOUT_ORIGIN}`,
+    "form-action 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'self'",
