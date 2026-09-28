@@ -231,9 +231,11 @@ function AppShellInner({ children }: { children: ReactNode }) {
               {label}
             </Link>
           ))}
-          <div className="mt-auto shrink-0 space-y-4 border-t border-border/80 pt-4 pb-2">
-            <ThemeToggle />
-            <LogoutButton />
+          <div className="mt-auto shrink-0 flex items-center gap-2 border-t border-border/80 pt-4 pb-2">
+            <div className="flex-1 [&_button]:w-full">
+              <LogoutButton />
+            </div>
+            <ThemeToggle compact />
           </div>
         </nav>
       </aside>
@@ -313,8 +315,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
                 </Link>
               ))}
 
-              <div className="mt-auto space-y-4 border-t border-border/80 pt-4">
-                <ThemeToggle />
+              <div className="mt-auto border-t border-border/80 pt-4">
                 <div className="flex items-center gap-3 px-2 py-1 text-sm text-muted-foreground">
                   <LogOut className="size-5 shrink-0" />
                   <div className="flex-1 [&_button]:min-h-[44px] [&_button]:w-full [&_button]:justify-center">
