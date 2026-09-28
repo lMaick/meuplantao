@@ -8,7 +8,6 @@ import {
   getSentryIngestOrigin,
   getSupabaseConnectSources,
   getSupabaseCspOrigin,
-  MERCADO_PAGO_CHECKOUT_ORIGIN,
 } from "../src/lib/security/csp.ts";
 
 const REQUIRED_DIRECTIVES = ["script-src", "style-src", "img-src", "connect-src", "frame-src", "font-src"];
@@ -105,11 +104,10 @@ test("connect-src inclui ingestão do Sentry somente quando DSN está configurad
   });
 });
 
-test("Mercado Pago mapeado via form-action (redirect init_point); sem iframe de terceiros", () => {
+test("Mercado Pago usa navegacao top-level (window.location.href); form-action fica 'self'", () => {
   const policy = buildCspReportOnlyValue({ NODE_ENV: "production" });
-  assert.equal(MERCADO_PAGO_CHECKOUT_ORIGIN, "https://www.mercadopago.com");
-  const formAction = directiveValue(policy, "form-action");
-  assert.ok(formAction.includes("'self'") && formAction.includes("https://www.mercadopago.com"));
+  assert.equal(directiveValue(policy, "form-action"), "'self'");
+  assert.ok(!policy.includes("mercadopago.com"), "nenhuma origem Mercado Pago na politica");
   assert.equal(directiveValue(policy, "frame-src"), "'self'");
 });
 

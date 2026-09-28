@@ -14,8 +14,8 @@ camada emite CSP.
 | `img-src` | `'self' data: blob:` | Assets same-origin + `next/image` (sem `remotePatterns`) + inline. |
 | `font-src` | `'self' data:` | Geist via `next/font` (self-hosted); sem CDN externo no app. |
 | `connect-src` | `'self'` + origem Supabase (`https:` + `wss:`) quando `NEXT_PUBLIC_SUPABASE_URL` válida + ingestão Sentry quando DSN configurado | Supabase REST/Auth/Storage + Realtime; Sentry ingest derivado do DSN. Mercado Pago é server-side (proxy `/api/mercadopago/*`), sem fetch direto do browser. |
-| `frame-src` | `'self'` | Checkout Mercado Pago é redirect top-level (`init_point`), não iframe. |
-| `form-action` | `'self' https://www.mercadopago.com` | Destino do redirect pós `/api/mercadopago/checkout`. |
+| `frame-src` | `'self'` | Checkout Mercado Pago usa navegacao top-level (`window.location.href`), nao iframe. |
+| `form-action` | `'self'` | Checkout Mercado Pago usa navegacao top-level via `window.location.href = payload.init_point` (`src/components/subscription/subscription-card.tsx`), nao submissao de formulario - nenhuma origem Mercado Pago exigida. |
 | `object-src` | `'none'` | Sem plugins/embeds. |
 | `base-uri` / `frame-ancestors` | `'self'` | Consistente com `X-Frame-Options: SAMEORIGIN`. |
 
