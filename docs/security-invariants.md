@@ -108,6 +108,32 @@ local: monta papéis/tabelas/policies, aplica drift temporário
 `obligations.valor_devido`), observa o gate falhar em cada cenário e restaura
 com `REVOKE` + `DROP` final. Nenhum banco remoto/produção é tocado.
 
+## Safety guard do teste real (fail-closed)
+
+O teste real é destrutivo (`DROP` de tabelas `public.*`, `DROP SCHEMA auth`,
+`DROP ROLE`). Por isso `assertLocalDatabaseUrl()` (em
+`scripts/check-rls-invariants.mjs`) aborta **antes de qualquer conexão**
+quando `SECURITY_REAL_DATABASE_URL` não aponta para host local explícito.
+Hosts permitidos: `127.0.0.1`, `localhost`, `::1` — lista fechada, sem flag
+que libere remoto. Erro sanitizado (hostname apenas, sem userinfo/senha).
+
+## Policies validadas por expressão canônica
+
+Substring (`includes("auth.uid()")`) aceitaria policy enfraquecida como
+`auth.uid() = user_id OR true`. `canonicalPolicyExpr()` normaliza
+(minúsculas, sem espaços/parênteses, `(select auth.uid())` → `auth.uid()`) e
+exige **igualdade** com o esperado:
+
+- `selectOwnQual`: `auth.uid()=user_id` (shifts, subscription_payments, payments);
+- `paymentsUpdateWithCheck`: `auth.uid()=user_idandstatus='cancelado'`.
+
+## CI
+
+Job isolado `PostgreSQL Security Invariants E2E` em
+`.github/workflows/ci.yml`: container PostgreSQL 16 efêmero via `services`,
+`SECURITY_REAL_REQUIRE_DB=1` (falha em vez de skipar se o banco não subir) e
+URL sempre `localhost` — nunca Supabase remoto.
+
 > **Sequenciamento:** a correção pode ser implementada agora, mas a evidência
 > final de merge exige atualizar a branch contra `main` depois que a PR #130
 > for aprovada e mergeada, para executar também o novo job de assinatura.
