@@ -462,37 +462,136 @@ test("7. user_id incompatível → payment_id de userA não estende assinatura d
   }
 });
 
-test("8. payment_id vazio e user_id nulo → RPC rejeita com erro 22023 sem criar registros", async () => {
+test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC rejeita com 22023 e rollback total", async () => {
   const userId = await createTestUser("e208");
   try {
-    // Cenário A: payment_id vazio → rejeição pela RPC (guard: trim(p_payment_id) = '')
+    // ── Sub-cenário 8a: validity_days = 0 ────────────────────────────────────
+    const res0 = await callRpc({
+      payment_id: `real-e2e-test8-vd0-${Date.now()}`,
+      user_id: userId,
+      validity_days: 0,
+      months: 1,
+    });
+    assert.equal(
+      res0.ok,
+      false,
+      "validity_days=0 deve ser rejeitado pela RPC",
+    );
+    const err0 = res0.data ?? {};
+    assert.ok(
+      String(err0.code ?? "").includes("22023") ||
+      String(err0.message ?? "").toLowerCase().includes("validity_days") ||
+      String(err0.details ?? "").toLowerCase().includes("validity_days") ||
+      res0.status === 400 ||
+      res0.status === 422,
+      `validity_days=0: esperado 22023/400/422, obtido HTTP ${res0.status} ${JSON.stringify(res0.data)}`,
+    );
+
+    // Invariante de rollback: nenhuma linha em subscription_payments
+    const count0 = await countPayments(userId);
+    assert.equal(count0, 0, "validity_days=0: nenhum pagamento deve ter sido registrado");
+    // Invariante de rollback: nenhuma assinatura criada
+    assert.equal(await getSubscription(userId), null, "validity_days=0: nenhuma assinatura deve ter sido criada");
+
+    // ── Sub-cenário 8b: validity_days = -30 ──────────────────────────────────
+    const resNeg = await callRpc({
+      payment_id: `real-e2e-test8-vdneg-${Date.now()}`,
+      user_id: userId,
+      validity_days: -30,
+      months: 1,
+    });
+    assert.equal(
+      resNeg.ok,
+      false,
+      "validity_days=-30 deve ser rejeitado pela RPC",
+    );
+    const errNeg = resNeg.data ?? {};
+    assert.ok(
+      String(errNeg.code ?? "").includes("22023") ||
+      String(errNeg.message ?? "").toLowerCase().includes("validity_days") ||
+      String(errNeg.details ?? "").toLowerCase().includes("validity_days") ||
+      resNeg.status === 400 ||
+      resNeg.status === 422,
+      `validity_days=-30: esperado 22023/400/422, obtido HTTP ${resNeg.status} ${JSON.stringify(resNeg.data)}`,
+    );
+
+    // Invariante de rollback: ainda zero linhas
+    const countNeg = await countPayments(userId);
+    assert.equal(countNeg, 0, "validity_days=-30: nenhum pagamento deve ter sido registrado");
+    assert.equal(await getSubscription(userId), null, "validity_days=-30: nenhuma assinatura deve ter sido criada");
+
+    // ── Sub-cenário 8c: months = 0 ────────────────────────────────────────────
+    const resM0 = await callRpc({
+      payment_id: `real-e2e-test8-m0-${Date.now()}`,
+      user_id: userId,
+      validity_days: 30,
+      months: 0,
+    });
+    assert.equal(
+      resM0.ok,
+      false,
+      "months=0 deve ser rejeitado pela RPC",
+    );
+    const errM0 = resM0.data ?? {};
+    assert.ok(
+      String(errM0.code ?? "").includes("22023") ||
+      String(errM0.message ?? "").toLowerCase().includes("months") ||
+      String(errM0.details ?? "").toLowerCase().includes("months") ||
+      resM0.status === 400 ||
+      resM0.status === 422,
+      `months=0: esperado 22023/400/422, obtido HTTP ${resM0.status} ${JSON.stringify(resM0.data)}`,
+    );
+
+    const countM0 = await countPayments(userId);
+    assert.equal(countM0, 0, "months=0: nenhum pagamento deve ter sido registrado");
+    assert.equal(await getSubscription(userId), null, "months=0: nenhuma assinatura deve ter sido criada");
+
+    // ── Sub-cenário 8d: months = -1 ───────────────────────────────────────────
+    const resMneg = await callRpc({
+      payment_id: `real-e2e-test8-mneg-${Date.now()}`,
+      user_id: userId,
+      validity_days: 30,
+      months: -1,
+    });
+    assert.equal(
+      resMneg.ok,
+      false,
+      "months=-1 deve ser rejeitado pela RPC",
+    );
+    const errMneg = resMneg.data ?? {};
+    assert.ok(
+      String(errMneg.code ?? "").includes("22023") ||
+      String(errMneg.message ?? "").toLowerCase().includes("months") ||
+      String(errMneg.details ?? "").toLowerCase().includes("months") ||
+      resMneg.status === 400 ||
+      resMneg.status === 422,
+      `months=-1: esperado 22023/400/422, obtido HTTP ${resMneg.status} ${JSON.stringify(resMneg.data)}`,
+    );
+
+    const countMneg = await countPayments(userId);
+    assert.equal(countMneg, 0, "months=-1: nenhum pagamento deve ter sido registrado");
+    assert.equal(await getSubscription(userId), null, "months=-1: nenhuma assinatura deve ter sido criada");
+
+    // ── Sub-cenário 8e: payment_id vazio → rejeição (guard: trim = '') ────────
     const resEmpty = await callRpc({
       payment_id: "",
       user_id: userId,
       validity_days: 30,
+      months: 1,
     });
-    assert.equal(
-      resEmpty.ok,
-      false,
-      "payment_id vazio deve ser rejeitado pela RPC",
-    );
-    // PostgreSQL code 22023 = invalid_parameter_value
-    const errorBody = resEmpty.data ?? {};
+    assert.equal(resEmpty.ok, false, "payment_id vazio deve ser rejeitado");
+    const errEmpty = resEmpty.data ?? {};
     assert.ok(
-      String(errorBody.code ?? "").includes("22023") ||
-      String(errorBody.message ?? "").toLowerCase().includes("ausente") ||
+      String(errEmpty.code ?? "").includes("22023") ||
+      String(errEmpty.message ?? "").toLowerCase().includes("ausente") ||
       resEmpty.status === 400 ||
       resEmpty.status === 422,
-      `Esperado código 22023 ou HTTP 400/422 para payment_id vazio, obtido: ` +
-      `HTTP ${resEmpty.status} ${JSON.stringify(resEmpty.data)}`,
+      `payment_id vazio: esperado 22023/400/422, obtido HTTP ${resEmpty.status} ${JSON.stringify(resEmpty.data)}`,
     );
+    assert.equal(await countPayments(userId), 0, "payment_id vazio: zero linhas");
+    assert.equal(await getSubscription(userId), null, "payment_id vazio: zero assinaturas");
 
-    // Invariante: zero linhas criadas
-    const countAfterEmpty = await countPayments(userId);
-    assert.equal(countAfterEmpty, 0, "Nenhum pagamento deve ter sido registrado");
-    assert.equal(await getSubscription(userId), null, "Nenhuma assinatura deve ter sido criada");
-
-    // Cenário B: user_id nulo → rejeição pela RPC via pg driver direto
+    // ── Sub-cenário 8f: user_id nulo → rejeição via pg driver direto ──────────
     const client = await pgConnect();
     try {
       await assert.rejects(
@@ -501,7 +600,6 @@ test("8. payment_id vazio e user_id nulo → RPC rejeita com erro 22023 sem cria
           ["valid-payment-nulluser-e208", null, 1, 30, 49.9, "approved"],
         ),
         (err) => {
-          // PostgreSQL deve rejeitar com 22023 ou mensagem de validação
           return (
             err.code === "22023" ||
             String(err.message ?? "").toLowerCase().includes("usuario") ||
@@ -514,9 +612,11 @@ test("8. payment_id vazio e user_id nulo → RPC rejeita com erro 22023 sem cria
       await client.end();
     }
 
-    // Invariante: ainda zero pagamentos
-    const countAfterNull = await countPayments(userId);
-    assert.equal(countAfterNull, 0, "Nenhum pagamento registrado após rejeição por user_id nulo");
+    // Invariante final: após todos os sub-cenários inválidos, zero registros persistidos
+    const totalCount = await countPayments(userId);
+    assert.equal(totalCount, 0, "Invariante final: zero linhas em subscription_payments após todos os sub-cenários inválidos");
+    const finalSub = await getSubscription(userId);
+    assert.equal(finalSub, null, "Invariante final: nenhuma assinatura criada após todos os sub-cenários inválidos");
   } finally {
     await cleanupUser(userId);
   }
