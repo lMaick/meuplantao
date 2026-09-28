@@ -14,6 +14,39 @@ import {
   RPC_STATUS,
 } from "../scripts/smoke-test-schema.mjs";
 import { verifyProductionSchema } from "../scripts/verify-production-schema.mjs";
+import { buildCompliantCatalogFixture } from "../scripts/check-rls-invariants.mjs";
+
+// Mock read-only de catálogo íntegro para o estágio de segurança do gate.
+// Sem isso, os testes de RPC válida falhariam no novo estágio de RLS/grants.
+function compliantSecurityMocks() {
+  const c = buildCompliantCatalogFixture();
+  const rows = {
+    tables: c.tables.map((t) => ({ tablename: t.tablename, rls_enabled: t.rls_enabled, force_rls: false })),
+    tableGrants: c.tableGrants.map((g) => ({ tablename: g.tablename, grantee: g.grantee, privilege: g.privilege })),
+    columnGrants: c.columnGrants,
+    policies: c.policies,
+    functions: c.functions.map((f) => ({
+      name: f.name,
+      args: f.args,
+      secdef: f.secdef,
+      owner: f.owner,
+      exec_authenticated: f.exec_authenticated,
+      exec_anon: f.exec_anon,
+      exec_public: f.exec_public,
+    })),
+  };
+  return {
+    securityQueryFn: async (sql) => {
+      if (sql.includes("pg_class")) return { rows: rows.tables };
+      if (sql.includes("role_column_grants")) return { rows: rows.columnGrants };
+      if (sql.includes("role_table_grants")) return { rows: rows.tableGrants };
+      if (sql.includes("pg_policies")) return { rows: rows.policies };
+      if (sql.includes("pg_proc")) return { rows: rows.functions };
+      throw new Error("unexpected catalog query");
+    },
+    securityClient: { query: async () => ({ rows: [] }), end: async () => {} },
+  };
+}
 
 test("smoke-test-schema: normalizeArgTypes normalizes postgres aliases and parameter signatures", () => {
   const types1 = normalizeArgTypes("p_user_id uuid, p_start_time time without time zone, p_created_at timestamptz, p_count int4, p_flag bool DEFAULT false");
@@ -283,6 +316,7 @@ process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric
     databaseUrl: "postgresql://localhost:5432/postgres",
     execPsqlFn: psqlValidExec,
     logger: mockLogger,
+    ...compliantSecurityMocks(),
   });
   assert.strictEqual(psqlValidRes.ok, true);
 
@@ -346,6 +380,7 @@ process_mercadopago_subscription_payment|6|text, uuid, integer, integer, numeric
     },
     logger: mockLogger,
     execPsqlFn: validPsqlExec,
+    ...compliantSecurityMocks(),
   });
   assert.strictEqual(test1.ok, true, "1. production + DATABASE_URL válido + assinaturas corretas must be ok: true");
   assert.strictEqual(test1.strict, true);
@@ -498,6 +533,7 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
     },
     logger: mockLogger,
     Client: MockValidClient,
+    ...compliantSecurityMocks(),
   });
   assert.strictEqual(scenario1.ok, true, "Scenario 1: Strict + DB acessível + assinaturas corretas must be ok: true");
   assert.strictEqual(scenario1.strict, true);
@@ -576,6 +612,7 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
     logger: mockLogger,
     Client: MockValidClient,
     strict: true,
+    ...compliantSecurityMocks(),
   });
   assert.strictEqual(scenario6.ok, true, "Scenario 6: Execution succeeds via node-postgres without psql");
   assert.strictEqual(scenario6.method, "pg", "Execution method must be 'pg' rather than 'psql'");
