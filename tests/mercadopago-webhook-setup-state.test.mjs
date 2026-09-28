@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -24,7 +24,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/webhook") return { url: __setupWebhookUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
-        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-test-token'; export const getMercadoPagoWebhookSecret = () => globalThis.__mockWebhookSecret ?? null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com';",
+        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-test-token'; export const getMercadoPagoWebhookSecret = () => globalThis.__mockWebhookSecret ?? null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com'; export const isProductionEnvironment = () => process.env.VERCEL_ENV?.trim() === 'production' || process.env.NODE_ENV?.trim() === 'production'; export const isMissingWebhookSecretAllowed = () => { if (isProductionEnvironment()) return false; const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase(); return raw !== 'false' && raw !== '0' && raw !== 'no'; }; export const getWebhookSetupState = () => { if (globalThis.__mockWebhookSecret) return { configured: true, failClosed: false }; return { configured: false, failClosed: !isMissingWebhookSecretAllowed() }; }",
         shortCircuit: true,
       };
     }
@@ -177,6 +177,30 @@ test("setup: production without secret returns generic 503 before any Mercado Pa
       assert.equal(getResponse.status, 503);
       assert.deepEqual(await getResponse.json(), { error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR });
       assert.equal(fetchCalls, 0);
+    } finally {
+      restoreEnv(snap);
+    }
+  }
+});
+
+test("setup: production gate stays fail-closed through the centralized policy even with explicit opt-in", async () => {
+  for (const prod of [{ VERCEL_ENV: "production", NODE_ENV: "test", MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET: "true" }, { NODE_ENV: "production", MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET: "true" }]) {
+    const snap = snapshotEnv();
+    try {
+      applyEnv(prod);
+      globalThis.__mockWebhookSecret = null;
+      let fetchCalls = 0;
+      globalThis.fetch = async () => {
+        fetchCalls++;
+        return new Response("{}", { status: 200 });
+      };
+      const response = await webhookPost(paymentRequest("payment-prod-optin-ignored"));
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR });
+      assert.equal(fetchCalls, 0);
+      const direct = validateWebhookSignature(paymentRequest("payment-prod-optin-ignored"), "payment-prod-optin-ignored");
+      assert.equal(direct.valid, false);
+      assert.equal(direct.code, WEBHOOK_NOT_CONFIGURED_CODE);
     } finally {
       restoreEnv(snap);
     }
