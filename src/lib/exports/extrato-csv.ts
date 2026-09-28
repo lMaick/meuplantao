@@ -57,8 +57,20 @@ export function situacaoFinanceira(row: Pick<ExtratoRow, "valorPrevisto" | "valo
   return "Pendente";
 }
 
+export function isFormulaInjection(texto: string): boolean {
+  if (!texto || typeof texto !== "string") return false;
+  if (texto.startsWith("'")) return false;
+  return /^[\s\t\r]*[=+\-@]/.test(texto) || /^[\t\r]/.test(texto);
+}
+
 export function escapeCsvCell(valor: string | number | null | undefined): string {
-  const texto = valor === null || valor === undefined ? "" : String(valor);
+  if (valor === null || valor === undefined) return "";
+  let texto = String(valor);
+
+  if (typeof valor === "string" && isFormulaInjection(texto)) {
+    texto = `'${texto}`;
+  }
+
   if (/[";\r\n,]/.test(texto)) return `"${texto.replaceAll('"', '""')}"`;
   return texto;
 }
