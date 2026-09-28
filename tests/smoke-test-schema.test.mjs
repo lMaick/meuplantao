@@ -34,9 +34,13 @@ function compliantSecurityMocks() {
       exec_anon: f.exec_anon,
       exec_public: f.exec_public,
     })),
+    effectiveTablePrivs: c.effectiveTablePrivs || [],
+    effectiveColumnPrivs: c.effectiveColumnPrivs || [],
   };
   return {
     securityQueryFn: async (sql) => {
+      if (sql.includes("has_table_privilege")) return { rows: rows.effectiveTablePrivs };
+      if (sql.includes("has_column_privilege")) return { rows: rows.effectiveColumnPrivs };
       if (sql.includes("pg_class")) return { rows: rows.tables };
       if (sql.includes("role_column_grants")) return { rows: rows.columnGrants };
       if (sql.includes("role_table_grants")) return { rows: rows.tableGrants };

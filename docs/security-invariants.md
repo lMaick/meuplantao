@@ -22,12 +22,33 @@ O estado esperado espelha as migrations em `supabase/migrations/`:
 
 ## Invariantes checadas
 
+## Privilégios EFETIVOS via PUBLIC/herança (MAI-135)
+
+A auditoria humana reprovou o SHA `4cd5c5a` porque filtrar
+`role_table_grants` por `grantee = 'authenticated'` ignora privilégios
+obtidos via `GRANT ... TO PUBLIC` ou herança de roles — o gate dizia "ok"
+enquanto `authenticated` conseguia escrever de fato (falso negativo).
+
+Desde MAI-135, as invariantes de INSERT/UPDATE usam os helpers nativos do
+PostgreSQL, que computam o privilégio **efetivo** do papel (direto + PUBLIC
++ herança):
+
+- `has_table_privilege('authenticated', 'public.<tabela>', '<privilege>')`
+  para privilégios de tabela;
+- `has_column_privilege('authenticated', 'public.<tabela>', '<coluna>', '<privilege>')`
+  para privilégios de coluna (ex.: `obligations.valor_devido`).
+
+As linhas nominais de `role_table_grants`/`role_column_grants` continuam
+checadas como evidência adicional; qualquer uma das duas fontes acusa
+divergência e falha o gate (fail-closed).
+
 ### `public.shifts`
 - `shifts.rls_enabled` — `relrowsecurity = true`.
-- `shifts.no_insert_authenticated` — sem `INSERT` em `role_table_grants` para `authenticated`.
-  Detecta drift manual tipo `GRANT INSERT ON shifts TO authenticated`.
-- `shifts.no_update_authenticated` — sem `UPDATE` em tabela **nem** em colunas
-  (`role_table_grants` + `role_column_grants`) para `authenticated`.
+- `shifts.no_insert_authenticated` — sem `INSERT` **efetivo** para `authenticated`.
+  Detecta drift manual tipo `GRANT INSERT ON shifts TO authenticated` **e**
+  `GRANT INSERT ON shifts TO PUBLIC`.
+- `shifts.no_update_authenticated` — sem `UPDATE` **efetivo** em tabela **nem** em colunas
+  (inclui grants via `PUBLIC`/herança).
 - `shifts.select_own` — `GRANT SELECT` + policy `shifts_select_own`
   (`FOR SELECT TO authenticated USING (auth.uid() = user_id)`).
 - `shifts.no_direct_write_policies` — policies `shifts_insert_own` e
@@ -40,8 +61,9 @@ O estado esperado espelha as migrations em `supabase/migrations/`:
 
 ### `public.subscription_payments`
 - `subscription_payments.rls_enabled` — RLS ON.
-- `subscription_payments.no_write_authenticated` — sem `INSERT`/`UPDATE`/`DELETE`
-  (tabela + colunas) para `authenticated`.
+- `subscription_payments.no_write_authenticated` — sem escrita **efetiva**
+  (`INSERT`/`UPDATE`/`DELETE`, tabela + colunas) para `authenticated`,
+  incluindo grants via `PUBLIC`/herança.
 - `subscription_payments.select_isolated` — `GRANT SELECT` + policy
   `subscription_payments_select_own` com `auth.uid()` (usuário não lê
   pagamentos de outros usuários).
@@ -54,15 +76,17 @@ O estado esperado espelha as migrations em `supabase/migrations/`:
 - `payments.update_restricted` — `payments_update_own` com
   `WITH CHECK (status = 'cancelado')`.
 - `obligations.rls_enabled` — RLS ON.
-- `obligations.no_financial_update` — sem `UPDATE` em tabela nem na coluna
-  `valor_devido` para `authenticated`.
+- `obligations.no_financial_update` — sem `UPDATE` **efetivo** em tabela nem na coluna
+  `valor_devido` para `authenticated` (inclui `GRANT UPDATE (valor_devido) ... TO PUBLIC`).
 
 ## Como é verificado
 
-`scripts/check-rls-invariants.mjs` executa 5 `SELECT`s (veja
-`SECURITY_CATALOG_QUERIES`): RLS (`pg_class`), grants de tabela
-(`role_table_grants`), grants de coluna (`role_column_grants`), policies
-(`pg_policies`) e funções (`pg_proc` + `has_function_privilege`).
+`scripts/check-rls-invariants.mjs` executa 7 `SELECT`s (veja
+`SECURITY_CATALOG_QUERIES`): RLS (`pg_class`), grants nominais de tabela
+(`role_table_grants`), grants nominais de coluna (`role_column_grants`),
+policies (`pg_policies`), funções (`pg_proc` + `has_function_privilege`) e,
+desde MAI-135, privilégios efetivos (`has_table_privilege` por
+tabela × privilégio; `has_column_privilege` por coluna × privilégio).
 
 `scripts/smoke-test-schema.mjs` (`runSmokeTest`, modo strict) roda essa
 verificação após confirmar as RPCs; divergência retorna `ok: false` e o
@@ -73,4 +97,17 @@ Em modo não-strict/preview a checagem é diagnóstica (warning, não bloqueia).
 
 `tests/security-invariants.test.mjs` testa o avaliador puro
 `evaluateSecurityInvariants()` com fixtures/mocks de catálogo
-(`buildCompliantCatalogFixture()` + mutações de drift), sem tocar no banco.
+(`buildCompliantCatalogFixture()` + mutações de drift), sem tocar no banco —
+incluindo cenários `GRANT ... TO PUBLIC` e a prova de que o SHA auditado
+`4cd5c5a` não os detectava (falso negativo) enquanto o checker atual detecta.
+
+`tests/security-invariants-real.local.mjs` (fora do `npm test`; rodar com
+`npm run test:security-real`) executa o checker de verdade contra PostgreSQL
+local: monta papéis/tabelas/policies, aplica drift temporário
+(`GRANT ... TO PUBLIC` em `shifts`, `subscription_payments` e
+`obligations.valor_devido`), observa o gate falhar em cada cenário e restaura
+com `REVOKE` + `DROP` final. Nenhum banco remoto/produção é tocado.
+
+> **Sequenciamento:** a correção pode ser implementada agora, mas a evidência
+> final de merge exige atualizar a branch contra `main` depois que a PR #130
+> for aprovada e mergeada, para executar também o novo job de assinatura.

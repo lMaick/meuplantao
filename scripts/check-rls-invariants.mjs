@@ -6,18 +6,23 @@
  * PostgreSQL (pg_catalog / information_schema), SEM nenhuma mutação.
  *
  * Invariantes checadas (ver docs/security-invariants.md):
- *  - public.shifts: RLS habilitada; authenticated SEM INSERT direto;
- *    authenticated SEM UPDATE direto (tabela + colunas); SELECT próprio
+ *  - public.shifts: RLS habilitada; authenticated SEM INSERT EFETIVO;
+ *    authenticated SEM UPDATE EFETIVO (tabela + colunas); SELECT próprio
  *    preservado (grant + policy shifts_select_own com auth.uid()).
  *  - RPC save_shift_with_obligation: EXECUTE para authenticated;
  *    SECURITY DEFINER; SEM EXECUTE para anon/public.
  *  - public.subscription_payments: RLS habilitada; authenticated SEM
- *    escrita direta (INSERT/UPDATE/DELETE, tabela + colunas); SELECT
+ *    escrita EFETIVA (INSERT/UPDATE/DELETE, tabela + colunas); SELECT
  *    próprio isolado por auth.uid().
  *  - public.payments: RLS habilitada; SEM policy de DELETE; SELECT próprio
  *    isolado; UPDATE próprio restrito a cancelamento lógico.
- *  - public.obligations: RLS habilitada; authenticated SEM UPDATE direto
+ *  - public.obligations: RLS habilitada; authenticated SEM UPDATE EFETIVO
  *    na coluna financeira valor_devido.
+ *
+ * "EFETIVO" = has_table_privilege / has_column_privilege para o papel
+ * authenticated, que computam grants diretos + via PUBLIC + herança de
+ * roles. Checar apenas role_table_grants com grantee = 'authenticated'
+ * gera falso negativo quando o drift usa GRANT ... TO PUBLIC (MAI-135).
  *
  * Qualquer divergência => gate falha (fail-closed).
  */
@@ -109,6 +114,19 @@ export const SECURITY_CATALOG_QUERIES = {
       join pg_catalog.pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public'
        and p.proname = any($1);`,
+  effectiveTablePrivs: `
+    select t.tablename, p.privilege,
+           has_table_privilege('authenticated', ('public.' || t.tablename)::regclass, p.privilege) as has_priv
+      from (select unnest($1::text[]) as tablename) t
+     cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) p(privilege)
+     where to_regclass('public.' || t.tablename) is not null;`,
+  effectiveColumnPrivs: `
+    select c.table_name as tablename, c.column_name, p.privilege,
+           has_column_privilege('authenticated', ('public.' || c.table_name)::regclass, c.column_name, p.privilege) as has_priv
+      from information_schema.columns c
+     cross join (values ('INSERT'), ('UPDATE')) p(privilege)
+     where c.table_schema = 'public'
+       and c.table_name = any($1);`,
 };
 
 export const SECURITY_STATUS = {
@@ -132,6 +150,25 @@ function hasColumnGrant(catalog, table, grantee, privilege, column = null) {
       g.grantee === grantee &&
       String(g.privilege).toUpperCase() === privilege &&
       (column ? g.column_name === column : true),
+  );
+}
+
+function effectiveTablePriv(catalog, table, privilege) {
+  return (catalog.effectiveTablePrivs || []).some(
+    (e) =>
+      e.tablename === table &&
+      String(e.privilege).toUpperCase() === privilege &&
+      e.has_priv === true,
+  );
+}
+
+function effectiveColumnPriv(catalog, table, privilege, column = null) {
+  return (catalog.effectiveColumnPrivs || []).some(
+    (e) =>
+      e.tablename === table &&
+      String(e.privilege).toUpperCase() === privilege &&
+      e.has_priv === true &&
+      (column ? e.column_name === column : true),
   );
 }
 
@@ -170,27 +207,38 @@ export function evaluateSecurityInvariants(catalog = {}) {
     );
   }
 
-  if (!hasTableGrant(catalog, "shifts", "authenticated", "INSERT")) {
-    pass("shifts.no_insert_authenticated", "authenticated NÃO possui INSERT direto em public.shifts");
+  const shiftsNominalInsert = hasTableGrant(catalog, "shifts", "authenticated", "INSERT");
+  const shiftsEffectiveInsert =
+    effectiveTablePriv(catalog, "shifts", "INSERT") ||
+    effectiveColumnPriv(catalog, "shifts", "INSERT");
+  if (!shiftsNominalInsert && !shiftsEffectiveInsert) {
+    pass("shifts.no_insert_authenticated", "authenticated SEM INSERT EFETIVO em public.shifts (direto, PUBLIC ou herança)");
   } else {
     fail(
       "shifts.no_insert_authenticated",
-      "authenticated NÃO possui INSERT direto em public.shifts",
-      "role_table_grants contém INSERT para authenticated (drift manual?)",
+      "authenticated SEM INSERT EFETIVO em public.shifts (direto, PUBLIC ou herança)",
+      shiftsEffectiveInsert
+        ? "has_table/column_privilege(authenticated, INSERT) = true — inclui grants via PUBLIC/herança (drift manual?)"
+        : "role_table_grants contém INSERT para authenticated (drift manual?)",
     );
   }
 
   const shiftsTableUpdate = hasTableGrant(catalog, "shifts", "authenticated", "UPDATE");
   const shiftsColumnUpdate = hasColumnGrant(catalog, "shifts", "authenticated", "UPDATE");
-  if (!shiftsTableUpdate && !shiftsColumnUpdate) {
-    pass("shifts.no_update_authenticated", "authenticated NÃO possui UPDATE direto em public.shifts (tabela + colunas)");
+  const shiftsEffectiveUpdate =
+    effectiveTablePriv(catalog, "shifts", "UPDATE") ||
+    effectiveColumnPriv(catalog, "shifts", "UPDATE");
+  if (!shiftsTableUpdate && !shiftsColumnUpdate && !shiftsEffectiveUpdate) {
+    pass("shifts.no_update_authenticated", "authenticated SEM UPDATE EFETIVO em public.shifts (tabela + colunas, inclui PUBLIC/herança)");
   } else {
     fail(
       "shifts.no_update_authenticated",
-      "authenticated NÃO possui UPDATE direto em public.shifts (tabela + colunas)",
-      shiftsTableUpdate
-        ? "role_table_grants contém UPDATE para authenticated"
-        : "role_column_grants contém UPDATE de coluna para authenticated",
+      "authenticated SEM UPDATE EFETIVO em public.shifts (tabela + colunas, inclui PUBLIC/herança)",
+      shiftsEffectiveUpdate
+        ? "has_table/column_privilege(authenticated, UPDATE) = true — inclui grants via PUBLIC/herança (drift manual?)"
+        : shiftsTableUpdate
+          ? "role_table_grants contém UPDATE para authenticated"
+          : "role_column_grants contém UPDATE de coluna para authenticated",
     );
   }
 
@@ -287,13 +335,20 @@ export function evaluateSecurityInvariants(catalog = {}) {
       g.grantee === "authenticated" &&
       ["INSERT", "UPDATE"].includes(String(g.privilege).toUpperCase()),
   );
-  if (!subPayWriteTable && !subPayWriteColumn) {
-    pass("subscription_payments.no_write_authenticated", "authenticated SEM escrita direta em subscription_payments (INSERT/UPDATE/DELETE)");
+  const subPayEffectiveWrite = ["INSERT", "UPDATE", "DELETE"].some(
+    (priv) =>
+      effectiveTablePriv(catalog, "subscription_payments", priv) ||
+      (priv !== "DELETE" && effectiveColumnPriv(catalog, "subscription_payments", priv)),
+  );
+  if (!subPayWriteTable && !subPayWriteColumn && !subPayEffectiveWrite) {
+    pass("subscription_payments.no_write_authenticated", "authenticated SEM escrita EFETIVA em subscription_payments (INSERT/UPDATE/DELETE, inclui PUBLIC/herança)");
   } else {
     fail(
       "subscription_payments.no_write_authenticated",
-      "authenticated SEM escrita direta em subscription_payments (INSERT/UPDATE/DELETE)",
-      "grant de escrita para authenticated detectado (drift manual?)",
+      "authenticated SEM escrita EFETIVA em subscription_payments (INSERT/UPDATE/DELETE, inclui PUBLIC/herança)",
+      subPayEffectiveWrite
+        ? "has_table/column_privilege(authenticated, escrita) = true — inclui grants via PUBLIC/herança (drift manual?)"
+        : "grant de escrita para authenticated detectado (drift manual?)",
     );
   }
 
@@ -367,16 +422,22 @@ export function evaluateSecurityInvariants(catalog = {}) {
   } else {
     fail("obligations.rls_enabled", "public.obligations possui RLS habilitada", "relrowsecurity = false ou tabela ausente");
   }
+  const obligationsEffectiveUpdate =
+    effectiveTablePriv(catalog, "obligations", "UPDATE") ||
+    effectiveColumnPriv(catalog, "obligations", "UPDATE", "valor_devido");
   if (
     !hasTableGrant(catalog, "obligations", "authenticated", "UPDATE") &&
-    !hasColumnGrant(catalog, "obligations", "authenticated", "UPDATE", "valor_devido")
+    !hasColumnGrant(catalog, "obligations", "authenticated", "UPDATE", "valor_devido") &&
+    !obligationsEffectiveUpdate
   ) {
-    pass("obligations.no_financial_update", "authenticated SEM UPDATE direto na coluna financeira obligations.valor_devido");
+    pass("obligations.no_financial_update", "authenticated SEM UPDATE EFETIVO na coluna financeira obligations.valor_devido (inclui PUBLIC/herança)");
   } else {
     fail(
       "obligations.no_financial_update",
-      "authenticated SEM UPDATE direto na coluna financeira obligations.valor_devido",
-      "grant UPDATE (tabela ou coluna valor_devido) detectado para authenticated",
+      "authenticated SEM UPDATE EFETIVO na coluna financeira obligations.valor_devido (inclui PUBLIC/herança)",
+      obligationsEffectiveUpdate
+        ? "has_table/column_privilege(authenticated, UPDATE em obligations.valor_devido) = true — inclui grants via PUBLIC/herança (drift manual?)"
+        : "grant UPDATE (tabela ou coluna valor_devido) detectado para authenticated",
     );
   }
 
@@ -422,6 +483,31 @@ export function buildCompliantCatalogFixture() {
       { name: "save_shift_with_obligation", args: "uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, text", secdef: true, owner: "postgres", exec_authenticated: true, exec_anon: false, exec_public: false },
       { name: "register_payment", args: "uuid, numeric, date", secdef: false, owner: "postgres", exec_authenticated: true, exec_anon: false, exec_public: false },
     ],
+    effectiveTablePrivs: [
+      { tablename: "shifts", privilege: "SELECT", has_priv: true },
+      { tablename: "shifts", privilege: "INSERT", has_priv: false },
+      { tablename: "shifts", privilege: "UPDATE", has_priv: false },
+      { tablename: "shifts", privilege: "DELETE", has_priv: true },
+      { tablename: "shifts", privilege: "TRUNCATE", has_priv: false },
+      { tablename: "subscription_payments", privilege: "SELECT", has_priv: true },
+      { tablename: "subscription_payments", privilege: "INSERT", has_priv: false },
+      { tablename: "subscription_payments", privilege: "UPDATE", has_priv: false },
+      { tablename: "subscription_payments", privilege: "DELETE", has_priv: false },
+      { tablename: "subscription_payments", privilege: "TRUNCATE", has_priv: false },
+      { tablename: "payments", privilege: "SELECT", has_priv: true },
+      { tablename: "payments", privilege: "INSERT", has_priv: true },
+      { tablename: "payments", privilege: "UPDATE", has_priv: true },
+      { tablename: "payments", privilege: "DELETE", has_priv: false },
+      { tablename: "obligations", privilege: "SELECT", has_priv: true },
+      { tablename: "obligations", privilege: "UPDATE", has_priv: false },
+      { tablename: "obligations", privilege: "INSERT", has_priv: false },
+      { tablename: "obligations", privilege: "DELETE", has_priv: false },
+    ],
+    effectiveColumnPrivs: [
+      { tablename: "obligations", column_name: "data_prevista", privilege: "UPDATE", has_priv: true },
+      { tablename: "obligations", column_name: "updated_at", privilege: "UPDATE", has_priv: true },
+      { tablename: "obligations", column_name: "valor_devido", privilege: "UPDATE", has_priv: false },
+    ],
   };
 }
 
@@ -447,12 +533,14 @@ export async function checkSecurityInvariantsViaPg(databaseUrl, options = {}) {
     const tables = SECURITY_TABLES;
     const functions = SECURITY_FUNCTIONS;
 
-    const [rlsRes, tableGrantsRes, columnGrantsRes, policiesRes, functionsRes] = await Promise.all([
+    const [rlsRes, tableGrantsRes, columnGrantsRes, policiesRes, functionsRes, effTableRes, effColumnRes] = await Promise.all([
       queryFn(SECURITY_CATALOG_QUERIES.tablesRls, [tables]),
       queryFn(SECURITY_CATALOG_QUERIES.tableGrants, [tables]),
       queryFn(SECURITY_CATALOG_QUERIES.columnGrants, [tables]),
       queryFn(SECURITY_CATALOG_QUERIES.policies, [tables]),
       queryFn(SECURITY_CATALOG_QUERIES.functions, [functions]),
+      queryFn(SECURITY_CATALOG_QUERIES.effectiveTablePrivs, [tables]),
+      queryFn(SECURITY_CATALOG_QUERIES.effectiveColumnPrivs, [tables]),
     ]);
 
     const catalog = {
@@ -488,6 +576,17 @@ export async function checkSecurityInvariantsViaPg(databaseUrl, options = {}) {
         exec_authenticated: r.exec_authenticated === true,
         exec_anon: r.exec_anon === true,
         exec_public: r.exec_public === true,
+      })),
+      effectiveTablePrivs: (effTableRes.rows || []).map((r) => ({
+        tablename: r.tablename,
+        privilege: r.privilege,
+        has_priv: r.has_priv === true,
+      })),
+      effectiveColumnPrivs: (effColumnRes.rows || []).map((r) => ({
+        tablename: r.tablename,
+        column_name: r.column_name,
+        privilege: r.privilege,
+        has_priv: r.has_priv === true,
       })),
     };
 
