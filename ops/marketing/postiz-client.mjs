@@ -11,14 +11,39 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const POSTIZ_URL = process.env.POSTIZ_URL || 'http://localhost:4007';
 const CONFIG_PATH = path.resolve(process.cwd(), 'ops/marketing/postiz-config.json');
 
-function loadConfig() {
-  if (fs.existsSync(CONFIG_PATH)) {
+export function isPlaceholder(val) {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  return (
+    trimmed === '' ||
+    /^\$\{[A-Za-z0-9_]+\}$/.test(trimmed) ||
+    trimmed === 'SUA_API_KEY' ||
+    trimmed.startsWith('<SUA_')
+  );
+}
+
+export function tryLoadEnv() {
+  for (const envFile of ['.env.local', '.env']) {
+    const fullPath = path.resolve(process.cwd(), envFile);
+    if (fs.existsSync(fullPath) && typeof process.loadEnvFile === 'function') {
+      try {
+        process.loadEnvFile(fullPath);
+      } catch {
+        // Silently skip if env file cannot be parsed
+      }
+    }
+  }
+}
+
+export function loadConfig(configPath = CONFIG_PATH) {
+  if (fs.existsSync(configPath)) {
     try {
-      return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+      return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     } catch {
       return {};
     }
@@ -26,14 +51,28 @@ function loadConfig() {
   return {};
 }
 
-function saveConfig(cfg) {
-  const dir = path.dirname(CONFIG_PATH);
+export function saveConfig(cfg, configPath = CONFIG_PATH) {
+  const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf-8');
 }
 
+export function resolveApiKey(cfg = {}, env = process.env) {
+  const envKey = (env.POSTIZ_API_KEY || '').trim();
+  if (envKey && !isPlaceholder(envKey)) {
+    return envKey;
+  }
+  const configKey = (cfg.apiKey || '').trim();
+  if (configKey && !isPlaceholder(configKey)) {
+    return configKey;
+  }
+  return '';
+}
+
+tryLoadEnv();
 const config = loadConfig();
-const API_KEY = process.env.POSTIZ_API_KEY || config.apiKey || '';
+const API_KEY = resolveApiKey(config);
+
 
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -259,13 +298,14 @@ Uso do Postiz Client CLI:
 
   if (command === 'set-key') {
     const key = args[1];
-    if (!key) {
-      console.error(`Informe a API Key.`);
+    if (!key || isPlaceholder(key)) {
+      console.error(`❌ Informe uma API Key válida (não placeholder).`);
       process.exit(1);
     }
     config.apiKey = key;
     saveConfig(config);
     console.log(`✅ API Key salva em ${CONFIG_PATH}`);
+    console.log(`ℹ️ O arquivo ${CONFIG_PATH} é ignorado pelo Git para proteger credenciais.`);
     return;
   }
 
@@ -375,7 +415,21 @@ Uso do Postiz Client CLI:
   console.error(`Comando desconhecido: ${command}`);
 }
 
-main().catch(err => {
-  console.error('Erro inesperado:', err);
-  process.exit(1);
-});
+const isDirectExecution = () => {
+  if (!process.argv[1]) return false;
+  try {
+    const executedFile = path.resolve(process.argv[1]);
+    const currentFile = fileURLToPath(import.meta.url);
+    return executedFile === currentFile;
+  } catch {
+    return false;
+  }
+};
+
+if (isDirectExecution()) {
+  main().catch(err => {
+    console.error('Erro inesperado:', err);
+    process.exit(1);
+  });
+}
+
