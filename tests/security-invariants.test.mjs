@@ -29,7 +29,11 @@ test("security-invariants: queries do verificador são somente leitura", () => {
   for (const [key, sql] of Object.entries(SECURITY_CATALOG_QUERIES)) {
     const firstWord = sql.trim().split(/\s+/)[0].toLowerCase();
     assert.strictEqual(firstWord, "select", `${key} deve começar com SELECT`);
-    assert.ok(!forbidden.test(sql), `${key} não deve conter mutação/DDL/DCL`);
+    // Remove literais de string ('INSERT', 'UPDATE', ...) antes de procurar
+    // comandos de mutação/DDL/DCL fora de literais.
+    const code = sql.replace(/'([^']|'')*'/g, "''");
+    assert.ok(!forbidden.test(code), `${key} não deve conter mutação/DDL/DCL`);
+    assert.ok(!/;\s*\S/.test(code.trim().replace(/;$/, "")), `${key} deve ser statement único`);
   }
 });
 
@@ -163,12 +167,27 @@ test("security-invariants: UPDATE financeiro direto em obligations.valor_devido 
 
 function makeSecurityQueryFn(catalog) {
   return async (sql, params) => {
+    if (sql.includes("has_table_privilege")) return { rows: catalog.effectiveTablePrivs || [] };
+    if (sql.includes("has_column_privilege")) return { rows: catalog.effectiveColumnPrivs || [] };
     if (sql.includes("pg_class")) return { rows: catalog.tables };
     if (sql.includes("role_column_grants")) return { rows: catalog.columnGrants };
     if (sql.includes("role_table_grants")) return { rows: catalog.tableGrants };
     if (sql.includes("pg_policies")) return { rows: catalog.policies };
     if (sql.includes("pg_proc")) return { rows: catalog.functions };
     throw new Error(`unexpected catalog query: ${String(sql).slice(0, 60)}`);
+  };
+}
+
+// Mapeia a fixture completa (inclui privilégios efetivos) para o mock.
+function mockCatalogFromFixture(c) {
+  return {
+    tables: c.tables,
+    tableGrants: c.tableGrants,
+    columnGrants: c.columnGrants,
+    policies: c.policies,
+    functions: c.functions,
+    effectiveTablePrivs: c.effectiveTablePrivs || [],
+    effectiveColumnPrivs: c.effectiveColumnPrivs || [],
   };
 }
 
@@ -293,4 +312,120 @@ test("security-invariants: production gate strict falha quando invariante diverg
   });
   assert.strictEqual(failRes.ok, false, "Gate strict deve falhar em drift de segurança");
   assert.ok(failRes.security && failRes.security.ok === false);
+});
+
+// --- MAI-135: privilégios efetivos via PUBLIC/herança (falso negativo do SHA 4cd5c5a) ---
+
+function publicDriftCatalog(mutator) {
+  return drift(buildCompliantCatalogFixture(), mutator);
+}
+
+function setEffective(catalog, tablename, privilege, hasPriv, columnName = null) {
+  if (columnName) {
+    const entry = catalog.effectiveColumnPrivs.find(
+      (e) => e.tablename === tablename && e.column_name === columnName && e.privilege === privilege,
+    );
+    if (entry) entry.has_priv = hasPriv;
+    else catalog.effectiveColumnPrivs.push({ tablename, column_name: columnName, privilege, has_priv: hasPriv });
+  } else {
+    const entry = catalog.effectiveTablePrivs.find(
+      (e) => e.tablename === tablename && e.privilege === privilege,
+    );
+    if (entry) entry.has_priv = hasPriv;
+    else catalog.effectiveTablePrivs.push({ tablename, privilege, has_priv: hasPriv });
+  }
+}
+
+test("security-invariants (MAI-135): PUBLIC com INSERT em shifts falha o gate", () => {
+  const catalog = publicDriftCatalog((c) => {
+    c.tableGrants.push({ tablename: "shifts", grantee: "PUBLIC", privilege: "INSERT" });
+    setEffective(c, "shifts", "INSERT", true);
+  });
+  const res = evaluateSecurityInvariants(catalog);
+  assert.strictEqual(res.ok, false);
+  const check = res.checks.find((x) => x.id === "shifts.no_insert_authenticated");
+  assert.strictEqual(check.status, SECURITY_STATUS.FAIL);
+  assert.ok(check.details.includes("PUBLIC"), "detalhe deve indicar via PUBLIC/herança");
+});
+
+test("security-invariants (MAI-135): PUBLIC com UPDATE em shifts falha o gate", () => {
+  const catalog = publicDriftCatalog((c) => {
+    c.tableGrants.push({ tablename: "shifts", grantee: "PUBLIC", privilege: "UPDATE" });
+    setEffective(c, "shifts", "UPDATE", true);
+  });
+  const res = evaluateSecurityInvariants(catalog);
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.checks.find((x) => x.id === "shifts.no_update_authenticated").status, SECURITY_STATUS.FAIL);
+});
+
+test("security-invariants (MAI-135): escrita efetiva via PUBLIC em subscription_payments falha o gate", () => {
+  for (const priv of ["INSERT", "UPDATE", "DELETE"]) {
+    const catalog = publicDriftCatalog((c) => {
+      c.tableGrants.push({ tablename: "subscription_payments", grantee: "PUBLIC", privilege: priv });
+      setEffective(c, "subscription_payments", priv, true);
+    });
+    const res = evaluateSecurityInvariants(catalog);
+    assert.strictEqual(res.ok, false, `PUBLIC ${priv} deve falhar o gate`);
+    assert.strictEqual(
+      res.checks.find((x) => x.id === "subscription_payments.no_write_authenticated").status,
+      SECURITY_STATUS.FAIL,
+    );
+  }
+});
+
+test("security-invariants (MAI-135): PUBLIC com UPDATE em obligations.valor_devido falha o gate", () => {
+  const catalog = publicDriftCatalog((c) => {
+    c.columnGrants.push({ tablename: "obligations", column_name: "valor_devido", grantee: "PUBLIC", privilege: "UPDATE" });
+    setEffective(c, "obligations", "UPDATE", true, "valor_devido");
+  });
+  const res = evaluateSecurityInvariants(catalog);
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.checks.find((x) => x.id === "obligations.no_financial_update").status, SECURITY_STATUS.FAIL);
+});
+
+test("security-invariants (MAI-135): SHA auditado 4cd5c5a não detecta drift via PUBLIC (falso negativo)", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const { pathToFileURL, fileURLToPath } = await import("node:url");
+
+  const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+  let oldSource;
+  try {
+    oldSource = execFileSync("git", ["show", "4cd5c5a:scripts/check-rls-invariants.mjs"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    console.warn("SHA auditado indisponível no clone; prova do falso negativo pulada.");
+    return;
+  }
+  // Arquivo temporário DENTRO do repo para que `import "pg"` resolva via node_modules.
+  const tmpFile = fileURLToPath(new URL("./.tmp-check-rls-invariants-old.mjs", import.meta.url));
+  writeFileSync(tmpFile, oldSource);
+  try {
+    const oldModule = await import(pathToFileURL(tmpFile).href);
+    // Catálogo como o banco real retornaria sob GRANT ... TO PUBLIC:
+    // nenhuma linha nominal para authenticated, privilégio efetivo presente.
+    const catalog = publicDriftCatalog((c) => {
+      c.tableGrants.push({ tablename: "shifts", grantee: "PUBLIC", privilege: "INSERT" });
+      delete c.effectiveTablePrivs;
+      delete c.effectiveColumnPrivs;
+    });
+    const oldRes = oldModule.evaluateSecurityInvariants(catalog);
+    assert.strictEqual(oldRes.ok, true, "SHA auditado deve exibir o falso negativo (ok:true sob drift PUBLIC)");
+
+    const newCatalog = publicDriftCatalog((c) => {
+      c.tableGrants.push({ tablename: "shifts", grantee: "PUBLIC", privilege: "INSERT" });
+      setEffective(c, "shifts", "INSERT", true);
+    });
+    const newRes = evaluateSecurityInvariants(newCatalog);
+    assert.strictEqual(newRes.ok, false, "Novo checker deve falhar sob o mesmo drift PUBLIC");
+  } finally {
+    try {
+      unlinkSync(tmpFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
 });
