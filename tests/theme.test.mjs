@@ -37,3 +37,39 @@ test("theme toggle exposes accessible light, dark, and system controls", () => {
   assert.match(toggleSource, /aria-checked=\{selected\}/);
   assert.match(settingsSource, /<ThemeToggle \/>/);
 });
+
+test("getToggledTheme provides direct 1-click deterministic toggle", async () => {
+  const { getToggledTheme } = await import("../src/components/theme/theme-utils.ts");
+  assert.equal(getToggledTheme("dark", "dark"), "light");
+  assert.equal(getToggledTheme("light", "light"), "dark");
+  assert.equal(getToggledTheme("system", "dark"), "light");
+  assert.equal(getToggledTheme("system", "light"), "dark");
+});
+
+test("getResolvedTheme correctly handles system and explicit themes", async () => {
+  const { getResolvedTheme } = await import("../src/components/theme/theme-utils.ts");
+  assert.equal(getResolvedTheme("system", "dark"), "dark");
+  assert.equal(getResolvedTheme("system", "light"), "light");
+  assert.equal(getResolvedTheme("dark", "light"), "dark");
+  assert.equal(getResolvedTheme("light", "dark"), "light");
+});
+
+test("AppShell sidebar uses compact theme toggle and drawer omits redundant toggle", () => {
+  const shellSource = fs.readFileSync("src/components/ui/app-shell.tsx", "utf8");
+  // Desktop sidebar has compact toggle
+  assert.match(shellSource, /<aside[\s\S]*?<ThemeToggle compact \/>[\s\S]*?<\/aside>/);
+  // Desktop sidebar does NOT contain full/redundant ThemeToggle
+  const asideMatch = shellSource.match(/<aside[\s\S]*?<\/aside>/);
+  assert.ok(asideMatch, "Sidebar desktop must exist");
+  assert.doesNotMatch(asideMatch[0], /<ThemeToggle \/>/, "Sidebar must not contain full ThemeToggle");
+
+  // Drawer does NOT contain redundant ThemeToggle
+  const drawerBlock = shellSource.match(/role="dialog"[\s\S]*?<\/div>\s*<\/div>\s*\)/);
+  assert.ok(drawerBlock, "Drawer mobile deve existir");
+  assert.doesNotMatch(
+    drawerBlock[0],
+    /<ThemeToggle/,
+    "Drawer não deve conter ThemeToggle redundante"
+  );
+});
+
