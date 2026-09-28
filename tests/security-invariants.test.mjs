@@ -4,6 +4,8 @@ import {
   evaluateSecurityInvariants,
   buildCompliantCatalogFixture,
   checkSecurityInvariantsViaPg,
+  assertLocalDatabaseUrl,
+  canonicalPolicyExpr,
   SECURITY_STATUS,
   SECURITY_CATALOG_QUERIES,
 } from "../scripts/check-rls-invariants.mjs";
@@ -428,4 +430,104 @@ test("security-invariants (MAI-135): SHA auditado 4cd5c5a não detecta drift via
       // Ignore cleanup errors
     }
   }
+});
+
+// --- Auditoria final PR #129: safety guard do teste real (fail-closed) ---
+
+test("safety-guard: somente hosts locais explícitos são aceitos", () => {
+  assert.strictEqual(assertLocalDatabaseUrl("postgresql://postgres:postgres@127.0.0.1:55433/postgres"), "127.0.0.1");
+  assert.strictEqual(assertLocalDatabaseUrl("postgresql://postgres:postgres@localhost:5432/postgres"), "localhost");
+  assert.strictEqual(assertLocalDatabaseUrl("postgresql://postgres:postgres@[::1]:5432/postgres"), "[::1]");
+  assert.strictEqual(assertLocalDatabaseUrl("postgres://user:pw@LOCALHOST:5432/db"), "localhost");
+});
+
+test("safety-guard: hosts remotos abortam sem conectar e sem vazar credenciais", () => {
+  const blocked = [
+    "postgresql://postgres:SuperSecret123@db.abcdef.supabase.co:5432/postgres",
+    "postgresql://postgres:SuperSecret123@aws-0-sa-east-1.pooler.supabase.com:6543/postgres",
+    "postgresql://admin:SuperSecret123@prod.example.com:5432/postgres",
+    "postgresql://postgres:SuperSecret123@192.168.1.10:5432/postgres",
+    "postgresql://postgres:SuperSecret123@[2001:db8::1]:5432/postgres",
+    "not-a-url",
+    "",
+  ];
+  for (const url of blocked) {
+    assert.throws(() => assertLocalDatabaseUrl(url), /FAIL-CLOSED/, `deve bloquear: ${url.replace(/:[^:@/]+@/, ":[REDACTED]@")}`);
+  }
+  // A mensagem de erro nunca vaza a senha.
+  try {
+    assertLocalDatabaseUrl("postgresql://postgres:SuperSecret123@db.abcdef.supabase.co:5432/postgres");
+    assert.fail("deveria ter lançado");
+  } catch (err) {
+    assert.ok(!String(err.message).includes("SuperSecret123"), "erro sanitizado não vaza senha");
+    assert.ok(String(err.message).includes("db.abcdef.supabase.co"), "erro indica o host bloqueado");
+  }
+});
+
+// --- Auditoria final PR #129: policies enfraquecidas com OR true ---
+
+function weakenedPolicyCatalog(policyname, tablename, field, weakenedExpr) {
+  return drift(buildCompliantCatalogFixture(), (c) => {
+    const policy = c.policies.find((p) => p.policyname === policyname && p.tablename === tablename);
+    assert.ok(policy, `fixture deve conter policy ${policyname}`);
+    policy[field] = weakenedExpr;
+  });
+}
+
+test("policies: shifts_select_own com OR true FALHA o gate", () => {
+  const res = evaluateSecurityInvariants(
+    weakenedPolicyCatalog("shifts_select_own", "shifts", "qual", "((SELECT auth.uid()) = user_id OR true)"),
+  );
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.checks.find((c) => c.id === "shifts.select_own").status, SECURITY_STATUS.FAIL);
+});
+
+test("policies: subscription_payments_select_own com OR true FALHA o gate", () => {
+  const res = evaluateSecurityInvariants(
+    weakenedPolicyCatalog(
+      "subscription_payments_select_own",
+      "subscription_payments",
+      "qual",
+      "((SELECT auth.uid()) = user_id OR true)",
+    ),
+  );
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(
+    res.checks.find((c) => c.id === "subscription_payments.select_isolated").status,
+    SECURITY_STATUS.FAIL,
+  );
+});
+
+test("policies: payments_select_own com OR true FALHA o gate", () => {
+  const res = evaluateSecurityInvariants(
+    weakenedPolicyCatalog("payments_select_own", "payments", "qual", "((SELECT auth.uid()) = user_id OR true)"),
+  );
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.checks.find((c) => c.id === "payments.select_isolated").status, SECURITY_STATUS.FAIL);
+});
+
+test("policies: payments_update_own com OR true no WITH CHECK FALHA o gate", () => {
+  const res = evaluateSecurityInvariants(
+    weakenedPolicyCatalog(
+      "payments_update_own",
+      "payments",
+      "with_check",
+      "((SELECT auth.uid()) = user_id AND (status = 'cancelado' OR true))",
+    ),
+  );
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.checks.find((c) => c.id === "payments.update_restricted").status, SECURITY_STATUS.FAIL);
+});
+
+test("policies: expressões canônicas íntegras continuam passando", () => {
+  assert.strictEqual(canonicalPolicyExpr("(( SELECT auth.uid()) = user_id)"), "auth.uid=user_id");
+  assert.strictEqual(canonicalPolicyExpr("(auth.uid() = user_id)"), "auth.uid=user_id");
+  assert.strictEqual(
+    canonicalPolicyExpr("(( SELECT auth.uid()) = user_id AND status = 'cancelado')"),
+    "auth.uid=user_idandstatus='cancelado'",
+  );
+  // Forma enfraquecida jamais colapsa para a canônica íntegra.
+  assert.notStrictEqual(canonicalPolicyExpr("((SELECT auth.uid()) = user_id OR true)"), "auth.uid=user_id");
+  const res = evaluateSecurityInvariants(buildCompliantCatalogFixture());
+  assert.strictEqual(res.ok, true);
 });

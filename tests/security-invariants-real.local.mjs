@@ -7,6 +7,9 @@
  *
  * Nenhum ambiente remoto/produção é tocado. Banco alvo:
  *   SECURITY_REAL_DATABASE_URL (default: postgres local na porta 55433)
+ * SAFETY GUARD fail-closed: somente hosts locais explícitos (127.0.0.1,
+ * localhost, ::1) são aceitos — qualquer outro host aborta ANTES de
+ * conectar (ver assertLocalDatabaseUrl). Não há flag que libere remoto.
  * Se o banco estiver inalcançável, o teste é pulado — exceto com
  * SECURITY_REAL_REQUIRE_DB=1, que falha fechado.
  *
@@ -16,7 +19,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
-import { checkSecurityInvariantsViaPg } from "../scripts/check-rls-invariants.mjs";
+import {
+  checkSecurityInvariantsViaPg,
+  assertLocalDatabaseUrl,
+} from "../scripts/check-rls-invariants.mjs";
 
 const { Client } = pg;
 
@@ -25,6 +31,12 @@ const DATABASE_URL =
   "postgresql://postgres:postgres@127.0.0.1:55433/postgres";
 const REQUIRE_DB = process.env.SECURITY_REAL_REQUIRE_DB === "1";
 const SILENT = { log: () => {}, error: () => {}, warn: () => {} };
+
+// SAFETY GUARD (fail-closed): este arquivo é DESTRUTIVO (DROP de tabelas
+// public.*, DROP schema auth, DROP roles). Aborta ANTES de qualquer
+// conexão/mutação se o host não for local explícito (127.0.0.1, localhost,
+// ::1). Não existe flag que libere host remoto.
+assertLocalDatabaseUrl(DATABASE_URL);
 
 async function canConnect() {
   const client = new Client({ connectionString: DATABASE_URL, connectionTimeoutMillis: 5000 });

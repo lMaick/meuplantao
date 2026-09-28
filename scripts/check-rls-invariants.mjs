@@ -71,6 +71,63 @@ export const SECURITY_FUNCTIONS = [
 ];
 
 /**
+ * Safety guard do teste REAL (fail-closed ANTES de qualquer conexão/mutação).
+ *
+ * Somente hosts locais explícitos são aceitos — nunca um banco remoto/
+ * produção, mesmo que apontado por variável de ambiente. Não existe flag
+ * que libere host remoto: a lista é fechada por construção.
+ */
+export const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+export function getDatabaseHostname(databaseUrl) {
+  const parsed = new URL(String(databaseUrl || "").trim());
+  return (parsed.hostname || "").toLowerCase();
+}
+
+export function assertLocalDatabaseUrl(databaseUrl) {
+  let hostname = "";
+  try {
+    hostname = getDatabaseHostname(databaseUrl);
+  } catch {
+    hostname = "";
+  }
+  if (!LOCAL_DB_HOSTS.has(hostname)) {
+    // Mensagem sanitizada: expõe apenas o hostname, nunca userinfo/senha.
+    throw new Error(
+      `[security-real] FAIL-CLOSED: host '${hostname || "(ausente)"}' não é local explícito; ` +
+        "recusando qualquer conexão/mutação. Hosts permitidos: 127.0.0.1, localhost, ::1.",
+    );
+  }
+  return hostname;
+}
+
+/**
+ * Normalização canônica de expressões de policy (USING / WITH CHECK).
+ *
+ * Substring (`includes("auth.uid()")`) aceita policy enfraquecida como
+ * `auth.uid() = user_id OR true`. A comparação canônica reduz a expressão a
+ * forma exata (minúsculas, sem espaços/parênteses, `(select auth.uid())`
+ * colapsado para `auth.uid()`) e exige IGUALDADE com o esperado — qualquer
+ * `OR true` ou termo extra reprova.
+ */
+export function canonicalPolicyExpr(expr) {
+  let s = String(expr || "").toLowerCase();
+  // Colapsa o subselect de auth.uid() com/sem alias injetado pelo deparser
+  // do PG: (select auth.uid() [as uid]) -> auth.uid
+  s = s.replace(/\(\s*select\s+auth\.uid\(\)(?:\s+as\s+\w+)?\s*\)/g, "auth.uid");
+  s = s.replace(/\s+/g, "");
+  // Remove casts de tipo (::text, ::"char", ...) preservando o literal.
+  s = s.replace(/::[a-z_"\[\]]+/g, "");
+  s = s.replace(/[()]/g, "");
+  return s;
+}
+
+export const EXPECTED_POLICY_EXPRS = {
+  selectOwnQual: "auth.uid=user_id",
+  paymentsUpdateWithCheck: "auth.uid=user_idandstatus='cancelado'",
+};
+
+/**
  * Queries READ-ONLY (somente SELECT em pg_catalog / information_schema /
  * pg_policies). Nenhuma mutação é executada por este verificador.
  */
@@ -248,16 +305,16 @@ export function evaluateSecurityInvariants(catalog = {}) {
     shiftsSelectPolicy &&
     String(shiftsSelectPolicy.roles || "").includes("authenticated") &&
     String(shiftsSelectPolicy.cmd || "").toUpperCase() === "SELECT" &&
-    String(shiftsSelectPolicy.qual || "").includes("auth.uid()");
+    canonicalPolicyExpr(shiftsSelectPolicy.qual) === EXPECTED_POLICY_EXPRS.selectOwnQual;
   if (shiftsSelectGrant && shiftsSelectIsolated) {
-    pass("shifts.select_own", "SELECT em public.shifts conforme regra esperada (grant + policy shifts_select_own com auth.uid())");
+    pass("shifts.select_own", "SELECT em public.shifts conforme regra esperada (grant + policy shifts_select_own canônica auth.uid() = user_id)");
   } else {
     const missing = [];
     if (!shiftsSelectGrant) missing.push("grant SELECT ausente");
-    if (!shiftsSelectIsolated) missing.push("policy shifts_select_own ausente ou sem isolamento auth.uid()");
+    if (!shiftsSelectIsolated) missing.push("policy shifts_select_own ausente ou com expressão divergente/enfraquecida");
     fail(
       "shifts.select_own",
-      "SELECT em public.shifts conforme regra esperada (grant + policy shifts_select_own com auth.uid())",
+      "SELECT em public.shifts conforme regra esperada (grant + policy shifts_select_own canônica auth.uid() = user_id)",
       missing.join("; "),
     );
   }
@@ -356,17 +413,17 @@ export function evaluateSecurityInvariants(catalog = {}) {
   const subPayIsolated =
     subPaySelectPolicy &&
     String(subPaySelectPolicy.roles || "").includes("authenticated") &&
-    String(subPaySelectPolicy.qual || "").includes("auth.uid()");
+    canonicalPolicyExpr(subPaySelectPolicy.qual) === EXPECTED_POLICY_EXPRS.selectOwnQual;
   const subPaySelectGrant = hasTableGrant(catalog, "subscription_payments", "authenticated", "SELECT");
   if (subPaySelectGrant && subPayIsolated) {
-    pass("subscription_payments.select_isolated", "subscription_payments: SELECT próprio isolado por auth.uid()");
+    pass("subscription_payments.select_isolated", "subscription_payments: SELECT próprio isolado (policy canônica auth.uid() = user_id)");
   } else {
     const missing = [];
     if (!subPaySelectGrant) missing.push("grant SELECT ausente");
-    if (!subPayIsolated) missing.push("policy subscription_payments_select_own ausente ou sem auth.uid()");
+    if (!subPayIsolated) missing.push("policy subscription_payments_select_own ausente ou com expressão divergente/enfraquecida");
     fail(
       "subscription_payments.select_isolated",
-      "subscription_payments: SELECT próprio isolado por auth.uid()",
+      "subscription_payments: SELECT próprio isolado (policy canônica auth.uid() = user_id)",
       missing.join("; "),
     );
   }
@@ -382,7 +439,8 @@ export function evaluateSecurityInvariants(catalog = {}) {
   const paymentsDeletePolicy = findPolicy(catalog, "payments", "payments_delete_own");
   const paymentsSelectPolicy = findPolicy(catalog, "payments", "payments_select_own");
   const paymentsSelectIsolated =
-    paymentsSelectPolicy && String(paymentsSelectPolicy.qual || "").includes("auth.uid()");
+    paymentsSelectPolicy &&
+    canonicalPolicyExpr(paymentsSelectPolicy.qual) === EXPECTED_POLICY_EXPRS.selectOwnQual;
   if (!paymentsDeletePolicy) {
     pass("payments.no_delete_policy", "public.payments SEM policy de DELETE (cancelamento lógico auditável)");
   } else {
@@ -393,25 +451,25 @@ export function evaluateSecurityInvariants(catalog = {}) {
     );
   }
   if (paymentsSelectIsolated) {
-    pass("payments.select_isolated", "public.payments: SELECT próprio isolado por auth.uid()");
+    pass("payments.select_isolated", "public.payments: SELECT próprio isolado (policy canônica auth.uid() = user_id)");
   } else {
     fail(
       "payments.select_isolated",
-      "public.payments: SELECT próprio isolado por auth.uid()",
-      "policy payments_select_own ausente ou sem auth.uid()",
+      "public.payments: SELECT próprio isolado (policy canônica auth.uid() = user_id)",
+      "policy payments_select_own ausente ou com expressão divergente/enfraquecida",
     );
   }
   const paymentsUpdatePolicy = findPolicy(catalog, "payments", "payments_update_own");
   const paymentsUpdateRestricted =
     paymentsUpdatePolicy &&
-    String(paymentsUpdatePolicy.with_check || "").includes("cancelado");
+    canonicalPolicyExpr(paymentsUpdatePolicy.with_check) === EXPECTED_POLICY_EXPRS.paymentsUpdateWithCheck;
   if (paymentsUpdateRestricted) {
-    pass("payments.update_restricted", "public.payments: UPDATE próprio restrito a cancelamento lógico (status = cancelado)");
+    pass("payments.update_restricted", "public.payments: UPDATE próprio restrito a cancelamento lógico (WITH CHECK canônico)");
   } else {
     fail(
       "payments.update_restricted",
-      "public.payments: UPDATE próprio restrito a cancelamento lógico (status = cancelado)",
-      "policy payments_update_own ausente ou sem restrição WITH CHECK status = cancelado",
+      "public.payments: UPDATE próprio restrito a cancelamento lógico (WITH CHECK canônico)",
+      "policy payments_update_own ausente ou com expressão divergente/enfraquecida",
     );
   }
 
