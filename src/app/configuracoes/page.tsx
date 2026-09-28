@@ -34,7 +34,6 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
           <ThemeToggle />
         </div>
       </Card>
-      {/* Pagamentos — Segurança do webhook (somente informativo) */}
       <section aria-labelledby="webhook-security-title">
         <Card className="p-5 sm:p-6">
           <div className="flex items-start gap-3">
