@@ -10,6 +10,7 @@
     "lint": "eslint src/",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:real": "node --experimental-strip-types --test tests/financial-real-e2e.real.mjs",
+    "test:subscription-real": "node --experimental-strip-types --test tests/subscription-payment-real-e2e.real.mjs",
     "db:smoke": "node scripts/smoke-test-schema.mjs",
     "db:verify": "node scripts/verify-production-schema.mjs"
   },
