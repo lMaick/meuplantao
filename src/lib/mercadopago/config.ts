@@ -52,3 +52,27 @@ export function paymentBelongsToUser(
 
   return metadataUserId === userId;
 }
+
+export function isProductionEnvironment(): boolean {
+  return process.env.VERCEL_ENV?.trim() === "production" || process.env.NODE_ENV?.trim() === "production";
+}
+
+export function isMissingWebhookSecretAllowed(): boolean {
+  if (isProductionEnvironment()) {
+    return false;
+  }
+  const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase();
+  return raw !== "false" && raw !== "0" && raw !== "no";
+}
+
+export interface WebhookSetupState {
+  configured: boolean;
+  failClosed: boolean;
+}
+
+export function getWebhookSetupState(): WebhookSetupState {
+  if (getMercadoPagoWebhookSecret()) {
+    return { configured: true, failClosed: false };
+  }
+  return { configured: false, failClosed: !isMissingWebhookSecretAllowed() };
+}

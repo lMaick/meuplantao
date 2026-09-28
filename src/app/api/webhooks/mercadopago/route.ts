@@ -1,6 +1,6 @@
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
+import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
-import { extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
+import { WEBHOOK_NOT_CONFIGURED_CODE, WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR, extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
 import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
@@ -8,12 +8,23 @@ export const runtime = "nodejs";
 
 export { extractPaymentInfo, validateWebhookSignature };
 
+function isProductionEnvironment(): boolean {
+  return process.env.VERCEL_ENV?.trim() === "production" || process.env.NODE_ENV?.trim() === "production";
+}
+
 export async function processPaymentWebhook(request: Request, rawBody: string) {
+  if (!getMercadoPagoWebhookSecret() && isProductionEnvironment()) {
+    return Response.json({ error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR }, { status: 503 });
+  }
+
   const { typeOrTopic, paymentId } = extractPaymentInfo(request, rawBody);
 
   // Validação de assinatura criptográfica moderna
   const sigValidation = validateWebhookSignature(request, paymentId);
   if (!sigValidation.valid) {
+    if (sigValidation.code === WEBHOOK_NOT_CONFIGURED_CODE) {
+      return Response.json({ error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR }, { status: 503 });
+    }
     return Response.json({ error: sigValidation.error || "Assinatura Mercado Pago invalida" }, { status: 401 });
   }
 
