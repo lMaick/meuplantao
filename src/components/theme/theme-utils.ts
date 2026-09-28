@@ -20,3 +20,9 @@ export function getNextTheme(theme: Theme): Theme {
   const currentIndex = themeOptions.findIndex((option) => option.value === theme);
   return themeOptions[(currentIndex + 1) % themeOptions.length]?.value ?? "system";
 }
+
+export function getToggledTheme(currentTheme: Theme, systemTheme: ResolvedTheme): Theme {
+  const resolved = getResolvedTheme(currentTheme, systemTheme);
+  return resolved === "dark" ? "light" : "dark";
+}
+
