@@ -394,4 +394,62 @@ describe("Camada de Observabilidade e Monitoramento de Erros Críticos", () => {
     assert.ok(!sentryException.message.includes(leakedPassword));
     assert.ok(sentryException.message.includes("[REDACTED_PASSWORD]"));
   });
+
+  test("15. IPN e URLs com segredos: sanitização de query parameters, tokens, secrets e dados sensíveis de pagamento", () => {
+    // 1. Sanitização de URLs com parâmetros de busca
+    const urlWithSecrets = "Failed request to https://api.mercadopago.com/v1/payments/999?access_token=APP_USR-SECRET-123&secret=TOP_SECRET_456&token=MY_TOKEN_789&valid=true";
+    const sanitizedUrl = sanitizeStringValue(urlWithSecrets);
+    assert.ok(!sanitizedUrl.includes("APP_USR-SECRET-123"));
+    assert.ok(!sanitizedUrl.includes("TOP_SECRET_456"));
+    assert.ok(!sanitizedUrl.includes("MY_TOKEN_789"));
+    assert.ok(sanitizedUrl.includes("access_token=[REDACTED]"));
+    assert.ok(sanitizedUrl.includes("secret=[REDACTED]"));
+    assert.ok(sanitizedUrl.includes("token=[REDACTED]"));
+    assert.ok(sanitizedUrl.includes("&valid=true"));
+
+    // 2. Sanitização de payload de pagamento sensível
+    const sensitivePaymentPayload = {
+      id: "pay-123",
+      payer: {
+        email: "sensivel@example.com",
+        identification: { number: "12345678900" },
+      },
+      card: {
+        last_four_digits: "1234",
+      },
+      cvv: "999",
+      transaction_amount: 100,
+      metadata: {
+        months: 1,
+      },
+    };
+    const sanitizedPayload = sanitizeObject(sensitivePaymentPayload);
+    assert.equal(sanitizedPayload.id, "pay-123");
+    assert.equal(sanitizedPayload.payer, "[REDACTED]");
+    assert.equal(sanitizedPayload.card, "[REDACTED]");
+    assert.equal(sanitizedPayload.cvv, "[REDACTED]");
+    assert.equal(sanitizedPayload.transaction_amount, 100);
+
+    // 3. captureWebhookError com rota /api/webhooks/mercadopago/ipn
+    const ipnErr = new Error("IPN upstream failed with Authorization: Bearer SECRET_IPN_TOKEN");
+    const log = captureWebhookError(ipnErr, {
+      route: "/api/webhooks/mercadopago/ipn",
+      paymentId: "ipn-pay-999",
+      httpStatus: 502,
+    });
+
+    assert.equal(log.route, "/api/webhooks/mercadopago/ipn");
+    assert.equal(log.http_status, 502);
+    assert.equal(log.payment_id, "ipn-pay-999");
+    assert.ok(!log.message.includes("SECRET_IPN_TOKEN"));
+    assert.ok(log.message.includes("Bearer [REDACTED]"));
+
+    // Sentry hook recebeu erro sanitizado
+    assert.equal(capturedSentryExceptions.length, 1);
+    const sentryErr = capturedSentryExceptions[0].exception;
+    assert.ok(!sentryErr.message.includes("SECRET_IPN_TOKEN"));
+    assert.ok(sentryErr.message.includes("Bearer [REDACTED]"));
+    assert.equal(capturedSentryExceptions[0].hint.tags.route, "/api/webhooks/mercadopago/ipn");
+  });
 });
+
