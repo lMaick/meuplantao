@@ -1,6 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getMercadoPagoWebhookSecret } from "@/lib/mercadopago/config";
 
+export const WEBHOOK_NOT_CONFIGURED_CODE = "webhook_not_configured";
+export const WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR = "Webhook indisponível no momento";
+
 export function isUserId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
 }
@@ -62,7 +65,20 @@ export function extractPaymentInfo(request: Request, rawBody: string): Extracted
 
 export interface SignatureValidationResult {
   valid: boolean;
+  code?: string;
   error?: string;
+}
+
+function isProductionEnvironment(): boolean {
+  return process.env.VERCEL_ENV?.trim() === "production" || process.env.NODE_ENV?.trim() === "production";
+}
+
+function isMissingSecretBypassAllowed(): boolean {
+  if (isProductionEnvironment()) {
+    return false;
+  }
+  const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase();
+  return raw !== "false" && raw !== "0" && raw !== "no";
 }
 
 /**
@@ -76,10 +92,11 @@ export function validateWebhookSignature(
 ): SignatureValidationResult {
   const secret = getMercadoPagoWebhookSecret();
 
-  // Se não houver segredo configurado (ex: dev local sem webhook secret configurado),
-  // a autenticidade é garantida pela consulta autenticada com getMercadoPagoAccessToken().
   if (!secret) {
-    return { valid: true };
+    if (isMissingSecretBypassAllowed()) {
+      return { valid: true };
+    }
+    return { valid: false, code: WEBHOOK_NOT_CONFIGURED_CODE, error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR };
   }
 
   // Quando o segredo está configurado, a assinatura é OBRIGATÓRIA
