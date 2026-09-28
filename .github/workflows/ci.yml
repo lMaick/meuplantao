@@ -120,3 +120,48 @@ jobs:
           export RUN_REAL_E2E NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY
           export E2E_USER_A_EMAIL E2E_USER_A_PASSWORD E2E_USER_B_EMAIL E2E_USER_B_PASSWORD
           npm run test:real
+
+  subscription-payment-real-e2e:
+    name: Supabase Subscription Payment E2E
+    runs-on: ubuntu-latest
+    env:
+      RUN_REAL_E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start isolated local Supabase and run subscription payment E2E
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          trap 'npx --yes supabase@2.117.0 stop --no-backup >/dev/null 2>&1 || true' EXIT
+
+          npx --yes supabase@2.117.0 --version
+          npx --yes supabase@2.117.0 init --force >/dev/null
+          npx --yes supabase@2.117.0 start >/dev/null
+
+          status_file="${RUNNER_TEMP}/supabase-sub-status.env"
+          npx --yes supabase@2.117.0 status -o env >"${status_file}"
+          set -a
+          # The status file is redirected and sourced only in-process; its values
+          # are masked before any later command can echo an environment summary.
+          source "${status_file}"
+          set +a
+          : "${API_URL:?Supabase local API URL missing}"
+          : "${SERVICE_ROLE_KEY:?Supabase local service-role key missing}"
+          : "${DB_URL:?Supabase local database URL missing}"
+          printf '::add-mask::%s\n' "${API_URL}" "${SERVICE_ROLE_KEY}"
+          printf '::add-mask::%s\n' "${DB_URL}"
+
+          export NEXT_PUBLIC_SUPABASE_URL="${API_URL}"
+          export SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}"
+          export DATABASE_URL="${DB_URL}"
+
+          RUN_REAL_E2E=1 \
+            NEXT_PUBLIC_SUPABASE_URL="${API_URL}" \
+            SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}" \
+            DATABASE_URL="${DB_URL}" \
+            npm run test:subscription-real
