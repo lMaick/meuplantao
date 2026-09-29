@@ -10,10 +10,16 @@ import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js
  * - Sem Upstash, usa Supabase (`billing_rate_limits` + RPC `billing_rate_limit_hit`)
  *   via service_role — também distribuído (linha compartilhada no banco).
  * - A memória local (`MemoryRateLimitStore`) existe SOMENTE como fallback
- *   fail-open por instância e nunca como garantia global.
- * - Qualquer falha do store distribuído resulta em ALLOW (fail-open) com log
- *   sanitizado, preservando retries legítimos de webhook e idempotência
- *   financeira (a idempotência real segue na RPC atômica).
+ *   por instância em ambientes não-produção (testes/dev) e nunca como
+ *   garantia global.
+ * - MAI-138 (auditoria externa) — fail-closed sob colapso: quando NENHUM store
+ *   distribuído está operacional (todos falharam, ou nenhum configurado em
+ *   produção), as decisões retornam `collapsed: true` e as rotas DEVEM
+ *   responder falha temporária segura (`503` + `Retry-After`) SEM consultar o
+ *   Mercado Pago. Degradar para fail-open/memória local permitiria que
+ *   instâncias paralelas consumissem a quota do provedor em rajada.
+ * - A idempotência financeira real segue na RPC atômica
+ *   (`process_mercadopago_subscription_payment`).
  */
 
 export interface RateLimitHit {
@@ -25,7 +31,12 @@ export interface RateLimitStore {
   readonly name: string;
   readonly isDistributed: boolean;
   hit(key: string, windowMs: number): Promise<RateLimitHit>;
-  /** Liberação best-effort (usada quando o retry do provedor deve ser preservado). */
+  /**
+   * Liberação best-effort com semântica de unlock: remove a chave por
+   * completo (não apenas decrementa), de modo que o dono do lock in-flight
+   * sempre libere — mesmo que contenção concorrente tenha incrementado o
+   * contador. Usada quando o retry do provedor deve ser preservado.
+   */
   release?(key: string): Promise<void>;
   resetForTesting?(): void;
 }
@@ -37,6 +48,12 @@ export interface BillingLimitDecision {
   storeName: string;
   distributed: boolean;
   fallback: boolean;
+  /**
+   * MAI-138 (auditoria externa): `true` quando nenhum store distribuído está
+   * operacional (todos falharam, ou nenhum configurado em produção).
+   * A rota DEVE responder `503` + `Retry-After` SEM consultar o Mercado Pago.
+   */
+  collapsed: boolean;
 }
 
 const WINDOW_FLOOR_MS = 1000;
@@ -85,10 +102,9 @@ export class MemoryRateLimitStore implements RateLimitStore {
   }
 
   async release(key: string): Promise<void> {
-    const bucket = this.buckets.get(normalizeKey(key));
-    if (!bucket) return;
-    bucket.count -= 1;
-    if (bucket.count <= 0) this.buckets.delete(normalizeKey(key));
+    // Unlock total: contenção concorrente pode ter elevado o contador;
+    // decrementar deixaria o lock "meio preso" até o TTL.
+    this.buckets.delete(normalizeKey(key));
   }
 }
 
@@ -143,7 +159,9 @@ export class UpstashRateLimitStore implements RateLimitStore {
 
   async release(key: string): Promise<void> {
     try {
-      await fetch(`${this.url}/decr`, {
+      // Unlock total (DEL): o dono sempre libera o in-flight, mesmo sob
+      // contenção que elevou o contador via INCR.
+      await fetch(`${this.url}/del`, {
         method: "POST",
         headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
         body: JSON.stringify([normalizeKey(key)]),
@@ -340,11 +358,32 @@ export function buildBillingRateLimitedResponse(retryAfterSeconds: number): Resp
   );
 }
 
+/**
+ * MAI-138 (auditoria externa, bloqueador 1): resposta fail-closed quando os
+ * stores distribuídos colapsaram. Corpo genérico (sem segredos) + 503 com
+ * `Retry-After`, preservando os retries automáticos do Mercado Pago
+ * (webhook/IPN) sem disparar nenhuma consulta externa.
+ */
+export function buildBillingStoresCollapsedResponse(retryAfterSeconds: number = BILLING_LIMITS.storesCollapsedRetryAfterSeconds): Response {
+  const retry = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? Math.min(300, Math.ceil(retryAfterSeconds))
+    : 30;
+  return Response.json(
+    { error: "Servico temporariamente indisponivel. Tente novamente em instantes." },
+    { status: 503, headers: { "Retry-After": String(retry) } },
+  );
+}
+
 export interface BillingCooldownDecision {
   deduped: boolean;
   storeName: string;
   distributed: boolean;
   fallback: boolean;
+  /**
+   * MAI-138 (auditoria externa): ver `BillingLimitDecision.collapsed`.
+   * Deve ser verificado ANTES de `deduped`.
+   */
+  collapsed: boolean;
 }
 
 export function billingLimitKey(...parts: Array<string | undefined | null>): string {
@@ -354,9 +393,18 @@ export function billingLimitKey(...parts: Array<string | undefined | null>): str
 }
 
 /**
- * Checagem de limite com fallback seguro: qualquer falha do store distribuído
- * cai para memória local e, em última instância, permite (fail-open) para não
- * quebrar retries legítimos do provedor nem a idempotência financeira.
+ * Checagem de limite com fallback seguro (MAI-138, auditoria externa).
+ *
+ * - Tenta os stores DISTRIBUÍDOS em ordem (Upstash > Supabase). O primeiro
+ *   sucesso decide (fail-closed por instância nunca mascara o estado global).
+ * - Se TODOS os distribuídos falharem — ou se nenhum estiver configurado em
+ *   produção — retorna `collapsed: true` com `allowed: false`: a rota DEVE
+ *   responder `503` + `Retry-After` SEM consultar o Mercado Pago. Cair para
+ *   memória local/fail-open permitiria que instâncias serverless paralelas
+ *   consumissem a quota do provedor em rajada.
+ * - Sem nenhum distribuído configurado fora de produção (testes/dev com
+ *   `MemoryRateLimitStore`), a memória local decide normalmente com
+ *   `collapsed: false` (paridade com a suíte de testes).
  */
 export async function checkBillingLimit(
   key: string,
@@ -368,10 +416,76 @@ export async function checkBillingLimit(
   const window = normalizeWindow(windowMs);
   const normKey = normalizeKey(key);
 
-  const tryStores = resolveStoreChain();
+  const reportFallback = (storeName: string, error: unknown) => {
+    try {
+      const msg = error instanceof Error ? error.message : String(error);
+      onFallback?.({ storeName, errorMessage: msg.slice(0, 200) });
+    } catch {
+      // Nunca quebrar a rota por causa do hook de log.
+    }
+  };
 
-  let lastError: unknown = null;
-  for (const store of tryStores) {
+  const chain = resolveStoreChain();
+  const distributed = chain.filter((store) => store.isDistributed);
+
+  // Nenhum store distribuído na cadeia.
+  if (distributed.length === 0) {
+    if (isProdRuntime()) {
+      // Produção sem store distribuído = sem proteção global: fail-closed.
+      reportFallback("no-distributed-store", new Error("Nenhum store distribuido configurado em producao"));
+      return {
+        allowed: false,
+        count: 0,
+        retryAfterSeconds: BILLING_LIMITS.storesCollapsedRetryAfterSeconds,
+        storeName: "no-distributed-store",
+        distributed: false,
+        fallback: true,
+        collapsed: true,
+      };
+    }
+    // Fora de produção (testes/dev): memória local decide normalmente.
+    const local = chain[0];
+    if (!local) {
+      return {
+        allowed: true,
+        count: 1,
+        retryAfterSeconds: 0,
+        storeName: "fail-open",
+        distributed: false,
+        fallback: true,
+        collapsed: false,
+      };
+    }
+    try {
+      const hit = await local.hit(normKey, window);
+      const allowed = hit.count <= safeLimit;
+      return {
+        allowed,
+        count: hit.count,
+        retryAfterSeconds: allowed ? 0 : Math.max(1, Math.ceil(hit.ttlMs / 1000)),
+        storeName: local.name,
+        distributed: false,
+        fallback: false,
+        collapsed: false,
+      };
+    } catch (error) {
+      reportFallback(local.name, error);
+      return {
+        allowed: true,
+        count: 1,
+        retryAfterSeconds: 0,
+        storeName: "fail-open",
+        distributed: false,
+        fallback: true,
+        collapsed: false,
+      };
+    }
+  }
+
+  // Há stores distribuídos: o primeiro sucesso decide. Falhas são reportadas
+  // via onFallback (log sanitizado/observável) e NÃO degradam para memória
+  // local — degradação per-instância furaria o teto global.
+  for (const store of distributed) {
     try {
       const hit = await store.hit(normKey, window);
       const allowed = hit.count <= safeLimit;
@@ -380,28 +494,24 @@ export async function checkBillingLimit(
         count: hit.count,
         retryAfterSeconds: allowed ? 0 : Math.max(1, Math.ceil(hit.ttlMs / 1000)),
         storeName: store.name,
-        distributed: store.isDistributed,
-        fallback: store !== tryStores[0],
+        distributed: true,
+        fallback: store !== distributed[0],
+        collapsed: false,
       };
     } catch (error) {
-      lastError = error;
-      try {
-        const msg = error instanceof Error ? error.message : String(error);
-        onFallback?.({ storeName: store.name, errorMessage: msg.slice(0, 200) });
-      } catch {
-        // Nunca quebrar a rota por causa do hook de log.
-      }
+      reportFallback(store.name, error);
     }
   }
 
-  void lastError;
+  // Colapso: todos os distribuídos falharam. Fail-closed (nunca fail-open).
   return {
-    allowed: true,
-    count: 1,
-    retryAfterSeconds: 0,
-    storeName: "fail-open",
+    allowed: false,
+    count: 0,
+    retryAfterSeconds: BILLING_LIMITS.storesCollapsedRetryAfterSeconds,
+    storeName: "stores-collapsed",
     distributed: false,
     fallback: true,
+    collapsed: true,
   };
 }
 
@@ -409,6 +519,11 @@ export async function checkBillingLimit(
  * Cooldown/dedupe: a primeira ocorrência na janela prossegue; repetições
  * retornam `deduped=true` e a rota deve responder 200 SEM consultar o
  * Mercado Pago (evita 1 consulta externa por requisição em rajadas).
+ *
+ * Também é a primitiva do lock in-flight por payment ID (bloqueador 2):
+ * `deduped=false` significa que esta requisição adquiriu o lock; as demais
+ * recebem resposta retentável sem novo fetch. `collapsed` deve ser verificado
+ * antes de `deduped` (fail-closed sob colapso dos stores).
  */
 export async function checkBillingCooldownAndMark(
   key: string,
@@ -417,10 +532,11 @@ export async function checkBillingCooldownAndMark(
 ): Promise<BillingCooldownDecision> {
   const decision = await checkBillingLimit(key, 1, windowMs, onFallback);
   return {
-    deduped: decision.count > 1,
+    deduped: !decision.collapsed && decision.count > 1,
     storeName: decision.storeName,
     distributed: decision.distributed,
     fallback: decision.fallback,
+    collapsed: decision.collapsed,
   };
 }
 
@@ -446,10 +562,18 @@ export async function releaseBillingCooldown(key: string, storeName?: string): P
 export const BILLING_LIMITS = {
   webhookIp: { limit: 120, windowMs: 60_000 },
   webhookPaymentCooldownMs: 15_000,
+  /** Lock in-flight por payment ID no webhook (bloqueador 2): só o dono consulta o MP. */
+  webhookInflightMs: 30_000,
   webhookPayment: { limit: 30, windowMs: 60_000 },
   ipnIp: { limit: 60, windowMs: 60_000 },
   ipnPayment: { limit: 20, windowMs: 60_000 },
   ipnPaymentCooldownMs: 30_000,
+  /** Lock in-flight por payment ID no IPN (bloqueador 2): só o dono consulta o MP. */
+  ipnInflightMs: 30_000,
+  /** Resposta retentável para contenção in-flight (duplicata concorrente). */
+  inflightRetryAfterSeconds: 5,
+  /** Resposta fail-closed sob colapso dos stores distribuídos (bloqueador 1). */
+  storesCollapsedRetryAfterSeconds: 30,
   checkoutUser: { limit: 15, windowMs: 60_000 },
   checkoutIp: { limit: 60, windowMs: 60_000 },
   checkoutUserCooldownMs: 10_000,

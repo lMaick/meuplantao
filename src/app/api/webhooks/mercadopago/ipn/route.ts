@@ -2,6 +2,7 @@ import {
   BILLING_LIMITS,
   billingLimitKey,
   buildBillingRateLimitedResponse,
+  buildBillingStoresCollapsedResponse,
   checkBillingCooldownAndMark,
   checkBillingLimit,
   getBillingBodySizeOk,
@@ -91,6 +92,22 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
       ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
     );
     if (!ipDecision.allowed) {
+      // MAI-138 (auditoria externa, bloqueador 1): colapso => 503 retentável,
+      // SEM nenhuma consulta externa ao Mercado Pago.
+      if (ipDecision.collapsed) {
+        captureRateLimitHit({
+          route: IPN_ROUTE,
+          limitKind: "stores_collapsed",
+          limit: BILLING_LIMITS.ipnIp.limit,
+          windowMs: BILLING_LIMITS.ipnIp.windowMs,
+          retryAfterSeconds: ipDecision.retryAfterSeconds,
+          storeName: ipDecision.storeName,
+          distributed: ipDecision.distributed,
+          storeFallback: ipDecision.fallback,
+          ipHash,
+        });
+        return buildBillingStoresCollapsedResponse(ipDecision.retryAfterSeconds);
+      }
       captureRateLimitHit({
         route: IPN_ROUTE,
         limitKind: "ip",
@@ -123,26 +140,90 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
   }
 
   let cooldownStoreName: string | undefined;
+  let inflightStoreName: string | undefined;
+  const cooldownKey = billingLimitKey("billing", "ipn", "cooldown", paymentId);
+  const inflightKey = billingLimitKey("billing", "ipn", "inflight", paymentId);
+  // Libera os locks desta requisição (best-effort). Chamado em falhas
+  // retentáveis e conclusões sem persistência; o sucesso com persistência
+  // libera só o in-flight (a prova no banco + cooldown cobrem duplicatas).
+  const releaseOwnLocks = () => {
+    if (!limiterOn) return Promise.resolve();
+    return Promise.all([
+      releaseBillingCooldown(cooldownKey, cooldownStoreName).catch(() => undefined),
+      releaseBillingCooldown(inflightKey, inflightStoreName).catch(() => undefined),
+    ]).then(() => undefined);
+  };
+  const releaseInflight = () => {
+    if (!limiterOn) return Promise.resolve();
+    return releaseBillingCooldown(inflightKey, inflightStoreName).catch(() => undefined);
+  };
+  const collapsedResponse = (storeName: string, distributed: boolean, fallback: boolean) => {
+    captureRateLimitHit({
+      route: IPN_ROUTE,
+      limitKind: "stores_collapsed",
+      limit: 0,
+      windowMs: 0,
+      retryAfterSeconds: BILLING_LIMITS.storesCollapsedRetryAfterSeconds,
+      paymentId,
+      storeName,
+      distributed,
+      storeFallback: fallback,
+      ipHash,
+    });
+    return buildBillingStoresCollapsedResponse(BILLING_LIMITS.storesCollapsedRetryAfterSeconds);
+  };
+  const inflightContentionResponse = (storeName: string, distributed: boolean, fallback: boolean) => {
+    captureRateLimitHit({
+      route: IPN_ROUTE,
+      limitKind: "payment_inflight",
+      limit: 1,
+      windowMs: BILLING_LIMITS.ipnInflightMs,
+      retryAfterSeconds: BILLING_LIMITS.inflightRetryAfterSeconds,
+      paymentId,
+      storeName,
+      distributed,
+      storeFallback: fallback,
+      ipHash,
+    });
+    return buildBillingRateLimitedResponse(BILLING_LIMITS.inflightRetryAfterSeconds);
+  };
+  const readPersistedProof = async (): Promise<boolean> => {
+    try {
+      return await hasProcessedMercadoPagoPayment(createAdminClient(), paymentId);
+    } catch {
+      return false;
+    }
+  };
+
   if (limiterOn) {
-    // 5. Cooldown/dedupe por pagamento: SÓ responde 200 sem nova consulta quando
-    // há prova de persistência (idempotência comprovada no banco). Sem prova —
-    // concorrência em voo ou falha anterior — libera a marca prematura e
-    // PROCESSA normalmente (nunca descarta retry legítimo).
-    const cooldownKey = billingLimitKey("billing", "ipn", "cooldown", paymentId);
+    // MAI-138 (auditoria externa, bloqueador 2): duplicata pós-persistência
+    // responde 200 SEM fetch — mesmo fora da janela do cooldown.
+    if (await readPersistedProof()) {
+      captureRateLimitHit({
+        route: IPN_ROUTE,
+        limitKind: "payment_deduped",
+        limit: 1,
+        windowMs: BILLING_LIMITS.ipnPaymentCooldownMs,
+        deduped: true,
+        paymentId,
+        ipHash,
+      });
+      return Response.json({ received: true, deduped: true }, { status: 200 });
+    }
+
+    // 5. Cooldown/dedupe por pagamento: SÓ responde 200 sem nova consulta
+    // quando há prova de persistência (idempotência comprovada no banco).
+    // Sem prova — concorrência em voo ou falha anterior — o lock in-flight
+    // decide abaixo (nunca descarta retry legítimo).
     const cooldown = await checkBillingCooldownAndMark(
       cooldownKey,
       BILLING_LIMITS.ipnPaymentCooldownMs,
       ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
     );
+    if (cooldown.collapsed) return collapsedResponse(cooldown.storeName, cooldown.distributed, cooldown.fallback);
     cooldownStoreName = cooldown.storeName;
     if (cooldown.deduped) {
-      let persisted = false;
-      try {
-        persisted = await hasProcessedMercadoPagoPayment(createAdminClient(), paymentId);
-      } catch {
-        persisted = false;
-      }
-      if (persisted) {
+      if (await readPersistedProof()) {
         captureRateLimitHit({
           route: IPN_ROUTE,
           limitKind: "payment_cooldown",
@@ -157,7 +238,45 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
         });
         return Response.json({ received: true, deduped: true }, { status: 200 });
       }
-      await releaseBillingCooldown(cooldownKey, cooldown.storeName).catch(() => undefined);
+      // Sem prova: pode ser concorrência em voo — tenta o lock in-flight.
+      const inflight = await checkBillingCooldownAndMark(
+        inflightKey,
+        BILLING_LIMITS.ipnInflightMs,
+        ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+      );
+      if (inflight.collapsed) {
+        await releaseOwnLocks();
+        return collapsedResponse(inflight.storeName, inflight.distributed, inflight.fallback);
+      }
+      inflightStoreName = inflight.storeName;
+      if (inflight.deduped) {
+        // Outra requisição está em voo: resposta retentável SEM novo fetch.
+        return inflightContentionResponse(inflight.storeName, inflight.distributed, inflight.fallback);
+      }
+      // Lock adquirido sobre marca prematura: double-check — o dono anterior
+      // pode ter persistido entre as leituras.
+      if (await readPersistedProof()) {
+        await releaseInflight();
+        return Response.json({ received: true, deduped: true }, { status: 200 });
+      }
+      // Marca prematura (falha anterior) liberada; o in-flight agora protege.
+      await releaseBillingCooldown(cooldownKey, cooldownStoreName).catch(() => undefined);
+    } else {
+      // Primeira marca: tenta o lock in-flight antes de qualquer fetch.
+      const inflight = await checkBillingCooldownAndMark(
+        inflightKey,
+        BILLING_LIMITS.ipnInflightMs,
+        ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+      );
+      if (inflight.collapsed) {
+        await releaseOwnLocks();
+        return collapsedResponse(inflight.storeName, inflight.distributed, inflight.fallback);
+      }
+      inflightStoreName = inflight.storeName;
+      if (inflight.deduped) {
+        await releaseBillingCooldown(cooldownKey, cooldownStoreName).catch(() => undefined);
+        return inflightContentionResponse(inflight.storeName, inflight.distributed, inflight.fallback);
+      }
     }
 
     // 6. Teto por pagamento (proteção adicional além do cooldown).
@@ -168,6 +287,10 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
       ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
     );
     if (!paymentDecision.allowed) {
+      if (paymentDecision.collapsed) {
+        await releaseOwnLocks();
+        return collapsedResponse(paymentDecision.storeName, paymentDecision.distributed, paymentDecision.fallback);
+      }
       captureRateLimitHit({
         route: IPN_ROUTE,
         limitKind: "payment",
@@ -184,16 +307,9 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     }
   }
 
-  // Falhas retentáveis liberam o cooldown para preservar o retry do provedor.
-  const releaseCooldown = () => {
-    if (limiterOn) {
-      return releaseBillingCooldown(
-        billingLimitKey("billing", "ipn", "cooldown", paymentId),
-        cooldownStoreName,
-      ).catch(() => undefined);
-    }
-    return Promise.resolve();
-  };
+  // Falhas retentáveis liberam cooldown + in-flight para preservar o retry
+  // legítimo do provedor (o próximo retry volta a consultar a API).
+  const releaseCooldown = () => releaseOwnLocks();
 
   try {
     let paymentResponse: Response;
@@ -247,10 +363,12 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     }
 
     if (paymentResponse.status === 404) {
+      await releaseInflight();
       return Response.json({ received: true, ignored: true, error: "Pagamento inexistente no Mercado Pago" }, { status: 200 });
     }
 
     if (!paymentResponse.ok) {
+      await releaseInflight();
       return Response.json({ received: true, ignored: true, error: `Mercado Pago retornou status ${paymentResponse.status}` }, { status: 200 });
     }
 
@@ -264,6 +382,7 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     };
 
     if (payment.status !== "approved") {
+      await releaseInflight();
       return Response.json({ received: true, ignored: true, status: payment.status ?? "unknown" }, { status: 200 });
     }
 
@@ -271,11 +390,13 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
 
     if (externalUserId && metadataUserId && externalUserId !== metadataUserId) {
+      await releaseInflight();
       return Response.json({ received: true, ignored: true, error: "Identificadores de usuario divergentes no pagamento" }, { status: 200 });
     }
 
     const userId = externalUserId || metadataUserId;
     if (!isUserId(userId)) {
+      await releaseInflight();
       return Response.json({ received: true, ignored: true, error: "Pagamento sem usuario valido associado" }, { status: 200 });
     }
 
@@ -291,6 +412,11 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
       amount: payment.transaction_amount,
       status: payment.status ?? "approved",
     });
+
+    // Sucesso com persistência: libera o in-flight (duplicatas futuras caem
+    // na prova de persistência => 200 deduped sem fetch). O cooldown é
+    // mantido como proteção adicional dentro da janela.
+    await releaseInflight();
 
     return Response.json({
       received: true,

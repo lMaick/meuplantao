@@ -3,6 +3,7 @@ import {
   BILLING_LIMITS,
   billingLimitKey,
   buildBillingRateLimitedResponse,
+  buildBillingStoresCollapsedResponse,
   checkBillingCooldownAndMark,
   checkBillingLimit,
   getClientIp,
@@ -80,6 +81,22 @@ export async function GET(request: NextRequest) {
         ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
       );
       if (!userDecision.allowed) {
+        if (userDecision.collapsed) {
+          captureRateLimitHit({
+            route: VERIFY_ROUTE,
+            limitKind: "stores_collapsed",
+            limit: BILLING_LIMITS.verifyUser.limit,
+            windowMs: BILLING_LIMITS.verifyUser.windowMs,
+            retryAfterSeconds: userDecision.retryAfterSeconds,
+            paymentId,
+            userId: user.id,
+            storeName: userDecision.storeName,
+            distributed: userDecision.distributed,
+            storeFallback: userDecision.fallback,
+            ipHash,
+          });
+          return buildBillingStoresCollapsedResponse(userDecision.retryAfterSeconds);
+        }
         captureRateLimitHit({
           route: VERIFY_ROUTE,
           limitKind: "user",
@@ -104,6 +121,22 @@ export async function GET(request: NextRequest) {
       );
       cooldownMarked = true;
       cooldownStoreName = cooldown.storeName;
+      if (cooldown.collapsed) {
+        captureRateLimitHit({
+          route: VERIFY_ROUTE,
+          limitKind: "stores_collapsed",
+          limit: 1,
+          windowMs: BILLING_LIMITS.verifyPaymentCooldownMs,
+          retryAfterSeconds: BILLING_LIMITS.storesCollapsedRetryAfterSeconds,
+          paymentId,
+          userId: user.id,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return buildBillingStoresCollapsedResponse(BILLING_LIMITS.storesCollapsedRetryAfterSeconds);
+      }
       if (cooldown.deduped) {
         captureRateLimitHit({
           route: VERIFY_ROUTE,
