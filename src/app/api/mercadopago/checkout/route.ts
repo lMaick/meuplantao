@@ -3,6 +3,7 @@ import {
   BILLING_LIMITS,
   billingLimitKey,
   buildBillingRateLimitedResponse,
+  buildBillingStoresCollapsedResponse,
   checkBillingCooldownAndMark,
   checkBillingLimit,
   getClientIp,
@@ -60,6 +61,22 @@ export async function POST(request: NextRequest) {
       ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
     );
     if (!ipDecision.allowed) {
+      // MAI-138 (auditoria externa, bloqueador 1): colapso dos stores
+      // distribuídos => fail-closed 503 + Retry-After, SEM consultar o MP.
+      if (ipDecision.collapsed) {
+        captureRateLimitHit({
+          route: CHECKOUT_ROUTE,
+          limitKind: "stores_collapsed",
+          limit: BILLING_LIMITS.checkoutIp.limit,
+          windowMs: BILLING_LIMITS.checkoutIp.windowMs,
+          retryAfterSeconds: ipDecision.retryAfterSeconds,
+          storeName: ipDecision.storeName,
+          distributed: ipDecision.distributed,
+          storeFallback: ipDecision.fallback,
+          ipHash,
+        });
+        return buildBillingStoresCollapsedResponse(ipDecision.retryAfterSeconds);
+      }
       captureRateLimitHit({
         route: CHECKOUT_ROUTE,
         limitKind: "ip",
@@ -90,6 +107,21 @@ export async function POST(request: NextRequest) {
         ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
       );
       if (!userDecision.allowed) {
+        if (userDecision.collapsed) {
+          captureRateLimitHit({
+            route: CHECKOUT_ROUTE,
+            limitKind: "stores_collapsed",
+            limit: BILLING_LIMITS.checkoutUser.limit,
+            windowMs: BILLING_LIMITS.checkoutUser.windowMs,
+            retryAfterSeconds: userDecision.retryAfterSeconds,
+            userId: user.id,
+            storeName: userDecision.storeName,
+            distributed: userDecision.distributed,
+            storeFallback: userDecision.fallback,
+            ipHash,
+          });
+          return buildBillingStoresCollapsedResponse(userDecision.retryAfterSeconds);
+        }
         captureRateLimitHit({
           route: CHECKOUT_ROUTE,
           limitKind: "user",
@@ -112,6 +144,21 @@ export async function POST(request: NextRequest) {
       );
       cooldownMarked = true;
       cooldownStoreName = cooldown.storeName;
+      if (cooldown.collapsed) {
+        captureRateLimitHit({
+          route: CHECKOUT_ROUTE,
+          limitKind: "stores_collapsed",
+          limit: 1,
+          windowMs: BILLING_LIMITS.checkoutUserCooldownMs,
+          retryAfterSeconds: BILLING_LIMITS.storesCollapsedRetryAfterSeconds,
+          userId: user.id,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return buildBillingStoresCollapsedResponse(BILLING_LIMITS.storesCollapsedRetryAfterSeconds);
+      }
       if (cooldown.deduped) {
         captureRateLimitHit({
           route: CHECKOUT_ROUTE,

@@ -300,10 +300,11 @@ test("5. limiter: 20 hits concorrentes com limite 5 permitem exatamente 5", asyn
 });
 
 // ---------------------------------------------------------------------------
-// 6. Fallback seguro: store quebrado => fail-open + log sanitizado
+// 6. Fail-closed: colapso dos stores distribuídos => 503 + Retry-After,
+//    ZERO fetch externo ao Mercado Pago (bloqueador 1 da auditoria externa)
 // ---------------------------------------------------------------------------
 
-test("6. fallback: store com falha libera a rota e registra sem vazar segredo", async () => {
+test("6. colapso: stores distribuídos fora => 503 + Retry-After com zero fetch externo", async () => {
   const secret = "APP_USR-FAILING-STORE-SECRET-XYZ";
   setRateLimitStoreForTesting({
     name: "broken-distributed",
@@ -314,17 +315,63 @@ test("6. fallback: store com falha libera a rota e registra sem vazar segredo", 
   });
   const captured = [];
   setLogSinkForTesting((entry) => captured.push(entry));
+  const counter = { calls: [] };
+  globalThis.fetch = async (url) => {
+    counter.calls.push(String(url));
+    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+  };
   try {
     authenticatedAs(USER_A);
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ init_point: "https://www.mercadopago.com/checkout/v1" }), { status: 201 });
+    approvedPaymentRpc();
 
-    const res = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { init_point: "https://www.mercadopago.com/checkout/v1" });
+    // checkout: falha temporária segura antes de qualquer consulta externa.
+    const checkoutRes = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
+    assert.equal(checkoutRes.status, 503);
+    assert.equal(checkoutRes.headers.get("Retry-After"), "30");
+
+    // sync: idem.
+    const syncRes = await syncPost(new Request("http://localhost/api/mercadopago/sync", { method: "POST" }));
+    assert.equal(syncRes.status, 503);
+    assert.equal(syncRes.headers.get("Retry-After"), "30");
+
+    // verify: idem.
+    const verifyUrl = "http://localhost/api/mercadopago/verify?payment_id=collapse-verify-1";
+    const verifyReq = () => ({ nextUrl: new URL(verifyUrl), headers: new Headers(), cookies: { getAll: () => [] } });
+    const verifyRes = await verifyGet(verifyReq());
+    assert.equal(verifyRes.status, 503);
+    assert.equal(verifyRes.headers.get("Retry-After"), "30");
+
+    // webhook: resposta retentável (MP retenta) sem chamar a API externa.
+    const webhookRes = await webhookPost(
+      new Request("http://localhost/api/webhooks/mercadopago", {
+        method: "POST",
+        body: JSON.stringify({ type: "payment", data: { id: "collapse-wh-1" } }),
+      }),
+    );
+    assert.equal(webhookRes.status, 503);
+    assert.equal(webhookRes.headers.get("Retry-After"), "30");
+
+    // IPN (GET e POST): resposta retentável sem chamar a API externa.
+    const ipnGetRes = await ipnGet(
+      new Request("http://localhost/api/webhooks/mercadopago/ipn?id=collapse-ipn-1&topic=payment", { method: "GET" }),
+    );
+    assert.equal(ipnGetRes.status, 503);
+    assert.equal(ipnGetRes.headers.get("Retry-After"), "30");
+    const ipnPostRes = await ipnPost(
+      new Request("http://localhost/api/webhooks/mercadopago/ipn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resource: "https://api.mercadopago.com/v1/payments/collapse-ipn-2", topic: "payment" }),
+      }),
+    );
+    assert.equal(ipnPostRes.status, 503);
+    assert.equal(ipnPostRes.headers.get("Retry-After"), "30");
+
+    // Prova de zero fetch externo ao Mercado Pago sob colapso.
+    assert.equal(counter.calls.length, 0);
 
     const fallbackLogs = captured.filter((l) => l.alert_rule === "billing_rate_limit");
-    assert.ok(fallbackLogs.length >= 1, "fallback do store deve ser observável");
+    assert.ok(fallbackLogs.length >= 1, "colapso do store deve ser observável");
     const dumped = JSON.stringify(fallbackLogs);
     assert.ok(!dumped.includes(secret), "segredo do erro do store não pode vazar no log");
     assert.ok(dumped.includes("Bearer [REDACTED]"), "Bearer deve ser redigido");
@@ -578,4 +625,117 @@ test("15. upstash: hit usa EVAL atômico em chamada única, com TTL garantido", 
   } finally {
     globalThis.fetch = savedFetch;
   }
+});
+
+// ---------------------------------------------------------------------------
+// 16. Bloqueador 2: rajada CONCORRENTE (Promise.all) do mesmo payment ID no
+//     webhook gera exatamente 1 consulta externa (in-flight lock distribuído)
+// ---------------------------------------------------------------------------
+
+test("16. webhook: rajada concorrente do mesmo pagamento => exatamente 1 fetch; duplicata pós-persistência => 200 deduped", async () => {
+  useFreshStore();
+  const counter = { calls: [] };
+  approvedPaymentRpc();
+  globalThis.fetch = async (url) => {
+    counter.calls.push(String(url));
+    // Delay proposital: mantém o 1º request "em voo" enquanto as duplicatas chegam.
+    await new Promise((r) => setTimeout(r, 60));
+    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+  };
+
+  const body = JSON.stringify({ type: "payment", data: { id: "race-concurrent-1" } });
+  const makeReq = () => new Request("http://localhost/api/webhooks/mercadopago", { method: "POST", body });
+
+  const results = await Promise.all(Array.from({ length: 10 }, () => webhookPost(makeReq())));
+  const statuses = results.map((r) => r.status).sort((a, b) => a - b);
+  assert.deepEqual(statuses, [200, 429, 429, 429, 429, 429, 429, 429, 429, 429]);
+
+  const bodies = await Promise.all(results.map((r) => r.json()));
+  const okBody = bodies.find((b) => b.processed === true);
+  assert.ok(okBody, "exatamente 1 request processa");
+  assert.notEqual(okBody.deduped, true);
+  for (const b of bodies.filter((b) => b !== okBody)) {
+    assert.match(b.error, /Muitas requisicoes/);
+  }
+  for (const r of results.filter((r) => r.status === 429)) {
+    assert.ok(r.headers.get("Retry-After"), "429 de contenção inclui Retry-After");
+  }
+  // Prova de consulta única ao Mercado Pago sob concorrência real.
+  assert.equal(counter.calls.length, 1);
+
+  // Duplicata após persistência: 200 deduped SEM novo fetch.
+  const dup = await webhookPost(makeReq());
+  assert.equal(dup.status, 200);
+  assert.equal((await dup.json()).deduped, true);
+  assert.equal(counter.calls.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 17. Bloqueador 2: rajada CONCORRENTE (Promise.all) do mesmo payment ID no
+//     IPN gera exatamente 1 consulta externa
+// ---------------------------------------------------------------------------
+
+test("17. IPN: rajada concorrente do mesmo pagamento => exatamente 1 fetch", async () => {
+  useFreshStore();
+  const counter = { calls: [] };
+  approvedPaymentRpc();
+  globalThis.fetch = async (url) => {
+    counter.calls.push(String(url));
+    await new Promise((r) => setTimeout(r, 50));
+    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+  };
+
+  const makeReq = () =>
+    new Request("http://localhost/api/webhooks/mercadopago/ipn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resource: "https://api.mercadopago.com/v1/payments/race-ipn-1", topic: "payment" }),
+    });
+
+  const results = await Promise.all(Array.from({ length: 5 }, () => ipnPost(makeReq())));
+  const statuses = results.map((r) => r.status).sort((a, b) => a - b);
+  assert.deepEqual(statuses, [200, 429, 429, 429, 429]);
+  assert.equal(counter.calls.length, 1);
+
+  const dup = await ipnPost(makeReq());
+  assert.equal(dup.status, 200);
+  assert.equal((await dup.json()).deduped, true);
+  assert.equal(counter.calls.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 18. Bloqueador 2: falha retentável do dono libera o in-flight — o retry
+//     legítimo volta a consultar e processa (não fica preso nem dedupado)
+// ---------------------------------------------------------------------------
+
+test("18. webhook: falha do dono libera o in-flight; retry legítimo reprocessa", async () => {
+  useFreshStore();
+  approvedPaymentRpc();
+  let attempt = 0;
+  const counter = { calls: [] };
+  globalThis.fetch = async (url) => {
+    attempt++;
+    counter.calls.push(String(url));
+    if (attempt === 1) {
+      await new Promise((r) => setTimeout(r, 30));
+      throw new Error("fetch failed: ECONNRESET");
+    }
+    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+  };
+
+  const body = JSON.stringify({ type: "payment", data: { id: "race-failrelease-1" } });
+  const makeReq = () => new Request("http://localhost/api/webhooks/mercadopago", { method: "POST", body });
+
+  // Dono falha em voo + duplicata concorrente: 1x502 + 1x429, 1 fetch total.
+  const burst = await Promise.all([webhookPost(makeReq()), webhookPost(makeReq())]);
+  assert.deepEqual(burst.map((r) => r.status).sort((a, b) => a - b), [429, 502]);
+  assert.equal(counter.calls.length, 1);
+
+  // Retry legítimo após a falha: volta a consultar e processa (não dedupado).
+  const retry = await webhookPost(makeReq());
+  assert.equal(retry.status, 200);
+  const retryJson = await retry.json();
+  assert.equal(retryJson.processed, true);
+  assert.notEqual(retryJson.deduped, true);
+  assert.equal(counter.calls.length, 2);
 });
