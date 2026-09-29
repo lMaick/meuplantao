@@ -52,7 +52,7 @@ export const CRITICAL_RPCS = [
   },
   {
     name: "process_mercadopago_subscription_payment",
-    description: "Mercado Pago subscription payment webhook processing & idempotency (MAI-147: com claim atomico de cotacao via p_checkout_id opcional)",
+    description: "Mercado Pago subscription payment webhook processing & idempotency (MAI-147: com claim atomico de cotacao via p_checkout_id obrigatorio fail-closed)",
     requiresServiceRole: true,
     expectedArgsCount: 7,
     expectedArgTypes: ["text", "uuid", "integer", "integer", "numeric", "text", "uuid"],

@@ -82,6 +82,8 @@ async function callProcess(params) {
     p_validity_days: params.validity_days ?? 30,
     p_amount: params.amount ?? 12.9,
     p_status: params.status ?? "approved",
+    // MAI-147 fail-closed (migration 29400000): cotacao obrigatoria.
+    ...(params.checkout_id ? { p_checkout_id: params.checkout_id } : {}),
   });
 }
 

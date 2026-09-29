@@ -85,8 +85,12 @@ function createMockSupabaseDatabase(options = {}) {
             return { data: null, error: insertPaymentError };
           }
 
-          // MAI-147: claim atômico da cotação (CAS sob lock) — migration 29300000
-          if (p_checkout_id) {
+          // MAI-147 fail-closed (migration 29400000): cotacao obrigatoria.
+          // Sem p_checkout_id nao ha concessao — rejeita com 22023.
+          if (!p_checkout_id) {
+            return { data: null, error: { code: "22023", message: "Cotacao de checkout obrigatoria" } };
+          }
+          {
             const quote = checkouts.get(String(p_checkout_id));
             if (!quote) {
               return { data: null, error: { code: "22023", message: "Cotacao de checkout inexistente" } };
@@ -600,7 +604,8 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
       expires_at: new Date(Date.now() + 86400000).toISOString(),
     });
 
-    // Tentativa direta com processMercadoPagoPayment
+    // Tentativa direta com processMercadoPagoPayment (com cotacao valida;
+    // o erro simulado e da RPC, nao de cotacao ausente)
     await assert.rejects(
       async () => {
         await processMercadoPagoPayment(db.adminClient, {
@@ -608,6 +613,7 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
           userId: USER_A,
           months: 3,
           validityDays: 90,
+          checkoutId: checkoutId7,
         });
       },
       /Falha no processamento atomico do pagamento/i,
@@ -649,6 +655,21 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
     const db = createMockSupabaseDatabase({
       insertPaymentError: { code: "42P01", message: "subscription_payments table locked" },
     });
+    const checkoutId8 = "11111111-1111-4111-8111-111111118008";
+    db.adminClient.seedCheckout({
+      id: checkoutId8,
+      user_id: USER_A,
+      plan_id: "pro_quarterly",
+      months: 3,
+      validity_days: 90,
+      amount: 35.7,
+      amount_cents: 3570,
+      price_cents: 3570,
+      currency: "BRL",
+      status: "pending",
+      completed_payment_id: null,
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+    });
 
     await assert.rejects(
       async () => {
@@ -657,6 +678,7 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
           userId: USER_A,
           months: 3,
           validityDays: 90,
+          checkoutId: checkoutId8,
         });
       },
       /Falha no processamento atomico do pagamento/i,
@@ -667,23 +689,46 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
 
   test("9. Concorrência com dois pagamentos diferentes: A (+90d) e B (+180d) simultâneos sem assinatura prévia", async () => {
     const db = createMockSupabaseDatabase();
+    const checkoutId9a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0009";
+    const checkoutId9b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbb0009";
+    for (const [cid, months, days, amount, cents, plan] of [
+      [checkoutId9a, 3, 90, 35.7, 3570, "pro_quarterly"],
+      [checkoutId9b, 6, 180, 69.9, 6990, "pro_semiannual"],
+    ]) {
+      db.adminClient.seedCheckout({
+        id: cid,
+        user_id: USER_A,
+        plan_id: plan,
+        months,
+        validity_days: days,
+        amount,
+        amount_cents: cents,
+        price_cents: cents,
+        currency: "BRL",
+        status: "pending",
+        completed_payment_id: null,
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+      });
+    }
 
     // Usuário novo sem assinatura prévia no banco
     assert.equal(db.subscriptions.get(USER_A), undefined);
 
-    // Executa simultaneamente A e B via Promise.all
+    // Executa simultaneamente A e B via Promise.all (cada um com sua cotacao)
     const [resA, resB] = await Promise.all([
       processMercadoPagoPayment(db.adminClient, {
         paymentId: "concurrent-pay-A",
         userId: USER_A,
         months: 3,
         validityDays: 90,
+        checkoutId: checkoutId9a,
       }),
       processMercadoPagoPayment(db.adminClient, {
         paymentId: "concurrent-pay-B",
         userId: USER_A,
         months: 6,
         validityDays: 180,
+        checkoutId: checkoutId9b,
       }),
     ]);
 
@@ -709,20 +754,38 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
 
   test("10. Concorrência com o mesmo pagamento (A e A simultâneos)", async () => {
     const db = createMockSupabaseDatabase();
+    const checkoutId10 = "10101010-1010-4101-8101-101010101010";
+    db.adminClient.seedCheckout({
+      id: checkoutId10,
+      user_id: USER_A,
+      plan_id: "pro_quarterly",
+      months: 3,
+      validity_days: 90,
+      amount: 35.7,
+      amount_cents: 3570,
+      price_cents: 3570,
+      currency: "BRL",
+      status: "pending",
+      completed_payment_id: null,
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+    });
 
     // Executa duas chamadas simultâneas com exatamente o mesmo paymentId
+    // e a mesma cotacao (idempotencia por payment ID)
     const [res1, res2] = await Promise.all([
       processMercadoPagoPayment(db.adminClient, {
         paymentId: "same-payment-123",
         userId: USER_A,
         months: 3,
         validityDays: 90,
+        checkoutId: checkoutId10,
       }),
       processMercadoPagoPayment(db.adminClient, {
         paymentId: "same-payment-123",
         userId: USER_A,
         months: 3,
         validityDays: 90,
+        checkoutId: checkoutId10,
       }),
     ]);
 
@@ -747,6 +810,21 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
 
   test("11. Pagamento já processado com vigência expirada NÃO retorna 'active' artificialmente", async () => {
     const db = createMockSupabaseDatabase();
+    const checkoutId11 = "11111111-1111-4111-8111-111111111011";
+    db.adminClient.seedCheckout({
+      id: checkoutId11,
+      user_id: USER_A,
+      plan_id: "pro_monthly",
+      months: 1,
+      validity_days: 30,
+      amount: 12.9,
+      amount_cents: 1290,
+      price_cents: 1290,
+      currency: "BRL",
+      status: "pending",
+      completed_payment_id: null,
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+    });
 
     // 1º: processa pagamento inicial
     await processMercadoPagoPayment(db.adminClient, {
@@ -754,6 +832,7 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
       userId: USER_A,
       months: 1,
       validityDays: 30,
+      checkoutId: checkoutId11,
     });
 
     // Simula passagem do tempo: no banco real subscriptions.status mantém "active", mas current_period_end expirou há 10 dias
@@ -765,12 +844,13 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
       updated_at: pastDate,
     });
 
-    // 2º: consulta novamente o mesmo paymentId antigo
+    // 2º: consulta novamente o mesmo paymentId antigo (mesma cotacao)
     const recheckResult = await processMercadoPagoPayment(db.adminClient, {
       paymentId: "old-pay-expired",
       userId: USER_A,
       months: 1,
       validityDays: 30,
+      checkoutId: checkoutId11,
     });
 
     assert.equal(recheckResult.already_processed, true, "Deve indicar que já foi processado");
