@@ -19,6 +19,14 @@
 -- o DROP explicito e obrigatorio para fechar o bypass pela funcao anterior.
 drop function if exists public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text);
 
+-- 1b. Remove a assinatura de 7 argumentos criada em 20260929300000 com
+-- valor DEFAULT NULL em p_checkout_id. O PostgreSQL rejeita CREATE OR REPLACE que
+-- remove DEFAULT de parametro existente (SQLSTATE 42P13:
+-- "cannot remove parameter defaults from existing function"), por isso o DROP
+-- explicito da assinatura de 7 args e obrigatorio antes da recriacao
+-- fail-closed (p_checkout_id obrigatorio, sem DEFAULT).
+drop function if exists public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text, uuid);
+
 -- 2. Redefine a RPC exigindo cotacao (sem DEFAULT => parametro obrigatorio).
 create or replace function public.process_mercadopago_subscription_payment(
   p_payment_id text,
@@ -205,7 +213,8 @@ end;
 $$;
 
 -- Garantia de permissoes: somente service_role pode chamar a funcao.
--- A sobrecarga de 6 args ja foi dropada acima (PostgreSQL rejeita REVOKE em
--- funcao inexistente), por isso revoga/concede apenas a assinatura de 7 args.
+-- Ambas as assinaturas (6 e 7 args) foram dropadas acima (PostgreSQL rejeita
+-- REVOKE em funcao inexistente), por isso revoga/concede apenas a assinatura
+-- de 7 args recriada fail-closed.
 revoke execute on function public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text, uuid) from public, anon, authenticated;
 grant execute on function public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text, uuid) to service_role;
