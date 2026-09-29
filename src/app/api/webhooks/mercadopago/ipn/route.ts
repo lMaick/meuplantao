@@ -1,15 +1,16 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
-import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import {
+  completeSubscriptionCheckout,
+  processMercadoPagoPayment,
+  quarantinePayment,
+  validatePaymentBeforeGrantingPro,
+  type MercadoPagoPaymentPayload,
+} from "@/lib/mercadopago/payments";
 import { extractPaymentInfo } from "@/lib/mercadopago/webhook";
 import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
-
-
-function isUserId(value: string | undefined): value is string {
-  return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
-}
 
 /**
  * Handler legado para notificações IPN do Mercado Pago (sem cabeçalho x-signature).
@@ -83,43 +84,53 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
       return Response.json({ received: true, ignored: true, error: `Mercado Pago retornou status ${paymentResponse.status}` }, { status: 200 });
     }
 
-    const payment = (await paymentResponse.json()) as {
-      status?: string;
-      external_reference?: string;
-      date_created?: string;
-      date_approved?: string;
-      transaction_amount?: number;
-      metadata?: { user_id?: string; userId?: string; months?: number };
-    };
-
-    if (payment.status !== "approved") {
-      return Response.json({ received: true, ignored: true, status: payment.status ?? "unknown" }, { status: 200 });
-    }
-
-    const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
-    const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
-
-    if (externalUserId && metadataUserId && externalUserId !== metadataUserId) {
-      return Response.json({ received: true, ignored: true, error: "Identificadores de usuario divergentes no pagamento" }, { status: 200 });
-    }
-
-    const userId = externalUserId || metadataUserId;
-    if (!isUserId(userId)) {
-      return Response.json({ received: true, ignored: true, error: "Pagamento sem usuario valido associado" }, { status: 200 });
-    }
-
-    const months = Number(payment.metadata?.months || externalMonths || 1);
-    const validityDays = getValidityDays(months);
-
+    const payment = (await paymentResponse.json()) as MercadoPagoPaymentPayload;
     const admin = createAdminClient();
+
+    // Validação rigorosa de integridade e financeiro (MAI-137)
+    const valResult = await validatePaymentBeforeGrantingPro(admin, payment);
+
+    if (!valResult.valid) {
+      if (valResult.quarantine) {
+        await quarantinePayment(admin, {
+          paymentId,
+          userId: valResult.userId,
+          reason: valResult.reason,
+          amount: payment.transaction_amount,
+          currency: payment.currency_id,
+          months: payment.metadata?.months,
+          rawPayload: payment as Record<string, unknown>,
+        });
+        captureWebhookError(new Error(`IPN Mercado Pago em quarentena: ${valResult.reason}`), {
+          route: "/api/webhooks/mercadopago/ipn",
+          paymentId,
+          userId: valResult.userId || undefined,
+          extra: { quarantine_reason: valResult.reason, details: valResult.details },
+        });
+        return Response.json(
+          { received: true, processed: false, quarantined: true, reason: valResult.reason },
+          { status: 200 },
+        );
+      }
+
+      return Response.json(
+        { received: true, ignored: true, status: valResult.status ?? payment.status ?? "unknown" },
+        { status: 200 },
+      );
+    }
+
     const result = await processMercadoPagoPayment(admin, {
       paymentId,
-      userId,
-      months,
-      validityDays,
-      amount: payment.transaction_amount,
+      userId: valResult.userId,
+      months: valResult.months,
+      validityDays: valResult.validityDays,
+      amount: valResult.amount,
       status: payment.status ?? "approved",
     });
+
+    if (valResult.checkoutId) {
+      await completeSubscriptionCheckout(admin, valResult.checkoutId);
+    }
 
     return Response.json({
       received: true,
