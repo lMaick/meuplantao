@@ -7,6 +7,7 @@ import test, { describe } from "node:test";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
 const paymentsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "payments.ts")).href;
+const reversalsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "reversals.ts")).href;
 const webhookUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "webhook.ts")).href;
 const trialUrl = pathToFileURL(path.join(ROOT, "src", "lib", "subscription", "trial.ts")).href;
 const typesUrl = pathToFileURL(path.join(ROOT, "src", "lib", "subscription", "types.ts")).href;
@@ -20,6 +21,7 @@ registerHooks({
     if (specifier === "@/lib/observability") return { url: observabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: configUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: paymentsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/reversals") return { url: reversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: webhookUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: trialUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: typesUrl, shortCircuit: true };
@@ -174,6 +176,62 @@ function createMockSupabaseDatabase(options = {}) {
           },
         };
       }
+      if (table === "subscription_checkouts") {
+        let filterPriceCents = null;
+        let filterPlanId = null;
+        let filterUserId = null;
+        let filterCheckoutId = null;
+        const createQuery = () => ({
+          eq: (col, val) => {
+            if (col === "price_cents" || col === "amount_cents") filterPriceCents = val;
+            if (col === "plan_id") filterPlanId = val;
+            if (col === "user_id") filterUserId = val;
+            if (col === "id") filterCheckoutId = val;
+            return createQuery();
+          },
+          is: () => createQuery(),
+          order: () => createQuery(),
+          limit: () => createQuery(),
+          maybeSingle: async () => {
+            const priceCents = filterPriceCents || 3570;
+            const planId = filterPlanId || (priceCents === 6990 ? "pro_semiannual" : (priceCents === 1290 ? "pro_monthly" : "pro_quarterly"));
+            const months = planId === "pro_semiannual" ? 6 : (planId === "pro_quarterly" ? 3 : 1);
+            const validityDays = planId === "pro_semiannual" ? 180 : (planId === "pro_quarterly" ? 90 : 30);
+            const quote = {
+              id: filterCheckoutId || `chk_${priceCents}`,
+              user_id: filterUserId || USER_A,
+              plan_id: planId,
+              months,
+              validity_days: validityDays,
+              amount: priceCents / 100,
+              amount_cents: priceCents,
+              price_cents: priceCents,
+              currency: "BRL",
+              completed_payment_id: null,
+              expires_at: new Date(Date.now() + 86400000).toISOString(),
+            };
+            return { data: quote, error: null };
+          },
+        });
+        return {
+          select: () => createQuery(),
+          insert: async () => ({ error: null }),
+          update: () => ({
+            eq: () => ({
+              is: () => ({
+                select: () => ({
+                  maybeSingle: async () => ({ data: { id: "chk_mock" }, error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "subscription_payments_quarantine") {
+        return {
+          insert: async () => ({ error: null }),
+        };
+      }
       return {};
     },
   };
@@ -224,6 +282,8 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
         id: "123",
         status: "approved",
         external_reference: `${USER_A}#3`,
+        currency_id: "BRL",
+        transaction_amount: 35.7,
         metadata: { user_id: USER_A, months: 3 },
       }),
       { status: 200 },
@@ -263,6 +323,8 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
         id: "webhook-pay-1",
         status: "approved",
         external_reference: `${USER_A}#6`,
+        currency_id: "BRL",
+        transaction_amount: 69.9,
         metadata: { user_id: USER_A, months: 6 },
       }),
       { status: 200 },
@@ -302,7 +364,7 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
     globalThis.fetch = async () => new Response(
       JSON.stringify({
         results: [
-          { id: "sync-1", status: "approved", external_reference: `${USER_A}#1`, metadata: { user_id: USER_A, months: 1 } },
+          { id: "sync-1", status: "approved", external_reference: `${USER_A}#1`, currency_id: "BRL", transaction_amount: 12.9, metadata: { user_id: USER_A, months: 1 } },
         ],
       }),
       { status: 200 },
@@ -338,8 +400,8 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
     globalThis.fetch = async () => new Response(
       JSON.stringify({
         results: [
-          { id: "pay-trimestral", status: "approved", external_reference: `${USER_A}#3`, metadata: { user_id: USER_A, months: 3 } },
-          { id: "pay-semestral", status: "approved", external_reference: `${USER_A}#6`, metadata: { user_id: USER_A, months: 6 } },
+          { id: "pay-trimestral", status: "approved", external_reference: `${USER_A}#3`, currency_id: "BRL", transaction_amount: 35.7, metadata: { user_id: USER_A, months: 3 } },
+          { id: "pay-semestral", status: "approved", external_reference: `${USER_A}#6`, currency_id: "BRL", transaction_amount: 69.9, metadata: { user_id: USER_A, months: 6 } },
         ],
       }),
       { status: 200 },
@@ -414,6 +476,8 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
         id: "pay-fail-1",
         status: "approved",
         external_reference: USER_A,
+        currency_id: "BRL",
+        transaction_amount: 35.7,
         metadata: { user_id: USER_A, months: 3 },
       }),
       { status: 200 },
@@ -582,6 +646,8 @@ describe("Auditoria PR #76 — Testes Reais de Renovação, Idempotência e Segu
               id: "sync-clean-ref",
               status: "approved",
               external_reference: USER_A,
+              currency_id: "BRL",
+              transaction_amount: 69.9,
               metadata: { user_id: USER_A, months: 6 },
             },
           ],

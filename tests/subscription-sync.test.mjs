@@ -9,6 +9,7 @@ const __syncDirname = path.dirname(__syncTestFile);
 const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __syncReversalsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __syncObservabilityUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
@@ -22,6 +23,9 @@ registerHooks({
     }
     if (specifier === "@/lib/mercadopago/payments") {
       return { url: __syncPaymentsUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return { url: __syncReversalsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/config") {
       return {
@@ -75,7 +79,7 @@ test("sync route activates subscription when approved payment is found", async (
     return new Response(
       JSON.stringify({
         results: [
-          { id: "1001", status: "approved", external_reference: testUserId, date_created: "2026-09-19T20:00:00Z" },
+          { id: "1001", status: "approved", external_reference: testUserId, date_created: "2026-09-19T20:00:00Z", currency_id: "BRL", transaction_amount: 12.9 },
         ],
       }),
       { status: 200 },
@@ -95,16 +99,54 @@ test("sync route activates subscription when approved payment is found", async (
         error: null,
       };
     },
-    from: () => ({
-      select: () => ({
-        eq: () => ({
+    from: (table) => {
+      if (table === "subscription_checkouts") {
+        const createQuery = () => ({
+          eq: () => createQuery(),
+          is: () => createQuery(),
+          order: () => createQuery(),
+          limit: () => createQuery(),
           maybeSingle: async () => ({
-            data: { status: "active", current_period_end: new Date(Date.now() + 30 * 86400000).toISOString() },
+            data: {
+              id: "chk_mock_sync_1001",
+              user_id: testUserId,
+              plan_id: "pro_monthly",
+              months: 1,
+              validity_days: 30,
+              amount: 12.9,
+              amount_cents: 1290,
+              price_cents: 1290,
+              currency: "BRL",
+              completed_payment_id: null,
+              expires_at: new Date(Date.now() + 86400000).toISOString(),
+            },
             error: null,
           }),
+        });
+        return {
+          select: () => createQuery(),
+          update: () => ({
+            eq: () => ({
+              is: () => ({
+                select: () => ({
+                  maybeSingle: async () => ({ data: { id: "chk_mock_sync_1001" }, error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { status: "active", current_period_end: new Date(Date.now() + 30 * 86400000).toISOString() },
+              error: null,
+            }),
+          }),
         }),
-      }),
-    }),
+      };
+    },
   };
 
   const response = await syncRoute(createMockRequest());
@@ -241,7 +283,7 @@ test("sync route returns status: expired when current_period_end has passed even
   globalThis.fetch = async () => new Response(
     JSON.stringify({
       results: [
-        { id: "old-100", status: "approved", external_reference: testUserId, date_created: pastDate },
+        { id: "old-100", status: "approved", external_reference: testUserId, date_created: pastDate, currency_id: "BRL", transaction_amount: 12.9 },
       ],
     }),
     { status: 200 },
@@ -257,16 +299,54 @@ test("sync route returns status: expired when current_period_end has passed even
       },
       error: null,
     }),
-    from: () => ({
-      select: () => ({
-        eq: () => ({
+    from: (table) => {
+      if (table === "subscription_checkouts") {
+        const createQuery = () => ({
+          eq: () => createQuery(),
+          is: () => createQuery(),
+          order: () => createQuery(),
+          limit: () => createQuery(),
           maybeSingle: async () => ({
-            data: { status: "active", current_period_end: pastDate },
+            data: {
+              id: "chk_mock_sync_old",
+              user_id: testUserId,
+              plan_id: "pro_monthly",
+              months: 1,
+              validity_days: 30,
+              amount: 12.9,
+              amount_cents: 1290,
+              price_cents: 1290,
+              currency: "BRL",
+              completed_payment_id: "old-100",
+              expires_at: new Date(Date.now() + 86400000).toISOString(),
+            },
             error: null,
           }),
+        });
+        return {
+          select: () => createQuery(),
+          update: () => ({
+            eq: () => ({
+              is: () => ({
+                select: () => ({
+                  maybeSingle: async () => ({ data: { id: "chk_mock_sync_old" }, error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { status: "active", current_period_end: pastDate },
+              error: null,
+            }),
+          }),
         }),
-      }),
-    }),
+      };
+    },
   };
 
   const response = await syncRoute(createMockRequest());
