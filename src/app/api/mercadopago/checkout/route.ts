@@ -44,25 +44,31 @@ export async function POST(request: NextRequest) {
     const checkoutId = crypto.randomUUID();
     const admin = createAdminClient();
 
-    // Persistência da intenção de checkout e cotação no servidor
-    try {
-      if (typeof admin?.from === "function") {
-        await admin.from("subscription_checkouts").insert({
-          id: checkoutId,
-          user_id: user.id,
-          plan_id: plan.id,
-          months: plan.months,
-          validity_days: plan.validityDays,
-          amount: plan.price,
-          amount_cents: plan.priceCents,
-          currency: plan.currency,
-          catalog_version: plan.catalogVersion,
-          status: "pending",
-          metadata: { is_renewal: isRenewal },
-        });
-      }
-    } catch {
-      // Falha defensiva se tabela de checkouts ainda não estiver migrada
+    // Persistência obrigatória e atômica da cotação no servidor (fail-closed)
+    const { error: insertError } = await admin.from("subscription_checkouts").insert({
+      id: checkoutId,
+      user_id: user.id,
+      plan_id: plan.id,
+      months: plan.months,
+      validity_days: plan.validityDays,
+      amount: plan.price,
+      amount_cents: plan.priceCents,
+      currency: plan.currency,
+      catalog_version: plan.catalogVersion,
+      status: "pending",
+      metadata: { is_renewal: isRenewal },
+    });
+
+    if (insertError) {
+      captureCheckoutError(insertError, {
+        route: "/api/mercadopago/checkout",
+        userId: user.id,
+        extra: { stage: "persist_checkout_quote", checkoutId },
+      });
+      return NextResponse.json(
+        { error: "Falha ao registrar cotação do checkout. Operação abortada." },
+        { status: 500 },
+      );
     }
 
     const origin = getApplicationOrigin(request.url);
@@ -79,7 +85,7 @@ export async function POST(request: NextRequest) {
           currency_id: plan.currency,
           unit_price: plan.price,
         }],
-        external_reference: user.id,
+        external_reference: `${user.id}#${plan.months}#${checkoutId}`,
         metadata: {
           user_id: user.id,
           checkout_id: checkoutId,
@@ -107,13 +113,20 @@ export async function POST(request: NextRequest) {
     const initPoint = preference.init_point || preference.sandbox_init_point;
     if (!initPoint) throw new Error("Mercado Pago nao retornou URL de checkout");
 
-    // Atualiza a referência de preference_id no registro do checkout
+    // Atualiza a referência de preference_id no registro do checkout para verificação bidirecional
     if (preference.id && typeof admin?.from === "function") {
       try {
-        await admin
+        const { error: updateError } = await admin
           .from("subscription_checkouts")
           .update({ preference_id: preference.id, init_point: initPoint })
           .eq("id", checkoutId);
+        if (updateError) {
+          captureCheckoutError(updateError, {
+            route: "/api/mercadopago/checkout",
+            userId: user.id,
+            extra: { stage: "link_preference_id", checkoutId, preferenceId: preference.id },
+          });
+        }
       } catch {
         // Silencia erro secundário de update
       }

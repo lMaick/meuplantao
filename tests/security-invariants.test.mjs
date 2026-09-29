@@ -249,6 +249,7 @@ test("security-invariants: production gate strict falha quando invariante diverg
     { proname: "save_shift_with_obligation", pronargs: 11, argtypes: "uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, text" },
     { proname: "register_payment", pronargs: 3, argtypes: "uuid, numeric, date" },
     { proname: "process_mercadopago_subscription_payment", pronargs: 6, argtypes: "text, uuid, integer, integer, numeric, text" },
+    { proname: "reconcile_mercadopago_reversal", pronargs: 6, argtypes: "text, uuid, text, integer, integer, numeric" },
   ];
   class MockRpcClient {
     async connect() {}

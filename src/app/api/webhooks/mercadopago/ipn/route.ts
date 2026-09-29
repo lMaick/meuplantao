@@ -1,12 +1,14 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
 import {
   completeSubscriptionCheckout,
+  getValidityDays,
   processMercadoPagoPayment,
   quarantinePayment,
   validatePaymentBeforeGrantingPro,
   type MercadoPagoPaymentPayload,
 } from "@/lib/mercadopago/payments";
-import { extractPaymentInfo } from "@/lib/mercadopago/webhook";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
+import { extractPaymentInfo, isUserId } from "@/lib/mercadopago/webhook";
 import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
@@ -87,7 +89,59 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     const payment = (await paymentResponse.json()) as MercadoPagoPaymentPayload;
     const admin = createAdminClient();
 
-    // Validação rigorosa de integridade e financeiro (MAI-137)
+    const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
+    const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
+
+    if (externalUserId && metadataUserId && externalUserId !== metadataUserId) {
+      return Response.json({ received: true, ignored: true, error: "Identificadores de usuario divergentes no pagamento" }, { status: 200 });
+    }
+
+    const userId = externalUserId || metadataUserId;
+
+    // 4a. Reversao definitiva (provedor como fonte da verdade): reconcilia sem apagar ledger (MAI-136).
+    if (isReversalStatus(payment.status)) {
+      if (!isUserId(userId)) {
+        return Response.json({ received: true, ignored: true, error: "Pagamento sem usuario valido associado" }, { status: 200 });
+      }
+      const months = Number(payment.metadata?.months || externalMonths || 1);
+      const validityDays = getValidityDays(months);
+      const result = await reconcileMercadoPagoReversal(admin, {
+        paymentId,
+        userId,
+        reversalStatus: payment.status ?? "refunded",
+        months,
+        validityDays,
+        amount: payment.transaction_amount ?? undefined,
+      });
+      if (result.ownership_mismatch) {
+        return Response.json({ received: true, ignored: true, error: "Pagamento nao pertence a esta conta" }, { status: 200 });
+      }
+      return Response.json({
+        received: true,
+        reversed: true,
+        already_reversed: result.already_reversed,
+        current_period_end: result.current_period_end,
+        status: result.status,
+      }, { status: 200 });
+    }
+
+    // 4b. Disputa em aberto: sinaliza revisao humana, sem revogar automaticamente (MAI-136).
+    if (isDisputeStatus(payment.status)) {
+      captureWebhookError(new Error("Mercado Pago IPN payment under dispute review"), {
+        route: "/api/webhooks/mercadopago/ipn",
+        paymentId,
+        userId: userId || undefined,
+        extra: { provider_status: payment.status, needs_review: true },
+      });
+      return Response.json({ received: true, ignored: true, needs_review: true, status: payment.status ?? "unknown" }, { status: 200 });
+    }
+
+    // 4c. Pagamento recebido, mas ainda não aprovado (status !== "approved")
+    if (payment.status !== "approved") {
+      return Response.json({ received: true, ignored: true, status: payment.status ?? "unknown" }, { status: 200 });
+    }
+
+    // 4d. Validação rigorosa de integridade e financeiro (MAI-137)
     const valResult = await validatePaymentBeforeGrantingPro(admin, payment);
 
     if (!valResult.valid) {
@@ -129,7 +183,7 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     });
 
     if (valResult.checkoutId) {
-      await completeSubscriptionCheckout(admin, valResult.checkoutId);
+      await completeSubscriptionCheckout(admin, valResult.checkoutId, paymentId);
     }
 
     return Response.json({

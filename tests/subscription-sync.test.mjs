@@ -9,6 +9,7 @@ const __syncDirname = path.dirname(__syncTestFile);
 const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __syncReversalsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __syncObservabilityUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
@@ -22,6 +23,9 @@ registerHooks({
     }
     if (specifier === "@/lib/mercadopago/payments") {
       return { url: __syncPaymentsUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return { url: __syncReversalsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/config") {
       return {

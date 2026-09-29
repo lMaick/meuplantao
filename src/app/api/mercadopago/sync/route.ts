@@ -2,11 +2,13 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import {
   completeSubscriptionCheckout,
+  getValidityDays,
   processMercadoPagoPayment,
   quarantinePayment,
   validatePaymentBeforeGrantingPro,
   type MercadoPagoPaymentPayload,
 } from "@/lib/mercadopago/payments";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { captureSyncError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
@@ -67,7 +69,8 @@ export async function POST(request: NextRequest) {
     }
 
     const matchesUser = (p: NonNullable<MercadoPagoSearchResult["results"]>[number]) => {
-      if (p.status !== "approved") return false;
+      const st = (p.status || "").toLowerCase();
+      if (st !== "approved" && !isReversalStatus(st) && !isDisputeStatus(st)) return false;
       return paymentBelongsToUser(p, user.id);
     };
 
@@ -118,11 +121,40 @@ export async function POST(request: NextRequest) {
       let newlyProcessedCount = 0;
       let validPaymentsCount = 0;
       let lastResultPeriodEnd: string | null = null;
+      let reversedCount = 0;
+      let needsReviewCount = 0;
 
       for (const p of uniquePayments) {
         const paymentId = String(p.id);
 
-        // Validação financeira rigorosa antes de aplicar qualquer concessão
+        // Reversao confirmada no provedor tem precedencia sobre o aprovado local:
+        // reconcilia primeiro para que evento antigo nao restaure Pro.
+        if (isReversalStatus(p.status)) {
+          const months = Number(p.metadata?.months || p.external_reference?.split("#")[1] || 1);
+          const validityDays = getValidityDays(months);
+          const result = await reconcileMercadoPagoReversal(admin, {
+            paymentId,
+            userId: user.id,
+            reversalStatus: p.status ?? "refunded",
+            months,
+            validityDays,
+            amount: p.transaction_amount ?? undefined,
+          });
+          if (result.reversed) reversedCount += 1;
+          lastResultPeriodEnd = result.current_period_end;
+          continue;
+        }
+
+        if (isDisputeStatus(p.status)) {
+          needsReviewCount += 1;
+          continue;
+        }
+
+        if (p.status !== "approved") {
+          continue;
+        }
+
+        // Validação financeira rigorosa antes de aplicar qualquer concessão (MAI-137)
         const valResult = await validatePaymentBeforeGrantingPro(admin, p as MercadoPagoPaymentPayload, user.id);
 
         if (!valResult.valid) {
@@ -152,7 +184,7 @@ export async function POST(request: NextRequest) {
         });
 
         if (valResult.checkoutId) {
-          await completeSubscriptionCheckout(admin, valResult.checkoutId);
+          await completeSubscriptionCheckout(admin, valResult.checkoutId, paymentId);
         }
 
         if (!result.already_processed) {
@@ -191,7 +223,9 @@ export async function POST(request: NextRequest) {
         subscription_status: derivedStatus,
         current_period_end: finalPeriodEnd,
         newly_processed: newlyProcessedCount,
-        total_payments: validPaymentsCount,
+        reversed: reversedCount,
+        needs_review: needsReviewCount,
+        total_payments: uniquePayments.length,
         status: derivedStatus,
       });
     }
