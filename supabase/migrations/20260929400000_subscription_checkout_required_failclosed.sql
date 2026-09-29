@@ -191,8 +191,7 @@ end;
 $$;
 
 -- Garantia de permissoes: somente service_role pode chamar a funcao.
--- Revoga defensivamente ambas as assinaturas (caso o DROP nao tenha removido
--- grants residuais em algum ambiente) e concede apenas a assinatura de 7 args.
-revoke execute on function public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text) from public, anon, authenticated;
+-- A sobrecarga de 6 args ja foi dropada acima (PostgreSQL rejeita REVOKE em
+-- funcao inexistente), por isso revoga/concede apenas a assinatura de 7 args.
 revoke execute on function public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text, uuid) from public, anon, authenticated;
 grant execute on function public.process_mercadopago_subscription_payment(text, uuid, integer, integer, numeric, text, uuid) to service_role;
