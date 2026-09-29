@@ -28,6 +28,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://meuplantao.com.br"),
   applicationName: "MeuPlantao",
   title: { default: "MeuPlantao | Gestão de plantões", template: "%s | MeuPlantao" },
   description: "Organize seus plantões, locais de trabalho e pagamentos. Acompanhe valores a receber, saldo e atrasos em um só lugar.",
