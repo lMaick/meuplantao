@@ -37,6 +37,9 @@ export function PricingSection() {
               <span className="text-sm text-slate-500">/mês</span>
             </div>
             <p className="mt-2 text-sm text-slate-600">Cadastro inicial gratuito, sem cartão.</p>
+            <p className="mt-1 text-xs text-slate-500">
+              Acesso por período fixo. Sem renovação automática. Sem cobranças recorrentes.
+            </p>
             <Link
               href="/cadastro"
               className="mt-6 flex h-12 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-6 text-base font-bold text-white shadow-md transition-all hover:bg-emerald-500 hover:shadow-lg active:scale-98"

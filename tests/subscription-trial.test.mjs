@@ -248,7 +248,7 @@ describe("MAI-118: Subscription & 14-Day Trial System", () => {
       assert.match(cardSource, /Controle ilimitado/i, "Must highlight unlimited shifts");
       assert.match(cardSource, /Alertas automáticos/i, "Must highlight automatic alerts");
       assert.match(cardSource, /Extratos detalhados|Conciliação/i, "Must highlight statements");
-      assert.match(cardSource, /Sem fidelidade/i, "Must highlight no-lockin policy");
+      assert.match(cardSource, /Compra pré-paga|período fixo/i, "Must describe prepaid fixed-period model");
 
       // Action button
       assert.match(cardSource, /Assinar MeuPlantão Pro/i, "Must have subscription action button");
