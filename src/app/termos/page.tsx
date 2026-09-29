@@ -1,9 +1,17 @@
+import type { Metadata } from "next";
 import { PublicPage, LegalSection } from "@/components/public-page";
 import Link from "next/link";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Termos de Uso | MeuPlantão",
   description: "Conheça os termos de uso e condições gerais de utilização da plataforma MeuPlantão.",
+  robots: {
+    index: true,
+    follow: true,
+  },
+  alternates: {
+    canonical: "/termos",
+  },
 };
 
 export default function TermosPage() {

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { getSiteUrl } from "../lib/seo/site-url";
 import { AppShell } from "@/components/ui/app-shell";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 
@@ -28,6 +29,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(getSiteUrl()),
   applicationName: "MeuPlantao",
   title: { default: "MeuPlantao | Gestão de plantões", template: "%s | MeuPlantao" },
   description: "Organize seus plantões, locais de trabalho e pagamentos. Acompanhe valores a receber, saldo e atrasos em um só lugar.",
