@@ -44,6 +44,7 @@ declare
   v_months integer := coalesce(p_months, 1);
   v_now timestamptz := now();
   v_checkout public.subscription_checkouts;
+  v_existing_checkout_id uuid;
 begin
   -- 1. Validacoes de entrada (boundary estrito — fail-closed)
   if v_pid is null then
@@ -116,6 +117,19 @@ begin
 
   -- 5. Se ja foi processado anteriormente, retorna sem adicionar dias e com o status real
   if v_inserted.id is null then
+    -- Consistencia 1:1 pagamento <-> cotacao (MAI-147 auditoria): o pagamento
+    -- ja registrado esta vinculado a uma unica cotacao. Reenviar o mesmo
+    -- payment ID com outro checkout_id deve falhar em vez de marcar um
+    -- segundo checkout como concluido.
+    select checkout_id into v_existing_checkout_id
+      from public.subscription_payments
+     where mercadopago_payment_id = v_pid;
+
+    if v_existing_checkout_id is distinct from p_checkout_id then
+      raise exception using errcode = '23505',
+        message = 'Cotacao divergente para pagamento ja processado';
+    end if;
+
     -- Garante a marcacao da cotacao pelo pagamento que a consumiu (idempotente).
     update public.subscription_checkouts
        set status = 'completed',
