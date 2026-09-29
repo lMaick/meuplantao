@@ -78,7 +78,14 @@ test("subscription validity accumulates from an active period end", () => {
 
 test("webhook activates a multi-period payment with cumulative validity", async () => {
   const calls = [];
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: userId, metadata: { user_id: userId, months: 6 } }), { status: 200 });
+  const checkoutId = "66666666-6666-4666-8666-666666666666";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "approved",
+    external_reference: userId,
+    currency_id: "BRL",
+    transaction_amount: 69.9,
+    metadata: { user_id: userId, months: 6, checkout_id: checkoutId },
+  }), { status: 200 });
   globalThis.adminClient = {
     rpc: async (fn, params) => {
       calls.push(params);
@@ -92,6 +99,44 @@ test("webhook activates a multi-period payment with cumulative validity", async 
         error: null,
       };
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: {
+                id: checkoutId,
+                user_id: userId,
+                plan_id: "pro-6m",
+                months: 6,
+                validity_days: 180,
+                amount: 69.9,
+                amount_cents: 6990,
+                currency: "BRL",
+                status: "pending",
+              },
+              error: null,
+            }),
+          }),
+          maybeSingle: async () => ({
+            data: {
+              id: checkoutId,
+              user_id: userId,
+              plan_id: "pro-6m",
+              months: 6,
+              validity_days: 180,
+              amount: 69.9,
+              amount_cents: 6990,
+              currency: "BRL",
+              status: "pending",
+            },
+            error: null,
+          }),
+        }),
+      }),
+      update: () => ({ eq: async () => ({ error: null }) }),
+      insert: async () => ({ error: null }),
+    }),
   };
 
   const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", { method: "POST", body: JSON.stringify({ type: "payment", data: { id: "payment-6" } }) }));

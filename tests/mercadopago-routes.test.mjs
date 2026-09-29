@@ -92,7 +92,12 @@ test("approved payment activates the user's subscription", async () => {
   const calls = [];
   globalThis.fetch = async (url) => {
     calls.push(url);
-    return new Response(JSON.stringify({ status: "approved", external_reference: userId }), { status: 200 });
+    return new Response(JSON.stringify({
+      status: "approved",
+      external_reference: userId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+    }), { status: 200 });
   };
   globalThis.adminClient = {
     rpc: async (fn, params) => {
@@ -107,6 +112,47 @@ test("approved payment activates the user's subscription", async () => {
         error: null,
       };
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            eq: () => ({
+              is: () => ({
+                order: () => ({
+                  limit: () => ({
+                    maybeSingle: async () => ({
+                      data: {
+                        id: "chk_mock_route_1",
+                        user_id: userId,
+                        plan_id: "pro_monthly",
+                        months: 1,
+                        validity_days: 30,
+                        amount: 12.9,
+                        amount_cents: 1290,
+                        price_cents: 1290,
+                        currency: "BRL",
+                        completed_payment_id: null,
+                        expires_at: new Date(Date.now() + 86400000).toISOString(),
+                      },
+                      error: null,
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: () => ({
+        eq: () => ({
+          is: () => ({
+            select: () => ({
+              maybeSingle: async () => ({ data: { id: "chk_mock_route_1" }, error: null }),
+            }),
+          }),
+        }),
+      }),
+    }),
   };
 
   const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", {

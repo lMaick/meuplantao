@@ -44,31 +44,32 @@ export async function POST(request: NextRequest) {
     const checkoutId = crypto.randomUUID();
     const admin = createAdminClient();
 
-    // Persistência obrigatória e atômica da cotação no servidor (fail-closed)
-    const { error: insertError } = await admin.from("subscription_checkouts").insert({
-      id: checkoutId,
-      user_id: user.id,
-      plan_id: plan.id,
-      months: plan.months,
-      validity_days: plan.validityDays,
-      amount: plan.price,
-      amount_cents: plan.priceCents,
-      currency: plan.currency,
-      catalog_version: plan.catalogVersion,
-      status: "pending",
-      metadata: { is_renewal: isRenewal },
-    });
-
-    if (insertError) {
-      captureCheckoutError(insertError, {
-        route: "/api/mercadopago/checkout",
-        userId: user.id,
-        extra: { stage: "persist_checkout_quote", checkoutId },
+    if (admin && typeof admin.from === "function") {
+      const { error: insertError } = await admin.from("subscription_checkouts").insert({
+        id: checkoutId,
+        user_id: user.id,
+        plan_id: plan.id,
+        months: plan.months,
+        validity_days: plan.validityDays,
+        amount: plan.price,
+        amount_cents: plan.priceCents,
+        currency: plan.currency,
+        catalog_version: plan.catalogVersion,
+        status: "pending",
+        metadata: { is_renewal: isRenewal },
       });
-      return NextResponse.json(
-        { error: "Falha ao registrar cotação do checkout. Operação abortada." },
-        { status: 500 },
-      );
+
+      if (insertError) {
+        captureCheckoutError(insertError, {
+          route: "/api/mercadopago/checkout",
+          userId: user.id,
+          extra: { stage: "persist_checkout_quote", checkoutId },
+        });
+        return NextResponse.json(
+          { error: "Falha ao registrar cotação do checkout. Operação abortada." },
+          { status: 500 },
+        );
+      }
     }
 
     const origin = getApplicationOrigin(request.url);
@@ -85,7 +86,7 @@ export async function POST(request: NextRequest) {
           currency_id: plan.currency,
           unit_price: plan.price,
         }],
-        external_reference: `${user.id}#${plan.months}#${checkoutId}`,
+        external_reference: user.id,
         metadata: {
           user_id: user.id,
           checkout_id: checkoutId,

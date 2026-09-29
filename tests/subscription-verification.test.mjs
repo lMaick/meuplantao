@@ -65,10 +65,17 @@ function authenticatedClient() {
 
 test("approved payment matching the authenticated user activates the subscription", async () => {
   const calls = [];
+  const checkoutId = "55555555-5555-4555-8555-555555555555";
   globalThis.authenticatedClient = authenticatedClient();
   globalThis.fetch = async (url) => {
     calls.push(url);
-    return new Response(JSON.stringify({ status: "approved", external_reference: userId }), { status: 200 });
+    return new Response(JSON.stringify({
+      status: "approved",
+      external_reference: userId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+      metadata: { user_id: userId, checkout_id: checkoutId, months: 1 },
+    }), { status: 200 });
   };
   globalThis.adminClient = {
     rpc: async (fn, params) => {
@@ -83,6 +90,43 @@ test("approved payment matching the authenticated user activates the subscriptio
         error: null,
       };
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: {
+                id: checkoutId,
+                user_id: userId,
+                plan_id: "pro-1m",
+                months: 1,
+                validity_days: 30,
+                amount: 12.9,
+                amount_cents: 1290,
+                currency: "BRL",
+                status: "pending",
+              },
+              error: null,
+            }),
+          }),
+          maybeSingle: async () => ({
+            data: {
+              id: checkoutId,
+              user_id: userId,
+              plan_id: "pro-1m",
+              months: 1,
+              validity_days: 30,
+              amount: 12.9,
+              amount_cents: 1290,
+              currency: "BRL",
+              status: "pending",
+            },
+            error: null,
+          }),
+        }),
+      }),
+      update: () => ({ eq: async () => ({ error: null }) }),
+    }),
   };
 
   const response = await verifyPayment(verifyRequest("payment_id=payment-123"));
@@ -105,8 +149,15 @@ test("approved payment matching the authenticated user activates the subscriptio
 });
 
 test("Caso 1: webhook processes payment first; verify returns already_processed=true but subscription_active=true", async () => {
+  const checkoutId = "55555555-5555-4555-8555-555555555555";
   globalThis.authenticatedClient = authenticatedClient();
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: userId }), { status: 200 });
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "approved",
+    external_reference: userId,
+    currency_id: "BRL",
+    transaction_amount: 12.9,
+    metadata: { user_id: userId, checkout_id: checkoutId, months: 1 },
+  }), { status: 200 });
 
   const futureDate = new Date(Date.now() + 30 * 86400000).toISOString();
   globalThis.adminClient = {
@@ -118,6 +169,43 @@ test("Caso 1: webhook processes payment first; verify returns already_processed=
         status: "active",
       },
       error: null,
+    }),
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: {
+                id: checkoutId,
+                user_id: userId,
+                plan_id: "pro-1m",
+                months: 1,
+                validity_days: 30,
+                amount: 12.9,
+                amount_cents: 1290,
+                currency: "BRL",
+                status: "pending",
+              },
+              error: null,
+            }),
+          }),
+          maybeSingle: async () => ({
+            data: {
+              id: checkoutId,
+              user_id: userId,
+              plan_id: "pro-1m",
+              months: 1,
+              validity_days: 30,
+              amount: 12.9,
+              amount_cents: 1290,
+              currency: "BRL",
+              status: "pending",
+            },
+            error: null,
+          }),
+        }),
+      }),
+      update: () => ({ eq: async () => ({ error: null }) }),
     }),
   };
 

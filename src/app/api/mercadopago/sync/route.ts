@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
         newly_processed: newlyProcessedCount,
         reversed: reversedCount,
         needs_review: needsReviewCount,
-        total_payments: uniquePayments.length,
+        total_payments: validPaymentsCount,
         status: derivedStatus,
       });
     }

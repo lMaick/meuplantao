@@ -10,6 +10,7 @@ const observabilityUrl = pathToFileURL(path.join(ROOT, "src", "lib", "observabil
 
 const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
 const webhookUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "webhook.ts")).href;
+const reversalsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "reversals.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
@@ -20,6 +21,7 @@ registerHooks({
     }
     if (specifier === "@/lib/observability") return { url: observabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: paymentsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/reversals") return { url: reversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: configUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: webhookUrl, shortCircuit: true };
     if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {

@@ -84,10 +84,20 @@ function paymentRequest(paymentId, headers = {}) {
 }
 
 function mockApprovedPayment() {
+  const checkoutId = "00000000-0000-4000-8000-000000000999";
   globalThis.fetch = async (url) => {
     assert.match(url, /^https:\/\/api\.mercadopago\.test\/v1\/payments\//);
     return new Response(
-      JSON.stringify({ status: "approved", external_reference: validUserId, transaction_amount: 12.9 }),
+      JSON.stringify({
+        status: "approved",
+        external_reference: `${validUserId}#pro_monthly#${checkoutId}`,
+        transaction_amount: 12.9,
+        currency_id: "BRL",
+        metadata: {
+          user_id: validUserId,
+          checkout_id: checkoutId,
+        },
+      }),
       { status: 200 },
     );
   };
@@ -107,6 +117,47 @@ function mockApprovedPayment() {
         error: null,
       };
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: {
+                id: checkoutId,
+                user_id: validUserId,
+                plan_id: "pro_monthly",
+                price_cents: 1290,
+                currency: "BRL",
+                completed_payment_id: null,
+                expires_at: new Date(Date.now() + 86400000).toISOString(),
+              },
+              error: null,
+            }),
+          }),
+          maybeSingle: async () => ({
+            data: {
+              id: checkoutId,
+              user_id: validUserId,
+              plan_id: "pro_monthly",
+              price_cents: 1290,
+              currency: "BRL",
+              completed_payment_id: null,
+              expires_at: new Date(Date.now() + 86400000).toISOString(),
+            },
+            error: null,
+          }),
+        }),
+      }),
+      update: () => ({
+        eq: () => ({
+          is: () => ({
+            select: () => ({
+              maybeSingle: async () => ({ data: { id: checkoutId }, error: null }),
+            }),
+          }),
+        }),
+      }),
+    }),
   };
   return { getRpcCalls: () => rpcCalls, futureEnd };
 }

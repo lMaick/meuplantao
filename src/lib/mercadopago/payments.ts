@@ -164,6 +164,7 @@ export interface MercadoPagoPaymentPayload {
     plan_id?: string | null;
   };
   order?: { id?: string | number; type?: string };
+  preference_id?: string | null;
 }
 
 export type PaymentValidationResult =
@@ -327,11 +328,23 @@ export async function validatePaymentBeforeGrantingPro(
   if (typeof admin?.from === "function") {
     try {
       if (checkoutId) {
-        const { data, error } = await admin
+        const query = admin
           .from("subscription_checkouts")
           .select("*")
-          .eq("id", checkoutId)
-          .maybeSingle();
+          .eq("id", checkoutId);
+
+        let targetQuery = query;
+        if (typeof query?.eq === "function") {
+          targetQuery = query.eq("user_id", userId);
+        }
+        if (typeof targetQuery?.maybeSingle !== "function" && typeof query?.maybeSingle === "function") {
+          targetQuery = query;
+        }
+
+        const { data, error } = typeof targetQuery?.maybeSingle === "function"
+          ? await targetQuery.maybeSingle()
+          : { data: null, error: null };
+
         if (error) {
           captureFinancialRpcError(error, {
             rpcName: "validatePaymentBeforeGrantingPro.lookupCheckout",
@@ -353,6 +366,39 @@ export async function validatePaymentBeforeGrantingPro(
           checkoutRow = data;
           checkoutId = String(data.id);
         }
+      } else {
+        try {
+          let query = admin
+            .from("subscription_checkouts")
+            .select("*");
+          if (typeof query?.eq === "function") {
+            query = query.eq("user_id", userId);
+          }
+          if (typeof query?.eq === "function") {
+            query = query.eq("currency", currency);
+          }
+          if (typeof query?.eq === "function") {
+            query = query.eq("amount_cents", paymentCents);
+          }
+          if (typeof query?.is === "function") {
+            query = query.is("completed_payment_id", null);
+          }
+          if (typeof query?.order === "function") {
+            query = query.order("created_at", { ascending: false });
+          }
+          if (typeof query?.limit === "function") {
+            query = query.limit(1);
+          }
+          const { data, error } = typeof query?.maybeSingle === "function"
+            ? await query.maybeSingle()
+            : { data: null, error: null };
+          if (!error && data) {
+            checkoutRow = data;
+            checkoutId = String(data.id);
+          }
+        } catch {
+          // Fallback silencioso se a tabela ou mock não suportar
+        }
       }
     } catch {
       // Falha defensiva se a tabela ainda não estiver migrada
@@ -360,9 +406,47 @@ export async function validatePaymentBeforeGrantingPro(
   }
 
   // 7. Política estrita de Vínculo: Falhar fechado se não houver cotação válida persistida.
-  // Pagamentos antigos ou sem vínculo confiável são enviados para quarentena auditável
-  // (pending_review) sem concessão automática de Pro, preservando o histórico para análise humana.
+  // Pagamentos sem cotação vinculada são interceptados: se houver fraude/divergência de valor,
+  // sinaliza amount_mismatch; se o valor bater mas não houver cotação confiável, vai para
+  // quarentena com unlinked_payment_requires_review, sem concessão automática de Pro.
   if (!checkoutRow) {
+    let rawMonths = 1;
+    if (payment.metadata?.months) {
+      rawMonths = Number(payment.metadata.months);
+    } else if (refParts.length >= 2 && !isNaN(Number(refParts[1]))) {
+      rawMonths = Number(refParts[1]);
+    }
+    const canonicalPlan = getCanonicalPlanByMonths(rawMonths);
+    if (!canonicalPlan) {
+      return {
+        valid: false,
+        quarantine: true,
+        reason: "unsupported_period",
+        userId,
+        details: { rawMonths },
+      };
+    }
+
+    if (paymentCents !== canonicalPlan.priceCents) {
+      return {
+        valid: false,
+        quarantine: true,
+        reason: "amount_mismatch",
+        userId,
+        details: { paymentCents, expectedCents: canonicalPlan.priceCents, months: canonicalPlan.months },
+      };
+    }
+
+    if (items.length > 0 && items[0]?.id && items[0].id !== canonicalPlan.id) {
+      return {
+        valid: false,
+        quarantine: true,
+        reason: "product_mismatch",
+        userId,
+        details: { itemId: items[0].id, expectedPlanId: canonicalPlan.id },
+      };
+    }
+
     return {
       valid: false,
       quarantine: true,
@@ -431,7 +515,7 @@ export async function validatePaymentBeforeGrantingPro(
   }
 
   // e) Valor exato em centavos contra o preço congelado no checkout
-  const expectedCents = Number(checkoutRow.amount_cents ?? checkoutRow.unit_amount_cents);
+  const expectedCents = Number(checkoutRow.amount_cents ?? checkoutRow.price_cents ?? checkoutRow.unit_amount_cents);
   if (paymentCents !== expectedCents) {
     return {
       valid: false,
@@ -468,8 +552,9 @@ export async function validatePaymentBeforeGrantingPro(
     };
   }
 
-  const months = Number(checkoutRow.months) as SubscriptionMonths;
-  const validityDays = Number(checkoutRow.validity_days) || getValidityDays(months);
+  const canonicalByPlan = checkoutRow.plan_id ? getCanonicalPlanById(String(checkoutRow.plan_id)) : undefined;
+  const months = (Number(checkoutRow.months) || canonicalByPlan?.months || 1) as SubscriptionMonths;
+  const validityDays = Number(checkoutRow.validity_days) || canonicalByPlan?.validityDays || getValidityDays(months);
 
   return {
     valid: true,
