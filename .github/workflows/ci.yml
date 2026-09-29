@@ -90,7 +90,7 @@ jobs:
           migration_third="supabase/migrations/20260909190000_financial_authority_definer.sql"
           migration_fourth="supabase/migrations/20260909200000_financial_authority_table_privileges.sql"
           mkdir -p "${RUNNER_TEMP}/post_legacy_migrations"
-          for f in supabase/migrations/20260908* supabase/migrations/20260909* supabase/migrations/20260919* supabase/migrations/20260920* supabase/migrations/20260928*; do
+          for f in supabase/migrations/20260908* supabase/migrations/20260909* supabase/migrations/20260919* supabase/migrations/20260920* supabase/migrations/20260928* supabase/migrations/20260929*; do
             if [ -f "$f" ]; then
               mv "$f" "${RUNNER_TEMP}/post_legacy_migrations/"
             fi
@@ -194,3 +194,9 @@ jobs:
             SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}" \
             DATABASE_URL="${DB_URL}" \
             npm run test:subscription-real
+
+          RUN_REAL_E2E=1 \
+            NEXT_PUBLIC_SUPABASE_URL="${API_URL}" \
+            SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}" \
+            DATABASE_URL="${DB_URL}" \
+            npm run test:subscription-reversal-real

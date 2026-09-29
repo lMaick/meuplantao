@@ -8,6 +8,7 @@ const userId = "11111111-1111-4111-8111-111111111111";
 const subscriptionTypesUrl = pathToFileURL(resolve("src/lib/subscription/types.ts")).href;
 const subscriptionTrialUrl = pathToFileURL(resolve("src/lib/subscription/trial.ts")).href;
 const subscriptionPaymentsUrl = pathToFileURL(resolve("src/lib/mercadopago/payments.ts")).href;
+const subscriptionReversalsUrl = pathToFileURL(resolve("src/lib/mercadopago/reversals.ts")).href;
 const subscriptionWebhookUrl = pathToFileURL(resolve("src/lib/mercadopago/webhook.ts")).href;
 const subscriptionObservabilityUrl = pathToFileURL(resolve("src/lib/observability/index.ts")).href;
 
@@ -17,6 +18,7 @@ registerHooks({
     if (specifier === "@/lib/observability") return { url: subscriptionObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com'; export const isProductionEnvironment = () => process.env.VERCEL_ENV?.trim() === 'production' || process.env.NODE_ENV?.trim() === 'production'; export const isMissingWebhookSecretAllowed = () => { if (isProductionEnvironment()) return false; const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase(); return raw !== 'false' && raw !== '0' && raw !== 'no'; }; export const getWebhookSetupState = () => ({ configured: false, failClosed: !isMissingWebhookSecretAllowed() });", shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: subscriptionPaymentsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/reversals") return { url: subscriptionReversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: subscriptionWebhookUrl, shortCircuit: true };
     if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: subscriptionTypesUrl, shortCircuit: true };
@@ -56,14 +58,16 @@ for (const expected of [
     globalThis.authenticatedClient = authenticatedClient();
     globalThis.fetch = async (url, options) => {
       calls.push({ url, body: JSON.parse(options.body) });
-      return new Response(JSON.stringify({ init_point: "https://mercadopago.test/checkout" }), { status: 201 });
+      return new Response(JSON.stringify({ id: `pref-multi-${expected[0]}`, init_point: "https://mercadopago.test/checkout" }), { status: 201 });
     };
 
     const response = await checkout(checkoutRequest(expected[0]));
     const body = calls[0].body;
     assert.equal(response.status, 200);
     assert.equal(body.items[0].unit_price, expected[1]);
-    assert.equal(body.external_reference, userId);
+    // MAI-147: vínculo verificável user#months#checkoutId
+    assert.match(body.external_reference, new RegExp(`^${userId}#${expected[0]}#[0-9a-f-]{36}$`));
+    assert.equal(body.metadata.checkout_id, body.external_reference.split("#")[2]);
     assert.equal(body.metadata.months, expected[0]);
   });
 }
@@ -76,7 +80,14 @@ test("subscription validity accumulates from an active period end", () => {
 
 test("webhook activates a multi-period payment with cumulative validity", async () => {
   const calls = [];
-  globalThis.fetch = async () => new Response(JSON.stringify({ status: "approved", external_reference: userId, metadata: { user_id: userId, months: 6 } }), { status: 200 });
+  const checkoutId = "66666666-6666-4666-8666-666666666666";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "approved",
+    external_reference: userId,
+    currency_id: "BRL",
+    transaction_amount: 69.9,
+    metadata: { user_id: userId, months: 6, checkout_id: checkoutId },
+  }), { status: 200 });
   globalThis.adminClient = {
     rpc: async (fn, params) => {
       calls.push(params);
@@ -90,6 +101,44 @@ test("webhook activates a multi-period payment with cumulative validity", async 
         error: null,
       };
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: {
+                id: checkoutId,
+                user_id: userId,
+                plan_id: "pro-6m",
+                months: 6,
+                validity_days: 180,
+                amount: 69.9,
+                amount_cents: 6990,
+                currency: "BRL",
+                status: "pending",
+              },
+              error: null,
+            }),
+          }),
+          maybeSingle: async () => ({
+            data: {
+              id: checkoutId,
+              user_id: userId,
+              plan_id: "pro-6m",
+              months: 6,
+              validity_days: 180,
+              amount: 69.9,
+              amount_cents: 6990,
+              currency: "BRL",
+              status: "pending",
+            },
+            error: null,
+          }),
+        }),
+      }),
+      update: () => ({ eq: async () => ({ error: null }) }),
+      insert: async () => ({ error: null }),
+    }),
   };
 
   const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", { method: "POST", body: JSON.stringify({ type: "payment", data: { id: "payment-6" } }) }));

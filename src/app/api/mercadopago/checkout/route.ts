@@ -1,16 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getApplicationOrigin, getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
 import { captureCheckoutError } from "@/lib/observability";
-import { createAuthenticatedClient } from "@/lib/supabase/server";
+import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
+import { getCanonicalPlanByMonths } from "@/lib/mercadopago/payments";
 
 export const runtime = "nodejs";
-
-const periods = new Map([
-  [1, { months: 1, label: "Mensal", price: 12.9, validityDays: 30 }],
-  [3, { months: 3, label: "Trimestral", price: 38.7, validityDays: 90 }],
-  [6, { months: 6, label: "Semestral", price: 69.9, validityDays: 180 }],
-  [12, { months: 12, label: "Anual", price: 129.9, validityDays: 365 }],
-]);
 
 export async function POST(request: NextRequest) {
   const response = NextResponse.json({ error: "Nao foi possivel iniciar o checkout" }, { status: 500 });
@@ -43,8 +37,40 @@ export async function POST(request: NextRequest) {
     } catch {
       months = 1;
     }
-    const period = periods.get(months);
-    if (!period) return NextResponse.json({ error: "Periodo de assinatura invalido" }, { status: 400 });
+
+    const plan = getCanonicalPlanByMonths(months);
+    if (!plan) return NextResponse.json({ error: "Periodo de assinatura invalido" }, { status: 400 });
+
+    const checkoutId = crypto.randomUUID();
+    const admin = createAdminClient();
+
+    if (admin && typeof admin.from === "function") {
+      const { error: insertError } = await admin.from("subscription_checkouts").insert({
+        id: checkoutId,
+        user_id: user.id,
+        plan_id: plan.id,
+        months: plan.months,
+        validity_days: plan.validityDays,
+        amount: plan.price,
+        amount_cents: plan.priceCents,
+        currency: plan.currency,
+        catalog_version: plan.catalogVersion,
+        status: "pending",
+        metadata: { is_renewal: isRenewal },
+      });
+
+      if (insertError) {
+        captureCheckoutError(insertError, {
+          route: "/api/mercadopago/checkout",
+          userId: user.id,
+          extra: { stage: "persist_checkout_quote", checkoutId },
+        });
+        return NextResponse.json(
+          { error: "Falha ao registrar cotação do checkout. Operação abortada." },
+          { status: 500 },
+        );
+      }
+    }
 
     const origin = getApplicationOrigin(request.url);
     const isHttps = origin.startsWith("https://");
@@ -53,15 +79,25 @@ export async function POST(request: NextRequest) {
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         items: [{
-          id: `meuplantao-pro-${period.months}`,
-          title: `MeuPlantão Pro — ${period.label}`,
-          description: `${isRenewal ? "Renovação" : "Assinatura"} do MeuPlantão Pro por ${period.validityDays} dias`,
+          id: plan.id,
+          title: `MeuPlantão Pro — ${plan.label}`,
+          description: `${isRenewal ? "Renovação" : "Assinatura"} do MeuPlantão Pro por ${plan.validityDays} dias`,
           quantity: 1,
-          currency_id: "BRL",
-          unit_price: period.price,
+          currency_id: plan.currency,
+          unit_price: plan.price,
         }],
-        external_reference: user.id,
-        metadata: { user_id: user.id, months: period.months, is_renewal: isRenewal },
+        external_reference: `${user.id}#${plan.months}#${checkoutId}`,
+        metadata: {
+          user_id: user.id,
+          checkout_id: checkoutId,
+          plan_id: plan.id,
+          months: plan.months,
+          currency: plan.currency,
+          price: plan.price,
+          price_cents: plan.priceCents,
+          catalog_version: plan.catalogVersion,
+          is_renewal: isRenewal,
+        },
         payer: user.email ? { email: user.email } : undefined,
         back_urls: {
           success: `${origin}/configuracoes?payment=success`,
@@ -74,9 +110,54 @@ export async function POST(request: NextRequest) {
     });
 
     if (!mercadoPagoResponse.ok) throw new Error("Mercado Pago rejeitou a preferencia");
-    const preference = await mercadoPagoResponse.json() as { init_point?: string; sandbox_init_point?: string };
+    const preference = await mercadoPagoResponse.json() as { id?: string; init_point?: string; sandbox_init_point?: string };
     const initPoint = preference.init_point || preference.sandbox_init_point;
     if (!initPoint) throw new Error("Mercado Pago nao retornou URL de checkout");
+
+    // Vinculo verificavel checkout <-> preferencia (MAI-147: fail-closed).
+    // Sem preference_id persistido, o pagamento futuro cai em quarentena;
+    // abortar aqui evita entregar checkout sem lastro auditavel.
+    if (!preference.id) {
+      captureCheckoutError(new Error("Mercado Pago nao retornou ID da preferencia"), {
+        route: "/api/mercadopago/checkout",
+        userId: user.id,
+        extra: { stage: "link_preference_id", checkoutId },
+      });
+      return NextResponse.json(
+        { error: "Falha ao vincular preferência do checkout. Operação abortada." },
+        { status: 500 },
+      );
+    }
+    if (typeof admin?.from === "function") {
+      try {
+        const { error: updateError } = await admin
+          .from("subscription_checkouts")
+          .update({ preference_id: preference.id, init_point: initPoint })
+          .eq("id", checkoutId);
+        if (updateError) {
+          captureCheckoutError(updateError, {
+            route: "/api/mercadopago/checkout",
+            userId: user.id,
+            extra: { stage: "link_preference_id", checkoutId, preferenceId: preference.id },
+          });
+          return NextResponse.json(
+            { error: "Falha ao vincular preferência do checkout. Operação abortada." },
+            { status: 500 },
+          );
+        }
+      } catch (linkError) {
+        captureCheckoutError(linkError, {
+          route: "/api/mercadopago/checkout",
+          userId: user.id,
+          extra: { stage: "link_preference_id", checkoutId, preferenceId: preference.id },
+        });
+        return NextResponse.json(
+          { error: "Falha ao vincular preferência do checkout. Operação abortada." },
+          { status: 500 },
+        );
+      }
+    }
+
     return NextResponse.json({ init_point: initPoint });
   } catch (error) {
     captureCheckoutError(error, {

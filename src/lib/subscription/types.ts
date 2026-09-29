@@ -1,26 +1,19 @@
+import {
+  CANONICAL_PLANS,
+  SUBSCRIPTION_PERIODS,
+  type CanonicalPlan,
+  type SubscriptionMonths,
+} from "@/lib/mercadopago/payments";
+
 export type SubscriptionStatus = "trialing" | "expired" | "active";
 
-export const SUBSCRIPTION_PERIODS = [1, 3, 6, 12] as const;
-export type SubscriptionMonths = (typeof SUBSCRIPTION_PERIODS)[number];
+export { SUBSCRIPTION_PERIODS, type SubscriptionMonths };
+export type SubscriptionPeriod = CanonicalPlan;
 
-export interface SubscriptionPeriod {
-  months: SubscriptionMonths;
-  label: string;
-  price: number;
-  validityDays: number;
-  monthlyEquivalent: number;
-  badge?: string;
-}
-
-export const SUBSCRIPTION_PERIODS_CONFIG: readonly SubscriptionPeriod[] = [
-  { months: 1, label: "Mensal", price: 12.9, validityDays: 30, monthlyEquivalent: 12.9 },
-  { months: 3, label: "Trimestral", price: 38.7, validityDays: 90, monthlyEquivalent: 12.9 },
-  { months: 6, label: "Semestral", price: 69.9, validityDays: 180, monthlyEquivalent: 11.65, badge: "Mais escolhido" },
-  { months: 12, label: "Anual", price: 129.9, validityDays: 365, monthlyEquivalent: 10.825, badge: "Melhor valor · 2 meses grátis" },
-] as const;
+export const SUBSCRIPTION_PERIODS_CONFIG: readonly SubscriptionPeriod[] = CANONICAL_PLANS;
 
 export function getSubscriptionPeriod(months: number): SubscriptionPeriod | undefined {
-  return SUBSCRIPTION_PERIODS_CONFIG.find((period) => period.months === months);
+  return CANONICAL_PLANS.find((period) => period.months === months);
 }
 
 export function addSubscriptionValidity(start: Date, validityDays: number): Date {
