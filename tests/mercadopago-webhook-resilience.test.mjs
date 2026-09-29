@@ -8,6 +8,7 @@ import test from "node:test";
 const __whTestFile = fileURLToPath(import.meta.url);
 const __whTrialUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
 const __whPaymentsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __whReversalsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __whWebhookUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const __whObservabilityUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -20,6 +21,9 @@ registerHooks({
     }
     if (specifier === "@/lib/mercadopago/payments") {
       return { url: __whPaymentsUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return { url: __whReversalsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/webhook") {
       return { url: __whWebhookUrl, shortCircuit: true };

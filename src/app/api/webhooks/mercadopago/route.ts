@@ -1,5 +1,6 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getWebhookSetupState } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { WEBHOOK_NOT_CONFIGURED_CODE, WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR, extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
 import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
@@ -114,14 +115,6 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
       metadata?: { user_id?: string; userId?: string; months?: number };
     };
 
-    // 4. Pagamento recebido, mas ainda não aprovado (status !== "approved")
-    if (payment.status !== "approved") {
-      return Response.json(
-        { received: true, ignored: true, status: payment.status ?? "unknown" },
-        { status: 200 },
-      );
-    }
-
     const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
     const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
 
@@ -142,8 +135,60 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
 
     const months = Number(payment.metadata?.months || externalMonths || 1);
     const validityDays = getValidityDays(months);
-
     const admin = createAdminClient();
+
+    // 4a. Reversao definitiva (provedor como fonte da verdade): reconcilia sem apagar ledger.
+    // Cobre aprovado -> reembolsado/chargeback, duplicacao, fora de ordem e
+    // notificacao antiga (o estado atual do provedor decide, nunca o evento isolado).
+    if (isReversalStatus(payment.status)) {
+      const result = await reconcileMercadoPagoReversal(admin, {
+        paymentId,
+        userId,
+        reversalStatus: payment.status ?? "refunded",
+        months,
+        validityDays,
+        amount: payment.transaction_amount,
+      });
+      if (result.ownership_mismatch) {
+        return Response.json(
+          { received: true, ignored: true, error: "Pagamento nao pertence a esta conta" },
+          { status: 200 },
+        );
+      }
+      return Response.json(
+        {
+          received: true,
+          reversed: true,
+          already_reversed: result.already_reversed,
+          current_period_end: result.current_period_end,
+          status: result.status,
+        },
+        { status: 200 },
+      );
+    }
+
+    // 4b. Disputa em aberto: sinaliza revisao humana, sem revogar automaticamente (MAI-136).
+    if (isDisputeStatus(payment.status)) {
+      captureWebhookError(new Error("Mercado Pago payment under dispute review"), {
+        route: "/api/webhooks/mercadopago",
+        paymentId,
+        userId,
+        extra: { provider_status: payment.status, needs_review: true },
+      });
+      return Response.json(
+        { received: true, ignored: true, needs_review: true, status: payment.status ?? "unknown" },
+        { status: 200 },
+      );
+    }
+
+    // 4c. Pagamento recebido, mas ainda não aprovado (status !== "approved")
+    if (payment.status !== "approved") {
+      return Response.json(
+        { received: true, ignored: true, status: payment.status ?? "unknown" },
+        { status: 200 },
+      );
+    }
+
     const result = await processMercadoPagoPayment(admin, {
       paymentId,
       userId,

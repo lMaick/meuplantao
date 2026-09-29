@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { captureSyncError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
@@ -58,7 +59,8 @@ export async function POST(request: NextRequest) {
     }
 
     const matchesUser = (p: NonNullable<MercadoPagoSearchResult["results"]>[number]) => {
-      if (p.status !== "approved") return false;
+      const st = (p.status || "").toLowerCase();
+      if (st !== "approved" && !isReversalStatus(st) && !isDisputeStatus(st)) return false;
       return paymentBelongsToUser(p, user.id);
     };
 
@@ -108,11 +110,34 @@ export async function POST(request: NextRequest) {
       const admin = createAdminClient();
       let newlyProcessedCount = 0;
       let lastResultPeriodEnd: string | null = null;
+      let reversedCount = 0;
+      let needsReviewCount = 0;
 
       for (const p of uniquePayments) {
         const paymentId = String(p.id);
         const months = Number(p.metadata?.months || p.external_reference?.split("#")[1] || 1);
         const validityDays = getValidityDays(months);
+
+        // Reversao confirmada no provedor tem precedencia sobre o aprovado local:
+        // reconcilia primeiro para que evento antigo nao restaure Pro.
+        if (isReversalStatus(p.status)) {
+          const result = await reconcileMercadoPagoReversal(admin, {
+            paymentId,
+            userId: user.id,
+            reversalStatus: p.status ?? "refunded",
+            months,
+            validityDays,
+            amount: p.transaction_amount,
+          });
+          if (result.reversed) reversedCount += 1;
+          lastResultPeriodEnd = result.current_period_end;
+          continue;
+        }
+
+        if (isDisputeStatus(p.status)) {
+          needsReviewCount += 1;
+          continue;
+        }
 
         const result = await processMercadoPagoPayment(admin, {
           paymentId,
@@ -159,6 +184,8 @@ export async function POST(request: NextRequest) {
         subscription_status: derivedStatus,
         current_period_end: finalPeriodEnd,
         newly_processed: newlyProcessedCount,
+        reversed: reversedCount,
+        needs_review: needsReviewCount,
         total_payments: uniquePayments.length,
         status: derivedStatus,
       });
