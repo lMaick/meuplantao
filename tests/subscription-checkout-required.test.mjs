@@ -51,8 +51,8 @@ test("MAI-147 fail-closed: migration 29400000 remove overload de 6 args e exige 
   );
   assert.match(
     sql,
-    /revoke execute on function public\.process_mercadopago_subscription_payment\(text, uuid, integer, integer, numeric, text\)/i,
-    "migration deve revogar a assinatura legada",
+    /revoke execute on function public\.process_mercadopago_subscription_payment\(text, uuid, integer, integer, numeric, text, uuid\)/i,
+    "migration deve revogar a assinatura de 7 args (a de 6 args foi dropada — REVOKE nela falharia)",
   );
 });
 
