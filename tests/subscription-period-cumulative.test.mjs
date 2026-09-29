@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 
 const __testFilename = fileURLToPath(import.meta.url);
+const __billingRateLimitUrl = pathToFileURL(path.join(path.dirname(__testFilename), "..", "src", "lib", "billing", "rate-limit.ts")).href;
 const __testDirname = path.dirname(__testFilename);
 const trialModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
@@ -26,6 +27,7 @@ import {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@/lib/billing/rate-limit") return { url: __billingRateLimitUrl, shortCircuit: true };
     if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
     if (specifier === "@/lib/observability") return { url: observabilityModuleUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {

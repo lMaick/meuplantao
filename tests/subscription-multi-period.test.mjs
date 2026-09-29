@@ -10,9 +10,11 @@ const subscriptionTrialUrl = pathToFileURL(resolve("src/lib/subscription/trial.t
 const subscriptionPaymentsUrl = pathToFileURL(resolve("src/lib/mercadopago/payments.ts")).href;
 const subscriptionWebhookUrl = pathToFileURL(resolve("src/lib/mercadopago/webhook.ts")).href;
 const subscriptionObservabilityUrl = pathToFileURL(resolve("src/lib/observability/index.ts")).href;
+const subscriptionRateLimitUrl = pathToFileURL(resolve("src/lib/billing/rate-limit.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@/lib/billing/rate-limit") return { url: subscriptionRateLimitUrl, shortCircuit: true };
     if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
     if (specifier === "@/lib/observability") return { url: subscriptionObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-token'; export const getMercadoPagoWebhookSecret = () => null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com'; export const isProductionEnvironment = () => process.env.VERCEL_ENV?.trim() === 'production' || process.env.NODE_ENV?.trim() === 'production'; export const isMissingWebhookSecretAllowed = () => { if (isProductionEnvironment()) return false; const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase(); return raw !== 'false' && raw !== '0' && raw !== 'no'; }; export const getWebhookSetupState = () => ({ configured: false, failClosed: !isMissingWebhookSecretAllowed() });", shortCircuit: true };

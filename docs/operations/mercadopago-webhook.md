@@ -64,3 +64,24 @@ Nao contem segredos, tokens, URLs com credenciais ou stack traces.
 Ref: GitHub issue #113. Replay protection e idempotencia sao preservados
 conforme o contrato das rotas; a logica de validacao e coberta por outros
 slices/PRs da mesma issue.
+
+## 7. Rate limit e cooldown de billing (MAI-138)
+
+- Todas as rotas de billing (`/api/webhooks/mercadopago`, `/api/webhooks/mercadopago/ipn`,
+  `/api/mercadopago/checkout`, `/api/mercadopago/sync`, `/api/mercadopago/verify`)
+  aplicam rate limit + cooldown ANTES de qualquer consulta ao Mercado Pago.
+- Rajadas do mesmo pagamento retornam `200 { deduped: true }` SEM nova consulta
+  externa (webhooks/IPN); abuso por IP/usuário recebe `429` com `Retry-After`.
+  Falhas retentáveis (502/500/429 upstream) liberam o cooldown para preservar o
+  retry legítimo do provedor; a idempotência financeira segue na RPC atômica.
+- Store distribuído (nunca contador local como garantia global): Upstash Redis
+  via REST quando `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` existem;
+  senão Supabase (`billing_rate_limits` + RPC `billing_rate_limit_hit`, service_role);
+  memória local só como fallback fail-open por instância, com log sanitizado.
+  Nenhum log carrega segredos, tokens, corpo ou IP bruto (apenas hash truncado).
+- Habilitação: ligado SEMPRE em produção; fora de produção exige
+  `BILLING_RATE_LIMIT_ENABLED=true` (cobertura em `tests/billing-rate-limit.test.mjs`).
+  `BILLING_RATE_LIMIT_DISABLED=true` desliga em qualquer ambiente (emergência).
+- IPN legado em produção é DESABILITADO por padrão (`410 legacy_ipn_disabled`,
+  sem consultar o Mercado Pago). Para manter temporariamente:
+  `MERCADO_PAGO_ENABLE_LEGACY_IPN=true`. Fora de produção o padrão é habilitado.
