@@ -53,6 +53,7 @@ const SENSITIVE_KEY_PATTERNS = [
   /session/i,
   /card/i,
   /cvv/i,
+  /payer/i,
   /service_role/i,
   /anon_key/i,
   /private/i,
@@ -88,18 +89,18 @@ export function sanitizeStringValue(value: string): string {
   // 2. Authorization / Bearer tokens (soltos ou com cabeçalho)
   // Ex: "Authorization: Bearer SECRET123" ou "Bearer SECRET123" -> "Authorization: Bearer [REDACTED]"
   sanitized = sanitized.replace(
-    /\b(authorization\s*[:=]\s*)?(bearer\s+)[^\s,;\r\n"']+/gi,
+    /\b(authorization\s*[:=]\s*)?(bearer\s+)[^\s,;&\r\n"']+/gi,
     "$1Bearer [REDACTED]"
   );
   sanitized = sanitized.replace(
-    /\b(authorization\s*[:=]\s*)(?!bearer\b)[^\s,;\r\n"']+/gi,
+    /\b(authorization\s*[:=]\s*)(?!bearer\b)[^\s,;&\r\n"']+/gi,
     "$1[REDACTED]"
   );
 
   // 3. Pares de chave-valor com segredos conhecidos (service_role, anon_key, secret, password, senha, etc.)
-  // Ex: "service_role=SECRET_KEY", "password: my_password"
+  // Ex: "service_role=SECRET_KEY", "password: my_password", "https://api.com?secret=XYZ&foo=bar"
   sanitized = sanitized.replace(
-    /\b(service_role(?:_key)?|anon_key|access_token|refresh_token|api_key|secret_key|webhook_secret|client_secret|password|senha|credential|private_key)([:=]\s*)[^\s,;\r\n"']+/gi,
+    /\b(service_role(?:_key)?|anon_key|access_token|refresh_token|api_key|secret_key|webhook_secret|client_secret|password|senha|credential|private_key|token|secret)([:=]\s*)[^\s,;&\r\n"']+/gi,
     "$1$2[REDACTED]"
   );
 

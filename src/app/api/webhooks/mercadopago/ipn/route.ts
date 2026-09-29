@@ -1,9 +1,11 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { extractPaymentInfo } from "@/lib/mercadopago/webhook";
+import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+
 
 function isUserId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
@@ -32,16 +34,44 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
         headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
       });
     } catch (networkErr) {
-      console.error("Falha de rede ao consultar IPN no Mercado Pago:", networkErr);
+      captureWebhookError(networkErr, {
+        route: "/api/webhooks/mercadopago/ipn",
+        paymentId,
+        httpStatus: 502,
+        extra: {
+          failure_kind: "mercadopago_network",
+        },
+      });
       return Response.json({ error: "Falha temporaria de conexao com a API do Mercado Pago" }, { status: 502 });
     }
 
     if (paymentResponse.status >= 500) {
-      console.error(`Mercado Pago IPN retornou erro de servidor: ${paymentResponse.status}`);
+      captureWebhookError(
+        new Error(`Mercado Pago IPN upstream error ${paymentResponse.status}`),
+        {
+          route: "/api/webhooks/mercadopago/ipn",
+          paymentId,
+          httpStatus: 502,
+          extra: {
+            upstream_status: paymentResponse.status,
+          },
+        }
+      );
       return Response.json({ error: "Erro temporario na API do Mercado Pago", status: paymentResponse.status }, { status: 502 });
     }
 
     if (paymentResponse.status === 429) {
+      captureWebhookError(
+        new Error(`Mercado Pago IPN upstream rate limit ${paymentResponse.status}`),
+        {
+          route: "/api/webhooks/mercadopago/ipn",
+          paymentId,
+          httpStatus: 429,
+          extra: {
+            upstream_status: paymentResponse.status,
+          },
+        }
+      );
       return Response.json({ error: "Rate limit excedido na API do Mercado Pago" }, { status: 429 });
     }
 
@@ -99,7 +129,11 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
       status: result.status,
     }, { status: 200 });
   } catch (error) {
-    console.error("Mercado Pago IPN processing error", error instanceof Error ? error.message : "unknown");
+    captureWebhookError(error, {
+      route: "/api/webhooks/mercadopago/ipn",
+      paymentId,
+      httpStatus: 500,
+    });
     return Response.json({ error: "Nao foi possivel processar o evento IPN" }, { status: 500 });
   }
 }
