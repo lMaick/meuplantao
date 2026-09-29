@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 import { buildCspReportOnlyValue, CSP_REPORT_ONLY_HEADER } from "./src/lib/security/csp";
 
 const privateNoIndexPaths = [
+  "/alertas",
+  "/alertas/:path*",
+  "/assinatura",
+  "/assinatura/:path*",
   "/cadastro",
   "/cadastro/:path*",
   "/login",

@@ -1,7 +1,8 @@
 import type { MetadataRoute } from "next";
+import { getSiteUrl } from "../lib/seo/site-url";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://meuplantao.com.br";
+  const baseUrl = getSiteUrl();
   return [
     {
       url: baseUrl,
