@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { captureError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
@@ -58,6 +59,71 @@ export async function GET(request: NextRequest) {
     }
 
     if (payment.status !== "approved") {
+      const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
+      const validityDays = getValidityDays(months);
+
+      // Reversao confirmada no provedor: reconcilia antes de responder.
+      if (isReversalStatus(payment.status)) {
+        try {
+          const admin = createAdminClient();
+          const result = await reconcileMercadoPagoReversal(admin, {
+            paymentId,
+            userId: user.id,
+            reversalStatus: payment.status ?? "refunded",
+            months,
+            validityDays,
+            amount: payment.transaction_amount,
+          });
+          const now = new Date();
+          const active = Boolean(result.current_period_end && new Date(result.current_period_end) > now);
+          return NextResponse.json({
+            verified: true,
+            payment_found: true,
+            payment_processed_now: false,
+            already_processed: result.already_reversed,
+            subscription_active: active,
+            subscription_status: active ? "active" : "expired",
+            current_period_end: result.current_period_end,
+            payment_status: payment.status ?? "unknown",
+            activated: false,
+            reversed: true,
+            status: payment.status ?? "unknown",
+          });
+        } catch {
+          // Fallback gracioso abaixo em caso de falha da RPC.
+        }
+      }
+
+      if (isDisputeStatus(payment.status)) {
+        let currentSub = null;
+        try {
+          const admin = createAdminClient();
+          const { data } = await admin
+            .from("subscriptions")
+            .select("status, current_period_end")
+            .eq("user_id", user.id)
+            .maybeSingle();
+          currentSub = data;
+        } catch {
+          // Fallback gracioso
+        }
+        const now = new Date();
+        const isSubActive = Boolean(currentSub?.current_period_end && new Date(currentSub.current_period_end) > now);
+        return NextResponse.json({
+          verified: true,
+          payment_found: true,
+          payment_processed_now: false,
+          already_processed: false,
+          subscription_active: isSubActive,
+          subscription_status: isSubActive ? "active" : (currentSub?.status || "expired"),
+          current_period_end: currentSub?.current_period_end || null,
+          payment_status: payment.status ?? "unknown",
+          activated: false,
+          needs_review: true,
+          status: payment.status ?? "unknown",
+        });
+      }
+
       let currentSub = null;
       try {
         const admin = createAdminClient();

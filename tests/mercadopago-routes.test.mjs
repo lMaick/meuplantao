@@ -7,6 +7,7 @@ import test from "node:test";
 const __mpRoutesFile = fileURLToPath(import.meta.url);
 const __mpTrialUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "subscription", "trial.ts")).href;
 const __mpPaymentsUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __mpReversalsUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __mpWebhookUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const __mpObservabilityUrl = pathToFileURL(path.join(path.dirname(__mpRoutesFile), "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -19,6 +20,9 @@ registerHooks({
     }
     if (specifier === "@/lib/mercadopago/payments") {
       return { url: __mpPaymentsUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return { url: __mpReversalsUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/webhook") {
       return { url: __mpWebhookUrl, shortCircuit: true };
@@ -118,4 +122,68 @@ test("approved payment activates the user's subscription", async () => {
   assert.ok(rpcCall, "webhook deve chamar a RPC atômica process_mercadopago_subscription_payment");
   assert.equal(rpcCall.params.p_user_id, userId);
   assert.equal(rpcCall.params.p_payment_id, "payment-1");
+});
+
+test("MAI-136: refunded payment reconciles reversal without deleting ledger", async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return new Response(JSON.stringify({ status: "refunded", external_reference: userId }), { status: 200 });
+  };
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      assert.equal(fn, "reconcile_mercadopago_reversal");
+      return {
+        data: {
+          reversed: true,
+          already_reversed: false,
+          not_found: false,
+          ownership_mismatch: false,
+          contributed: true,
+          current_period_end: new Date().toISOString(),
+          status: "expired",
+          active_payments: 0,
+          validity_days_removed: 30,
+        },
+        error: null,
+      };
+    },
+  };
+
+  const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    body: JSON.stringify({ type: "payment", data: { id: "payment-refund-1" } }),
+  }));
+  const webhookJson = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(webhookJson.received, true);
+  assert.equal(webhookJson.reversed, true);
+  assert.equal(webhookJson.status, "expired");
+  const rpcCall = calls.find((c) => c && c.fn === "reconcile_mercadopago_reversal");
+  assert.ok(rpcCall, "webhook deve chamar reconcile_mercadopago_reversal para refunded");
+  assert.equal(rpcCall.params.p_payment_id, "payment-refund-1");
+  assert.equal(rpcCall.params.p_reversal_status, "refunded");
+});
+
+test("MAI-136: in_mediation signals human review without revoking", async () => {
+  let rpcCalled = false;
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify({ status: "in_mediation", external_reference: userId }), { status: 200 });
+  };
+  globalThis.adminClient = {
+    rpc: async () => {
+      rpcCalled = true;
+      return { data: {}, error: null };
+    },
+  };
+
+  const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    body: JSON.stringify({ type: "payment", data: { id: "payment-dispute-1" } }),
+  }));
+  const webhookJson = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(webhookJson.needs_review, true);
+  assert.equal(rpcCalled, false, "disputa nao deve tocar o banco automaticamente");
 });

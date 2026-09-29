@@ -9,6 +9,7 @@ const __testDirname = path.dirname(__testFilename);
 const trialModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const paymentsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const reversalsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const webhookModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const observabilityModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -37,6 +38,12 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") {
       return {
         url: paymentsModuleUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return {
+        url: reversalsModuleUrl,
         shortCircuit: true,
       };
     }

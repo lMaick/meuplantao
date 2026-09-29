@@ -57,6 +57,13 @@ export const CRITICAL_RPCS = [
     expectedArgsCount: 6,
     expectedArgTypes: ["text", "uuid", "integer", "integer", "numeric", "text"],
   },
+  {
+    name: "reconcile_mercadopago_reversal",
+    description: "Mercado Pago refund/chargeback reconciliation without deleting ledger (MAI-136)",
+    requiresServiceRole: true,
+    expectedArgsCount: 6,
+    expectedArgTypes: ["text", "uuid", "text", "integer", "integer", "numeric"],
+  },
 ];
 
 /**
