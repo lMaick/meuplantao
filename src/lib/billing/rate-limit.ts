@@ -214,6 +214,9 @@ export class SupabaseRateLimitStore implements RateLimitStore {
 
   async release(key: string): Promise<void> {
     try {
+      // Unlock total: a RPC executa DELETE do bucket (nunca decremento),
+      // de modo que o dono sempre libera o in-flight mesmo sob contenção
+      // que elevou o contador via hits concorrentes.
       await this.getAdmin().rpc("billing_rate_limit_release", {
         p_bucket_key: normalizeKey(key),
       });

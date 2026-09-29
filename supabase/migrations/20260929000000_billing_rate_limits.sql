@@ -72,8 +72,12 @@ begin
 end;
 $$;
 
--- Best-effort release of one hit (preserves legitimate provider retries after
--- retryable upstream failures). Never raises: returns false when no-op.
+-- Best-effort unlock total da chave (semântica de release para cooldown e
+-- in-flight lock, MAI-138 auditoria externa): remove o registro por completo
+-- em vez de decrementar. Sob contenção concorrente, múltiplos hits elevam o
+-- contador; decrementar apenas 1 deixaria o lock meio preso até o TTL,
+-- bloqueando com 429 o retry legítimo do Mercado Pago. Never raises:
+-- returns false when no-op.
 create or replace function public.billing_rate_limit_release(
   p_bucket_key text
 ) returns boolean
@@ -81,17 +85,13 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  v_now timestamptz := now();
 begin
   if p_bucket_key is null or trim(p_bucket_key) = '' then
     return false;
   end if;
 
-  update public.billing_rate_limits
-     set hit_count = greatest(hit_count - 1, 0)
-   where bucket_key = p_bucket_key
-     and expires_at > v_now;
+  delete from public.billing_rate_limits
+   where bucket_key = p_bucket_key;
 
   return found;
 exception
