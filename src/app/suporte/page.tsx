@@ -1,9 +1,14 @@
+import type { Metadata } from "next";
 import { PublicPage, LegalSection } from "@/components/public-page";
 import { SupportForm } from "@/components/support-form";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Suporte e Feedback | MeuPlantão",
   description: "Canal oficial de suporte, dúvidas e envio de sugestões do MeuPlantão.",
+  robots: {
+    index: false,
+    follow: false,
+  },
 };
 
 export default function SuportePage() {

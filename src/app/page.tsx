@@ -13,6 +13,13 @@ export const metadata: Metadata = {
   title: "MeuPlantão | Controle financeiro inteligente para quem vive de plantão",
   description:
     "Organize seus plantões médicos e de saúde, identifique repasses atrasados e controle pagamentos parciais em múltiplos hospitais sem planilhas confusas.",
+  robots: {
+    index: true,
+    follow: true,
+  },
+  alternates: {
+    canonical: "/",
+  },
 };
 
 export default function HomePage() {

@@ -1,7 +1,17 @@
+import type { Metadata } from "next";
 import { safeNext } from "@/lib/auth/redirect";
 import Link from "next/link";
 import { AuthForm } from "@/lib/auth/auth-forms";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/auth/jwt-recovery";
+
+export const metadata: Metadata = {
+  title: "Login | MeuPlantão",
+  description: "Entre para acompanhar seus plantões.",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[]; reason?: string | string[]; error?: string | string[] }> }) {
   const params = await searchParams;

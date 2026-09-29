@@ -1,9 +1,17 @@
+import type { Metadata } from "next";
 import { PublicPage, LegalSection } from "@/components/public-page";
 import Link from "next/link";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Política de Privacidade | MeuPlantão",
   description: "Entenda como o MeuPlantão protege suas informações e dados de plantões com isolamento e segurança.",
+  robots: {
+    index: true,
+    follow: true,
+  },
+  alternates: {
+    canonical: "/privacidade",
+  },
 };
 
 export default function PrivacidadePage() {

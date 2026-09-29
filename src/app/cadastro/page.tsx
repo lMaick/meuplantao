@@ -1,6 +1,16 @@
+import type { Metadata } from "next";
 import { safeNext } from "@/lib/auth/redirect";
 import Link from "next/link";
 import { AuthForm } from "@/lib/auth/auth-forms";
+
+export const metadata: Metadata = {
+  title: "Criar Conta | MeuPlantão",
+  description: "Organize seus plantões em um só lugar.",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 export default async function CadastroPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
   const next = safeNext((await searchParams).next);
