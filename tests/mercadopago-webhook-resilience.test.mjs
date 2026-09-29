@@ -43,7 +43,7 @@ registerHooks({
 
 const { GET: webhookGet, POST: webhookPost, validateWebhookSignature } = await import("../src/app/api/webhooks/mercadopago/route.ts");
 const { GET: ipnGet, POST: ipnPost } = await import("../src/app/api/webhooks/mercadopago/ipn/route.ts");
-const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts");
+const { setLogSinkForTesting, webhookTracker } = await import("../src/lib/observability/index.ts");
 
 const validUserId = "22222222-2222-4222-8222-222222222222";
 
@@ -574,3 +574,249 @@ test("9. IPN legado: rota /api/webhooks/mercadopago/ipn processa GET e POST sem 
 
   globalThis.__mockWebhookSecret = null;
 });
+
+// -------------------------------------------------------------
+// 9b. IPN Resiliência: Falha 5xx do Mercado Pago
+// -------------------------------------------------------------
+test("9b. IPN resiliência: erro 5xx do Mercado Pago responde HTTP 502 e registra captureWebhookError", async () => {
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  const originalConsoleError = console.error;
+  let rawConsoleErrorEmitted = false;
+  console.error = (...args) => {
+    rawConsoleErrorEmitted = true;
+    originalConsoleError(...args);
+  };
+
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Upstream Mercado Pago Error" }), { status: 503 });
+
+    const req = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-err-503&topic=payment", {
+      method: "GET",
+    });
+
+    const res = await ipnGet(req);
+    assert.equal(res.status, 502, "Erro 5xx do MP deve responder HTTP 502 no IPN");
+    const json = await res.json();
+    assert.match(json.error, /temporario|temporaria/i);
+
+    assert.equal(capturedLogs.length, 1);
+    assert.equal(capturedLogs[0].route, "/api/webhooks/mercadopago/ipn");
+    assert.equal(capturedLogs[0].http_status, 502);
+    assert.equal(capturedLogs[0].payment_id, "ipn-err-503");
+    assert.equal(capturedLogs[0].context?.upstream_status, 503);
+    assert.equal(rawConsoleErrorEmitted, false, "Nenhum console.error direto deve ser emitido");
+  } finally {
+    console.error = originalConsoleError;
+    setLogSinkForTesting(null);
+  }
+});
+
+// -------------------------------------------------------------
+// 9c. IPN Resiliência: Erro de Rede e Sanitização de URLs com Segredos
+// -------------------------------------------------------------
+test("9c. IPN resiliência: falha de rede responde HTTP 502, captura erro e sanitiza URL com segredos", async () => {
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  const secretToken = "APP_USR-SECRET-TOKEN-IN-URL-9988";
+  const originalConsoleError = console.error;
+  let rawConsoleErrorEmitted = false;
+  console.error = (...args) => {
+    rawConsoleErrorEmitted = true;
+    originalConsoleError(...args);
+  };
+
+  try {
+    globalThis.fetch = async () => {
+      throw new Error(`fetch failed: connect ECONNREFUSED https://api.mercadopago.test/v1/payments/ipn-net?access_token=${secretToken}&secret=my_secret_val`);
+    };
+
+    const req = new Request("http://localhost/api/webhooks/mercadopago/ipn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resource: "https://api.mercadopago.com/v1/payments/ipn-net", topic: "payment" }),
+    });
+
+    const res = await ipnPost(req);
+    assert.equal(res.status, 502, "Erro de rede deve responder HTTP 502 no IPN");
+    const json = await res.json();
+    assert.match(json.error, /temporaria|conexao/i);
+
+    assert.equal(capturedLogs.length, 1);
+    const log = capturedLogs[0];
+    assert.equal(log.route, "/api/webhooks/mercadopago/ipn");
+    assert.equal(log.http_status, 502);
+    assert.equal(log.payment_id, "ipn-net");
+    assert.equal(log.context?.failure_kind, "mercadopago_network");
+
+    // Garantias de segurança estritas
+    assert.ok(!log.message.includes(secretToken), "Segredo não pode aparecer na mensagem de log");
+    assert.ok(!log.message.includes("my_secret_val"), "Secret value não pode aparecer na mensagem de log");
+    assert.ok(log.message.includes("access_token=[REDACTED]"), "URL com access_token deve ser sanitizada");
+    assert.ok(log.message.includes("secret=[REDACTED]"), "URL com secret deve ser sanitizada");
+    assert.equal(rawConsoleErrorEmitted, false, "Nenhum console.error direto deve ser emitido");
+  } finally {
+    console.error = originalConsoleError;
+    setLogSinkForTesting(null);
+  }
+});
+
+// -------------------------------------------------------------
+// 9d. IPN Resiliência: Rate Limit (429) do Mercado Pago
+// -------------------------------------------------------------
+test("9d. IPN resiliência: rate limit (429) do Mercado Pago responde HTTP 429 e registra captureWebhookError", async () => {
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  const originalConsoleError = console.error;
+  let rawConsoleErrorEmitted = false;
+  console.error = (...args) => {
+    rawConsoleErrorEmitted = true;
+    originalConsoleError(...args);
+  };
+
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "Too Many Requests" }), { status: 429 });
+
+    const req = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-rate-limit&topic=payment", {
+      method: "GET",
+    });
+
+    const res = await ipnGet(req);
+    assert.equal(res.status, 429, "Rate limit deve responder HTTP 429 no IPN");
+    const json = await res.json();
+    assert.match(json.error, /rate limit/i);
+
+    assert.equal(capturedLogs.length, 1);
+    assert.equal(capturedLogs[0].route, "/api/webhooks/mercadopago/ipn");
+    assert.equal(capturedLogs[0].http_status, 429);
+    assert.equal(capturedLogs[0].payment_id, "ipn-rate-limit");
+    assert.equal(capturedLogs[0].context?.upstream_status, 429);
+    assert.equal(rawConsoleErrorEmitted, false, "Nenhum console.error direto deve ser emitido");
+  } finally {
+    console.error = originalConsoleError;
+    setLogSinkForTesting(null);
+  }
+});
+
+// -------------------------------------------------------------
+// 9e. IPN Resiliência: Erro Inesperado e Mascaramento de Segredos
+// -------------------------------------------------------------
+test("9e. IPN resiliência: erro inesperado responde HTTP 500, captura erro e mascara Authorization e tokens", async () => {
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  const secretBearer = "TEST_BEARER_TOKEN_NEVER_LEAK_12345";
+  const secretServiceRole = "TEST_SERVICE_ROLE_KEY_NEVER_LEAK_67890";
+  const originalConsoleError = console.error;
+  let rawConsoleErrorEmitted = false;
+  console.error = (...args) => {
+    rawConsoleErrorEmitted = true;
+    originalConsoleError(...args);
+  };
+
+  try {
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ status: "approved", external_reference: validUserId, transaction_amount: 12.9 }), { status: 200 });
+
+    globalThis.adminClient = {
+      rpc: async () => {
+        throw new Error(`Unexpected failure with Authorization: Bearer ${secretBearer} and service_role=${secretServiceRole}`);
+      },
+    };
+
+    const req = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-unexpected-err&topic=payment", {
+      method: "GET",
+    });
+
+    const res = await ipnGet(req);
+    assert.equal(res.status, 500, "Erro interno não tratado deve responder HTTP 500 para retry");
+    const json = await res.json();
+    assert.match(json.error, /Nao foi possivel processar o evento IPN/i);
+
+    // Deve registrar via captureWebhookError
+    const ipnLogs = capturedLogs.filter((l) => l.route === "/api/webhooks/mercadopago/ipn");
+    assert.ok(ipnLogs.length >= 1, "Deve registrar erro com route /api/webhooks/mercadopago/ipn");
+    const log = ipnLogs[ipnLogs.length - 1];
+
+    assert.equal(log.route, "/api/webhooks/mercadopago/ipn");
+    assert.equal(log.http_status, 500);
+    assert.equal(log.payment_id, "ipn-unexpected-err");
+
+    // Zero vazamento de segredos
+    assert.ok(!log.message.includes(secretBearer), "Bearer token não pode vazar no log");
+    assert.ok(!log.message.includes(secretServiceRole), "Service role key não pode vazar no log");
+    assert.ok(log.message.includes("Bearer [REDACTED]"), "Bearer token deve ser redigido");
+    assert.ok(log.message.includes("service_role=[REDACTED]"), "Service role key deve ser redigida");
+    assert.equal(rawConsoleErrorEmitted, false, "Nenhum console.error direto deve ser emitido");
+  } finally {
+    console.error = originalConsoleError;
+    setLogSinkForTesting(null);
+  }
+});
+
+// -------------------------------------------------------------
+// 9f. IPN Resiliência: Alerta de Falhas Consecutivas (3x -> webhook_repeated_failure)
+// -------------------------------------------------------------
+test("9f. IPN resiliência: 3 falhas consecutivas disparam webhook_repeated_failure com nível fatal", async () => {
+  webhookTracker.reset();
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  try {
+    globalThis.fetch = async () => new Response(JSON.stringify({ message: "MP Down" }), { status: 500 });
+
+    const req1 = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-fail-1&topic=payment", { method: "GET" });
+    const req2 = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-fail-2&topic=payment", { method: "GET" });
+    const req3 = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-fail-3&topic=payment", { method: "GET" });
+
+    await ipnGet(req1);
+    await ipnGet(req2);
+    await ipnGet(req3);
+
+    assert.equal(capturedLogs.length, 3);
+    assert.equal(capturedLogs[0].alert_rule, undefined);
+    assert.equal(capturedLogs[0].level, "error");
+    assert.equal(capturedLogs[1].alert_rule, undefined);
+    assert.equal(capturedLogs[1].level, "error");
+    assert.equal(capturedLogs[2].alert_rule, "webhook_repeated_failure");
+    assert.equal(capturedLogs[2].level, "fatal");
+  } finally {
+    webhookTracker.reset();
+    setLogSinkForTesting(null);
+  }
+});
+
+// -------------------------------------------------------------
+// 9g. IPN Preservação de Comportamento: 404 e Pending Ignorados com HTTP 200
+// -------------------------------------------------------------
+test("9g. IPN preservação: status 404 e pagamento pending retornam HTTP 200 ignored sem registrar erro", async () => {
+  const capturedLogs = [];
+  setLogSinkForTesting((entry) => capturedLogs.push(entry));
+
+  // 1. Pagamento 404 inexistente
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Not found" }), { status: 404 });
+  const req404 = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-not-found&topic=payment", { method: "GET" });
+  const res404 = await ipnGet(req404);
+  assert.equal(res404.status, 200);
+  const json404 = await res404.json();
+  assert.equal(json404.received, true);
+  assert.equal(json404.ignored, true);
+
+  // 2. Pagamento pending
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending", external_reference: validUserId }), { status: 200 });
+  const reqPending = new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-pending&topic=payment", { method: "GET" });
+  const resPending = await ipnGet(reqPending);
+  assert.equal(resPending.status, 200);
+  const jsonPending = await resPending.json();
+  assert.equal(jsonPending.received, true);
+  assert.equal(jsonPending.ignored, true);
+  assert.equal(jsonPending.status, "pending");
+
+  // Nenhuma falha capturada
+  assert.equal(capturedLogs.length, 0, "Eventos normais ignorados não devem gerar log de erro");
+  setLogSinkForTesting(null);
+});
+
