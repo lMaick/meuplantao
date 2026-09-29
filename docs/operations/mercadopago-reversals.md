@@ -15,16 +15,23 @@ concedida permanecia intacta.
 - Ledger append-only: `subscription_payments` nunca e apagada. A reversao
   atualiza `status` para `refunded`/`charged_back`, preenche `reversed_at` e
   insere uma linha em `subscription_payment_events` (`approved -> refunded`).
-- Recomposicao por replay dos pagamentos com `status='approved'` restantes,
-  em ordem de `processed_at` original:
-  - `cur = null`
-  - para cada ativo: se `cur` e nulo ou `cur <= processed_at`,
-    `cur = processed_at + validity_days`; senao `cur += validity_days`.
-- Sem ativos restantes, a vigencia futura e revogada (teto em `now()`); o
-  passado e preservado. `status` continua derivado: `active` se e somente se
-  `current_period_end > now()`.
+- A vigencia recomposta e o MAIOR entre:
+  - (a) replay cronologico dos pagamentos com `status='approved'` restantes,
+    com a ancora `processed_at` original (mesmo algoritmo de empilhamento da
+    concessao);
+  - (b) piso decremental: `current_period_end` anterior menos os
+    `validity_days` do pagamento estornado. Remove apenas a contribuicao
+    revertida e preserva vigencia legitima sem lastro modelado no ledger
+    (conta com trial convertido ou historico legado anterior ao ledger).
+- Status gravado respeita o `CHECK subscriptions_status_check`
+  (`trialing/active/past_due/canceled/unpaid`): `active` quando o novo fim e
+  futuro, `canceled` caso contrario. `canceled` devolve a conta ao ciclo
+  natural de trial em `calculateTrial` em vez de forcar expiracao, e o rotulo
+  `expired` permanece derivado (`current_period_end > now()`), nunca
+  persistido — mesma convencao das vigencias que expiram naturalmente.
 - Dois pagamentos (A 30d + B 90d) com A estornado convergem para ~90d de B,
-  sem dupla contagem. Evento de estorno duplicado retorna `already_reversed`
+  sem dupla contagem. Com lastro legado de 60d, o mesmo caso converge para
+  ~150d (legado + B). Evento de estorno duplicado retorna `already_reversed`
   sem alterar o fim. Estorno fora de ordem (antes do aprovado) cria um stub
   revertido de contribuicao zero para que o `approved` tardio nao conceda
   vigencia (`already_processed`, sem dias).
@@ -33,13 +40,18 @@ concedida permanecia intacta.
   Politica comercial de uso parcial em disputa nao esta definida; por isso o
   sistema evita revogacao arbitraria.
 
-## 3. Fonte da verdade e concorrencia
+## 3. Fonte da verdade, concessao validada e concorrencia
 
 - Provedor Mercado Pago e fonte da verdade: webhook/IPN/verify/sync consultam
   `GET /v1/payments/:id` (ou search) autenticado e ramificam pelo estado atual
   do provedor, nunca pelo evento isolado. Uma notificacao `approved` antiga
   que chega apos o reembolso encontra o provedor em `refunded` e cai no ramo
   de reconciliacao.
+- Pagamentos `approved` passam antes pela validacao financeira da MAI-137
+  (`validatePaymentBeforeGrantingPro`: plano, preco em centavos, moeda BRL e
+  cota/checkout): reversoes e disputas sao tratadas pelo ramo proprio; o
+  restante aprovado so concede apos validacao, com quarentena auditavel em
+  `subscription_payments_quarantine` em caso de divergencia.
 - Serializacao por usuario via `pg_advisory_xact_lock` + `UNIQUE
   (mercadopago_payment_id)` + `ON CONFLICT DO NOTHING` nas duas RPCs.
 - Ownership: `external_reference` x `metadata.user_id` divergentes sao

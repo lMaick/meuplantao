@@ -187,3 +187,86 @@ test("MAI-136: in_mediation signals human review without revoking", async () => 
   assert.equal(webhookJson.needs_review, true);
   assert.equal(rpcCalled, false, "disputa nao deve tocar o banco automaticamente");
 });
+
+test("MAI-136+MAI-137: approved com valor canonico passa na validacao e concede com meses/vigencia validados", async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return new Response(JSON.stringify({
+      status: "approved",
+      currency_id: "BRL",
+      transaction_amount: 38.7,
+      external_reference: `${userId}#3`,
+      metadata: { user_id: userId, months: 3 },
+    }), { status: 200 });
+  };
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return {
+        data: {
+          already_processed: false,
+          current_period_end: new Date(Date.now() + 90 * 86400000).toISOString(),
+          validity_days_added: 90,
+          status: "active",
+        },
+        error: null,
+      };
+    },
+  };
+
+  const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    body: JSON.stringify({ type: "payment", data: { id: "payment-valid-3" } }),
+  }));
+  const webhookJson = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(webhookJson.processed, true);
+  assert.equal(webhookJson.quarantined, undefined);
+  const rpcCall = calls.find((c) => c && c.fn === "process_mercadopago_subscription_payment");
+  assert.ok(rpcCall, "pagamento valido deve chegar a RPC de concessao");
+  assert.equal(rpcCall.params.p_user_id, userId);
+  assert.equal(rpcCall.params.p_months, 3);
+  assert.equal(rpcCall.params.p_validity_days, 90);
+  assert.equal(rpcCall.params.p_amount, 38.7);
+});
+
+test("MAI-136+MAI-137: approved com valor divergente vai para quarentena sem conceder", async () => {
+  const calls = [];
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify({
+      status: "approved",
+      currency_id: "BRL",
+      transaction_amount: 1.0,
+      external_reference: `${userId}#1`,
+      metadata: { user_id: userId, months: 1 },
+    }), { status: 200 });
+  };
+  const inserts = [];
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      return { data: {}, error: null };
+    },
+    from: (table) => ({
+      insert: async (row) => {
+        inserts.push({ table, row });
+        return { data: row, error: null };
+      },
+      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+      update: () => ({ eq: () => ({}) }),
+    }),
+  };
+
+  const response = await webhook(new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    body: JSON.stringify({ type: "payment", data: { id: "payment-bad-amount" } }),
+  }));
+  const webhookJson = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(webhookJson.quarantined, true);
+  assert.equal(webhookJson.reason, "amount_mismatch");
+  assert.equal(calls.find((c) => c && c.fn === "process_mercadopago_subscription_payment"), undefined);
+  assert.equal(inserts.length, 1);
+  assert.equal(inserts[0].table, "subscription_payments_quarantine");
+});
