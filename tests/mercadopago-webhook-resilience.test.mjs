@@ -8,6 +8,7 @@ import test from "node:test";
 const __whTestFile = fileURLToPath(import.meta.url);
 const __whTrialUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
 const __whPaymentsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __whReversalsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __whWebhookUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const __whObservabilityUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -21,6 +22,9 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") {
       return { url: __whPaymentsUrl, shortCircuit: true };
     }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return { url: __whReversalsUrl, shortCircuit: true };
+    }
     if (specifier === "@/lib/mercadopago/webhook") {
       return { url: __whWebhookUrl, shortCircuit: true };
     }
@@ -32,7 +36,7 @@ registerHooks({
     }
     if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {
       return {
-        url: "data:text/javascript,export const createAdminClient = () => globalThis.adminClient;",
+        url: `data:text/javascript,const defaultFrom = () => { const q = () => ({ eq: () => q(), is: () => q(), order: () => q(), limit: () => q(), maybeSingle: async () => ({ data: { id: 'chk_resilience_mock', user_id: '22222222-2222-4222-8222-222222222222', plan_id: 'pro_monthly', months: 1, validity_days: 30, amount: 12.9, amount_cents: 1290, price_cents: 1290, currency: 'BRL', preference_id: 'pref-resilience-1', completed_payment_id: null, expires_at: new Date(Date.now() + 86400000).toISOString() }, error: null }) }); return { select: () => q(), update: () => ({ eq: () => ({ is: () => ({ select: () => ({ maybeSingle: async () => ({ data: { id: 'chk_resilience_mock' }, error: null }) }) }) }) }) }; }; export const createAdminClient = () => { const c = globalThis.adminClient || {}; if (!c.from) c.from = defaultFrom; return c; };`,
         shortCircuit: true,
       };
     }
@@ -115,7 +119,13 @@ test("3. Assinatura correta com timestamp em segundos (10 dígitos): autentica c
 
   globalThis.fetch = async (url) => {
     assert.equal(url, `https://api.mercadopago.test/v1/payments/${paymentId}`);
-    return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
+    return new Response(JSON.stringify({
+      status: "approved",
+      external_reference: validUserId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+      preference_id: "pref-resilience-1",
+    }), { status: 200 });
   };
 
   const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
@@ -167,7 +177,13 @@ test("3b. Assinatura correta com timestamp em milissegundos (13 dígitos): auten
 
   globalThis.fetch = async (url) => {
     assert.equal(url, `https://api.mercadopago.test/v1/payments/${paymentId}`);
-    return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
+    return new Response(JSON.stringify({
+      status: "approved",
+      external_reference: validUserId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+      preference_id: "pref-resilience-1",
+    }), { status: 200 });
   };
 
   const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
@@ -307,7 +323,13 @@ test("4d. Formato real de notificação: POST /api/webhooks/mercadopago?data.id=
 
   globalThis.fetch = async (url) => {
     assert.equal(url, `https://api.mercadopago.test/v1/payments/${paymentId}`);
-    return new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
+    return new Response(JSON.stringify({
+      status: "approved",
+      external_reference: validUserId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+      preference_id: "pref-resilience-1",
+    }), { status: 200 });
   };
 
   const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
@@ -484,7 +506,13 @@ test("8. Pagamento aprovado e idempotência: ativa na 1ª vez e preserva idempot
   globalThis.__mockWebhookSecret = null;
 
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ status: "approved", external_reference: validUserId, transaction_amount: 12.9 }), { status: 200 });
+    new Response(JSON.stringify({
+      status: "approved",
+      external_reference: validUserId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+      preference_id: "pref-resilience-1",
+    }), { status: 200 });
 
   let rpcCalls = 0;
   const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
@@ -536,7 +564,13 @@ test("9. IPN legado: rota /api/webhooks/mercadopago/ipn processa GET e POST sem 
   globalThis.__mockWebhookSecret = "test-secret-that-does-not-block-ipn";
 
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ status: "approved", external_reference: validUserId }), { status: 200 });
+    new Response(JSON.stringify({
+      status: "approved",
+      external_reference: validUserId,
+      currency_id: "BRL",
+      transaction_amount: 12.9,
+      preference_id: "pref-resilience-1",
+    }), { status: 200 });
 
   globalThis.adminClient = {
     rpc: async () => ({
@@ -719,7 +753,13 @@ test("9e. IPN resiliência: erro inesperado responde HTTP 500, captura erro e ma
 
   try {
     globalThis.fetch = async () =>
-      new Response(JSON.stringify({ status: "approved", external_reference: validUserId, transaction_amount: 12.9 }), { status: 200 });
+      new Response(JSON.stringify({
+        status: "approved",
+        external_reference: validUserId,
+        currency_id: "BRL",
+        transaction_amount: 12.9,
+        preference_id: "pref-resilience-1",
+      }), { status: 200 });
 
     globalThis.adminClient = {
       rpc: async () => {

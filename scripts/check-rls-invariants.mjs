@@ -67,6 +67,7 @@ export const SECURITY_FUNCTIONS = [
   "save_shift_with_obligation",
   "register_payment",
   "process_mercadopago_subscription_payment",
+  "reconcile_mercadopago_reversal",
   "has_active_entitlement",
 ];
 
@@ -499,6 +500,38 @@ export function evaluateSecurityInvariants(catalog = {}) {
     );
   }
 
+  // --- Billing MAI-147: tabelas de checkout, quarentena e eventos ---
+  // Quarentena com dados minimizados do provedor: acesso restrito ao service_role,
+  // RLS habilitada e NENHUM grant (nem SELECT) para authenticated/anon/public.
+  for (const billingTable of ["subscription_checkouts", "subscription_payments_quarantine", "subscription_payment_events"]) {
+    const billingRls = tableRls(catalog, billingTable);
+    if (billingRls?.rls_enabled === true) {
+      pass(`${billingTable}.rls_enabled`, `public.${billingTable} possui RLS habilitada`);
+    } else {
+      fail(
+        `${billingTable}.rls_enabled`,
+        `public.${billingTable} possui RLS habilitada`,
+        "pg_class.relrowsecurity = false ou tabela ausente (migration 2915/2920 não aplicada?)",
+      );
+    }
+  }
+  const quarantineSelectLeak = (catalog.tableGrants || []).some(
+    (g) =>
+      g.tablename === "subscription_payments_quarantine" &&
+      ["authenticated", "anon", "public"].includes(g.grantee) &&
+      ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "ALL"].includes(String(g.privilege).toUpperCase()),
+  );
+  const quarantineEffectiveSelect = effectiveTablePriv(catalog, "subscription_payments_quarantine", "SELECT");
+  if (!quarantineSelectLeak && !quarantineEffectiveSelect) {
+    pass("subscription_payments_quarantine.restricted", "quarentena restrita ao service_role (nenhum privilégio para authenticated/anon/public)");
+  } else {
+    fail(
+      "subscription_payments_quarantine.restricted",
+      "quarentena restrita ao service_role (nenhum privilégio para authenticated/anon/public)",
+      "grant efetivo para papel público detectado — dados do provedor expostos (drift manual?)",
+    );
+  }
+
   const failures = checks.filter((c) => c.status === SECURITY_STATUS.FAIL);
   return { ok: failures.length === 0, failureCount: failures.length, checks, failures };
 }
@@ -514,6 +547,9 @@ export function buildCompliantCatalogFixture() {
       { tablename: "subscription_payments", rls_enabled: true, force_rls: false },
       { tablename: "payments", rls_enabled: true, force_rls: false },
       { tablename: "obligations", rls_enabled: true, force_rls: false },
+      { tablename: "subscription_checkouts", rls_enabled: true, force_rls: false },
+      { tablename: "subscription_payments_quarantine", rls_enabled: true, force_rls: false },
+      { tablename: "subscription_payment_events", rls_enabled: true, force_rls: false },
     ],
     tableGrants: [
       { tablename: "shifts", grantee: "authenticated", privilege: "SELECT" },

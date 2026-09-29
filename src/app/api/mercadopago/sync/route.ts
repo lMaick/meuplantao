@@ -1,6 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
-import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import {
+  completeSubscriptionCheckout,
+  getValidityDays,
+  isQuoteConsumedError,
+  processMercadoPagoPayment,
+  quarantinePayment,
+  validatePaymentBeforeGrantingPro,
+  type MercadoPagoPaymentPayload,
+} from "@/lib/mercadopago/payments";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { captureSyncError } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
@@ -10,11 +19,15 @@ interface MercadoPagoSearchResult {
   results?: Array<{
     id?: string | number;
     status?: string;
+    currency_id?: string;
     external_reference?: string;
     date_created?: string;
     date_approved?: string;
     transaction_amount?: number;
+    preference_id?: string | null;
     metadata?: { user_id?: string; userId?: string; months?: number };
+    items?: Array<{ id?: string; unit_price?: number; quantity?: number }>;
+    additional_info?: { items?: Array<{ id?: string; unit_price?: number; quantity?: number }> };
   }>;
 }
 
@@ -58,7 +71,8 @@ export async function POST(request: NextRequest) {
     }
 
     const matchesUser = (p: NonNullable<MercadoPagoSearchResult["results"]>[number]) => {
-      if (p.status !== "approved") return false;
+      const st = (p.status || "").toLowerCase();
+      if (st !== "approved" && !isReversalStatus(st) && !isDisputeStatus(st)) return false;
       return paymentBelongsToUser(p, user.id);
     };
 
@@ -107,21 +121,93 @@ export async function POST(request: NextRequest) {
 
       const admin = createAdminClient();
       let newlyProcessedCount = 0;
+      let validPaymentsCount = 0;
       let lastResultPeriodEnd: string | null = null;
+      let reversedCount = 0;
+      let needsReviewCount = 0;
 
       for (const p of uniquePayments) {
         const paymentId = String(p.id);
-        const months = Number(p.metadata?.months || p.external_reference?.split("#")[1] || 1);
-        const validityDays = getValidityDays(months);
 
-        const result = await processMercadoPagoPayment(admin, {
-          paymentId,
-          userId: user.id,
-          months,
-          validityDays,
-          amount: p.transaction_amount,
-          status: p.status ?? "approved",
-        });
+        // Reversao confirmada no provedor tem precedencia sobre o aprovado local:
+        // reconcilia primeiro para que evento antigo nao restaure Pro.
+        if (isReversalStatus(p.status)) {
+          const months = Number(p.metadata?.months || p.external_reference?.split("#")[1] || 1);
+          const validityDays = getValidityDays(months);
+          const result = await reconcileMercadoPagoReversal(admin, {
+            paymentId,
+            userId: user.id,
+            reversalStatus: p.status ?? "refunded",
+            months,
+            validityDays,
+            amount: p.transaction_amount ?? undefined,
+          });
+          if (result.reversed) reversedCount += 1;
+          lastResultPeriodEnd = result.current_period_end;
+          continue;
+        }
+
+        if (isDisputeStatus(p.status)) {
+          needsReviewCount += 1;
+          continue;
+        }
+
+        if (p.status !== "approved") {
+          continue;
+        }
+
+        // Validação financeira rigorosa antes de aplicar qualquer concessão (MAI-137)
+        const valResult = await validatePaymentBeforeGrantingPro(admin, p as MercadoPagoPaymentPayload, user.id);
+
+        if (!valResult.valid) {
+          if (valResult.quarantine) {
+            await quarantinePayment(admin, {
+              paymentId,
+              userId: user.id,
+              reason: valResult.reason,
+              amount: p.transaction_amount,
+              currency: p.currency_id,
+              months: p.metadata?.months,
+              rawPayload: p as Record<string, unknown>,
+            });
+          }
+          continue;
+        }
+
+        validPaymentsCount += 1;
+
+        let result;
+        try {
+          result = await processMercadoPagoPayment(admin, {
+            paymentId,
+            userId: user.id,
+            months: valResult.months,
+            validityDays: valResult.validityDays,
+            amount: valResult.amount,
+            status: p.status ?? "approved",
+            checkoutId: valResult.checkoutId,
+          });
+        } catch (rpcError) {
+          if (isQuoteConsumedError(rpcError)) {
+            await quarantinePayment(admin, {
+              paymentId,
+              userId: user.id,
+              reason: "checkout_already_completed",
+              amount: p.transaction_amount,
+              currency: p.currency_id,
+              months: p.metadata?.months,
+              checkoutId: valResult.checkoutId,
+              rawPayload: p as Record<string, unknown>,
+            });
+            needsReviewCount += 1;
+            continue;
+          }
+          throw rpcError;
+        }
+
+        if (valResult.checkoutId) {
+          await completeSubscriptionCheckout(admin, valResult.checkoutId, paymentId);
+        }
 
         if (!result.already_processed) {
           newlyProcessedCount += 1;
@@ -152,14 +238,16 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         synced: true,
-        payment_found: true,
+        payment_found: validPaymentsCount > 0,
         payment_processed_now: newlyProcessedCount > 0,
-        already_processed: newlyProcessedCount === 0 && uniquePayments.length > 0,
+        already_processed: newlyProcessedCount === 0 && validPaymentsCount > 0,
         subscription_active: isSubscriptionActive,
         subscription_status: derivedStatus,
         current_period_end: finalPeriodEnd,
         newly_processed: newlyProcessedCount,
-        total_payments: uniquePayments.length,
+        reversed: reversedCount,
+        needs_review: needsReviewCount,
+        total_payments: validPaymentsCount,
         status: derivedStatus,
       });
     }
