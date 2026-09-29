@@ -1,5 +1,15 @@
+import type { Metadata } from "next";
 import { PageHeader } from "@/components/ui/page-header";
 import { SubscriptionCard } from "@/components/subscription";
+
+export const metadata: Metadata = {
+  title: "Assinatura & Planos | MeuPlantão",
+  description: "Conheça os planos e garanta a gestão completa dos seus plantões e repasses.",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 export default function SubscriptionPage() {
   return (

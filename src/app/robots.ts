@@ -1,6 +1,17 @@
 import type { MetadataRoute } from "next";
+import { getSiteUrl } from "../lib/seo/site-url";
 
-// Account screens and private financial data have no public search surface.
 export default function robots(): MetadataRoute.Robots {
-  return { rules: { userAgent: "*", disallow: "/" } };
+  const baseUrl = getSiteUrl();
+  return {
+    rules: {
+      userAgent: "*",
+      allow: ["/", "/privacidade", "/termos"],
+      disallow: [
+        "/api/",
+        "/auth/",
+      ],
+    },
+    sitemap: `${baseUrl}/sitemap.xml`,
+  };
 }

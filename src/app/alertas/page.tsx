@@ -1,5 +1,15 @@
+import type { Metadata } from "next";
 import { Bell } from "lucide-react";
 import { AlertsList } from "@/components/alerts/alerts-list";
+
+export const metadata: Metadata = {
+  title: "Alertas | MeuPlantão",
+  description: "Acompanhe repasses em atraso e seus próximos compromissos.",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 export default function AlertsPage() {
   return (
