@@ -15,6 +15,8 @@ create table if not exists public.subscription_checkouts (
   preference_id text,
   init_point text,
   status text not null default 'pending',
+  completed_payment_id text,
+  completed_at timestamptz,
   metadata jsonb default '{}'::jsonb,
   created_at timestamptz not null default now(),
   expires_at timestamptz not null default (now() + interval '3 days')
@@ -39,16 +41,19 @@ grant select on public.subscription_checkouts to authenticated;
 grant all on public.subscription_checkouts to service_role;
 
 -- 2. Tabela de quarentena para pagamentos não vinculados ou com divergências financeiras
+-- Auditabilidade estrita com minimização de dados do provedor (acesso restrito ao service_role)
 create table if not exists public.subscription_payments_quarantine (
   id uuid primary key default gen_random_uuid(),
   mercadopago_payment_id text not null,
   user_id uuid references auth.users (id) on delete set null,
+  checkout_id uuid references public.subscription_checkouts (id) on delete set null,
   reason text not null,
   amount numeric(10, 2),
   currency text,
   months integer,
-  raw_payload jsonb default '{}'::jsonb,
+  sanitized_payload jsonb not null default '{}'::jsonb,
   status text not null default 'quarantined',
+  review_status text not null default 'pending_review',
   created_at timestamptz not null default now(),
   reviewed_at timestamptz,
   reviewed_by uuid references auth.users (id) on delete set null
@@ -62,19 +67,24 @@ create index if not exists subscription_payments_quarantine_user_id_idx
 
 alter table public.subscription_payments_quarantine enable row level security;
 
-drop policy if exists "subscription_payments_quarantine_select_own" on public.subscription_payments_quarantine;
-create policy "subscription_payments_quarantine_select_own"
-  on public.subscription_payments_quarantine for select to authenticated
-  using ((select auth.uid()) = user_id);
-
+-- Acesso restrito exclusivamente ao service_role para auditoria e preservação de dados
 revoke all on public.subscription_payments_quarantine from anon, authenticated, public;
-grant select on public.subscription_payments_quarantine to authenticated;
 grant all on public.subscription_payments_quarantine to service_role;
 
 -- 3. Extensão retrocompatível da tabela subscription_payments
-alter table public.subscription_payments
-  add column if not exists plan_id text,
-  add column if not exists currency text not null default 'BRL',
-  add column if not exists amount_cents integer,
-  add column if not exists checkout_id uuid references public.subscription_checkouts (id) on delete set null,
-  add column if not exists catalog_version text;
+-- Executado em bloco condicional para garantir bootstrap limpo mesmo antes da criação de subscription_payments
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public' and table_name = 'subscription_payments'
+  ) then
+    alter table public.subscription_payments
+      add column if not exists plan_id text,
+      add column if not exists currency text not null default 'BRL',
+      add column if not exists amount_cents integer,
+      add column if not exists checkout_id uuid references public.subscription_checkouts (id) on delete set null,
+      add column if not exists catalog_version text;
+  end if;
+end $$;

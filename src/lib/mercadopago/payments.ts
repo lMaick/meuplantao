@@ -253,19 +253,49 @@ export async function validatePaymentBeforeGrantingPro(
     };
   }
 
-  // 3. Validação estrita de Moeda (apenas BRL permitido)
-  const currency = (payment.currency_id || "").toUpperCase().trim();
-  if (currency && currency !== "BRL") {
+  // 3. Validação estrita de Moeda (apenas BRL permitido e obrigatório em todos os caminhos)
+  const currency = typeof payment.currency_id === "string" ? payment.currency_id.trim().toUpperCase() : "";
+  if (!currency || currency !== "BRL") {
     return {
       valid: false,
       quarantine: true,
       reason: "unsupported_currency",
       userId,
-      details: { currency },
+      details: { currency: payment.currency_id || null, expected: "BRL" },
     };
   }
 
-  // 4. Validação de identificador de produto/itens (se presentes)
+  // 4. Validação estrita de Valor (finito, não-NaN, positivo e obrigatório em todos os caminhos)
+  const amount = payment.transaction_amount;
+  if (
+    amount === null ||
+    amount === undefined ||
+    typeof amount !== "number" ||
+    !Number.isFinite(amount) ||
+    Number.isNaN(amount) ||
+    amount <= 0
+  ) {
+    return {
+      valid: false,
+      quarantine: true,
+      reason: "invalid_transaction_amount",
+      userId,
+      details: { amount: amount === undefined ? null : amount },
+    };
+  }
+
+  const paymentCents = toCents(amount);
+  if (!Number.isSafeInteger(paymentCents) || paymentCents <= 0) {
+    return {
+      valid: false,
+      quarantine: true,
+      reason: "invalid_amount_precision",
+      userId,
+      details: { amount, paymentCents },
+    };
+  }
+
+  // 5. Validação de identificador de produto/itens (se presentes)
   const items = payment.additional_info?.items || payment.items || [];
   if (items.length > 0) {
     for (const item of items) {
@@ -281,166 +311,234 @@ export async function validatePaymentBeforeGrantingPro(
     }
   }
 
-  // 5. Verificação de cotação / checkout persistido no servidor
+  // 6. Verificação de cotação / checkout persistido no servidor
   let checkoutId: string | null = null;
   const metaCheckoutId = payment.metadata?.checkout_id || payment.metadata?.checkoutId;
   if (metaCheckoutId && isUserId(metaCheckoutId)) {
     checkoutId = metaCheckoutId;
-  } else if (refParts.length >= 2) {
-    for (let i = 1; i < refParts.length; i++) {
-      if (isUserId(refParts[i])) {
-        checkoutId = refParts[i];
-        break;
-      }
-    }
+  } else if (refParts.length >= 3 && isUserId(refParts[2])) {
+    checkoutId = refParts[2];
+  } else if (refParts.length === 2 && isUserId(refParts[1])) {
+    checkoutId = refParts[1];
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let checkoutRow: Record<string, any> | null = null;
-  if (checkoutId && typeof admin?.from === "function") {
+  if (typeof admin?.from === "function") {
     try {
-      const { data } = await admin
-        .from("subscription_checkouts")
-        .select("*")
-        .eq("id", checkoutId)
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (data) checkoutRow = data;
+      if (checkoutId) {
+        const { data, error } = await admin
+          .from("subscription_checkouts")
+          .select("*")
+          .eq("id", checkoutId)
+          .maybeSingle();
+        if (error) {
+          captureFinancialRpcError(error, {
+            rpcName: "validatePaymentBeforeGrantingPro.lookupCheckout",
+            paymentId: String(payment.id || ""),
+            userId: userId || undefined,
+            extra: { checkoutId },
+          });
+        } else if (data) {
+          checkoutRow = data;
+        }
+      } else if (payment.preference_id) {
+        const { data, error } = await admin
+          .from("subscription_checkouts")
+          .select("*")
+          .eq("preference_id", payment.preference_id)
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!error && data) {
+          checkoutRow = data;
+          checkoutId = String(data.id);
+        }
+      }
     } catch {
       // Falha defensiva se a tabela ainda não estiver migrada
     }
   }
 
-  // Se checkout persistido foi encontrado: valida contra a cotação fixada
-  if (checkoutRow) {
-    if (checkoutRow.currency !== "BRL") {
-      return {
-        valid: false,
-        quarantine: true,
-        reason: "checkout_currency_unsupported",
-        userId,
-        details: { checkoutCurrency: checkoutRow.currency },
-      };
-    }
-
-    if (payment.transaction_amount !== null && payment.transaction_amount !== undefined) {
-      const paymentCents = toCents(payment.transaction_amount);
-      const expectedCents = Number(checkoutRow.amount_cents);
-      if (paymentCents !== expectedCents) {
-        return {
-          valid: false,
-          quarantine: true,
-          reason: "amount_mismatch",
-          userId,
-          details: { paymentCents, expectedCents, checkoutId: checkoutRow.id },
-        };
-      }
-    }
-
-    if (items.length > 0 && items[0]?.id && items[0].id !== checkoutRow.plan_id) {
-      return {
-        valid: false,
-        quarantine: true,
-        reason: "product_mismatch",
-        userId,
-        details: { itemId: items[0].id, checkoutPlanId: checkoutRow.plan_id },
-      };
-    }
-
-    return {
-      valid: true,
-      userId,
-      planId: String(checkoutRow.plan_id),
-      months: Number(checkoutRow.months) as SubscriptionMonths,
-      validityDays: Number(checkoutRow.validity_days),
-      amount: Number(checkoutRow.amount),
-      amountCents: Number(checkoutRow.amount_cents),
-      currency: "BRL",
-      checkoutId: String(checkoutRow.id),
-      catalogVersion: String(checkoutRow.catalog_version || "2026-v1"),
-      isLegacy: false,
-    };
-  }
-
-  // 6. Sem checkout persistido encontrado: validação direta contra o Catálogo Canônico
-  let rawMonths = 1;
-  if (payment.metadata?.months) {
-    rawMonths = Number(payment.metadata.months);
-  } else if (refParts.length >= 2 && !isNaN(Number(refParts[1]))) {
-    rawMonths = Number(refParts[1]);
-  }
-
-  if (!isSupportedMonths(rawMonths)) {
+  // 7. Política estrita de Vínculo: Falhar fechado se não houver cotação válida persistida.
+  // Pagamentos antigos ou sem vínculo confiável são enviados para quarentena auditável
+  // (pending_review) sem concessão automática de Pro, preservando o histórico para análise humana.
+  if (!checkoutRow) {
     return {
       valid: false,
       quarantine: true,
-      reason: "unsupported_period",
+      reason: "unlinked_payment_requires_review",
       userId,
-      details: { rawMonths },
+      details: {
+        paymentId: payment.id,
+        checkoutId,
+        preferenceId: payment.preference_id || null,
+        amount,
+        currency,
+        notice: "Pagamento sem cotação de checkout vinculada; enviado para revisão manual.",
+      },
     };
   }
 
-  const canonicalPlan: CanonicalPlan | undefined = getCanonicalPlanByMonths(rawMonths);
-  if (!canonicalPlan) {
+  // 8. Validação contra a cotação fixada no checkout
+  // a) Ownership: o checkout deve pertencer ao mesmo usuário do pagamento
+  if (checkoutRow.user_id !== userId) {
     return {
       valid: false,
       quarantine: true,
-      reason: "unsupported_period",
+      reason: "checkout_owner_mismatch",
       userId,
-      details: { rawMonths },
+      details: { checkoutUserId: checkoutRow.user_id, paymentUserId: userId },
     };
   }
 
-  // Verifica produto do item com o plano esperado
-  if (items.length > 0 && items[0]?.id && items[0].id !== canonicalPlan.id) {
+  // b) Validade temporal: bloquear checkout expirado
+  if (checkoutRow.expires_at) {
+    const expiresAt = new Date(checkoutRow.expires_at).getTime();
+    if (!Number.isNaN(expiresAt) && expiresAt < Date.now()) {
+      return {
+        valid: false,
+        quarantine: true,
+        reason: "checkout_expired",
+        userId,
+        details: { expiresAt: checkoutRow.expires_at, now: new Date().toISOString() },
+      };
+    }
+  }
+
+  // c) Proteção contra replay: checkout já concluído por outro pagamento
+  if (checkoutRow.status === "completed") {
+    const completedBy = checkoutRow.completed_payment_id ? String(checkoutRow.completed_payment_id) : "";
+    if (completedBy && completedBy !== String(payment.id || "")) {
+      return {
+        valid: false,
+        quarantine: true,
+        reason: "checkout_already_completed",
+        userId,
+        details: { checkoutId: checkoutRow.id, completedBy, currentPaymentId: payment.id },
+      };
+    }
+  }
+
+  // d) Moeda da cotação
+  if (checkoutRow.currency !== "BRL") {
+    return {
+      valid: false,
+      quarantine: true,
+      reason: "checkout_currency_unsupported",
+      userId,
+      details: { checkoutCurrency: checkoutRow.currency },
+    };
+  }
+
+  // e) Valor exato em centavos contra o preço congelado no checkout
+  const expectedCents = Number(checkoutRow.amount_cents ?? checkoutRow.unit_amount_cents);
+  if (paymentCents !== expectedCents) {
+    return {
+      valid: false,
+      quarantine: true,
+      reason: "amount_mismatch",
+      userId,
+      details: { paymentCents, expectedCents, checkoutId: checkoutRow.id },
+    };
+  }
+
+  // f) Identidade do produto/plano
+  if (items.length > 0 && items[0]?.id && items[0].id !== checkoutRow.plan_id) {
     return {
       valid: false,
       quarantine: true,
       reason: "product_mismatch",
       userId,
-      details: { itemId: items[0].id, expectedPlanId: canonicalPlan.id },
+      details: { itemId: items[0].id, checkoutPlanId: checkoutRow.plan_id },
     };
   }
 
-  // Validação do valor em centavos
-  if (payment.transaction_amount !== null && payment.transaction_amount !== undefined) {
-    const paymentCents = toCents(payment.transaction_amount);
-    const expectedCents = canonicalPlan.priceCents;
-    if (paymentCents !== expectedCents) {
-      return {
-        valid: false,
-        quarantine: true,
-        reason: "amount_mismatch",
-        userId,
-        details: { paymentCents, expectedCents, months: canonicalPlan.months },
-      };
-    }
-  } else if (isProductionEnvironment()) {
+  // g) Verificação de consistência da preferência (quando presente em ambos os lados)
+  if (
+    payment.preference_id &&
+    checkoutRow.preference_id &&
+    payment.preference_id !== checkoutRow.preference_id
+  ) {
     return {
       valid: false,
       quarantine: true,
-      reason: "missing_transaction_amount",
+      reason: "preference_mismatch",
       userId,
+      details: { paymentPreferenceId: payment.preference_id, checkoutPreferenceId: checkoutRow.preference_id },
     };
   }
+
+  const months = Number(checkoutRow.months) as SubscriptionMonths;
+  const validityDays = Number(checkoutRow.validity_days) || getValidityDays(months);
 
   return {
     valid: true,
     userId,
-    planId: canonicalPlan.id,
-    months: canonicalPlan.months,
-    validityDays: canonicalPlan.validityDays,
-    amount: canonicalPlan.price,
-    amountCents: canonicalPlan.priceCents,
+    planId: String(checkoutRow.plan_id),
+    months,
+    validityDays,
+    amount: Number(checkoutRow.amount),
+    amountCents: expectedCents,
     currency: "BRL",
-    checkoutId: null,
-    catalogVersion: canonicalPlan.catalogVersion,
-    isLegacy: !checkoutId,
+    checkoutId: String(checkoutRow.id),
+    catalogVersion: String(checkoutRow.catalog_version || "2026-v1"),
+    isLegacy: false,
   };
 }
 
 /**
+ * Sanitiza o payload do provedor para conformidade de minimização de dados e LGPD/PCI-DSS.
+ * Remove dados de cartão, números de telefone, CVV e tokens sensíveis.
+ */
+export function sanitizePaymentPayload(
+  payload: Partial<MercadoPagoPaymentPayload> | Record<string, unknown>,
+): Record<string, unknown> {
+  const p = payload as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {
+    id: p.id,
+    status: p.status,
+    status_detail: p.status_detail,
+    transaction_amount: p.transaction_amount,
+    currency_id: p.currency_id,
+    date_created: p.date_created,
+    date_approved: p.date_approved,
+    external_reference: p.external_reference,
+    preference_id: p.preference_id,
+    payment_method_id: p.payment_method_id,
+    payment_type_id: p.payment_type_id,
+  };
+
+  if (p.order && typeof p.order === "object") {
+    const o = p.order as Record<string, unknown>;
+    sanitized.order = { id: o.id, type: o.type };
+  }
+
+  if (p.metadata && typeof p.metadata === "object") {
+    const m = p.metadata as Record<string, unknown>;
+    sanitized.metadata = {
+      user_id: m.user_id || m.userId,
+      months: m.months,
+      checkout_id: m.checkout_id || m.checkoutId,
+      plan_id: m.plan_id,
+    };
+  }
+
+  const items = (p.additional_info as Record<string, unknown> | undefined)?.items || p.items;
+  if (Array.isArray(items)) {
+    sanitized.items = items.map((it: Record<string, unknown>) => ({
+      id: it.id,
+      title: it.title,
+      unit_price: it.unit_price,
+      quantity: it.quantity,
+    }));
+  }
+
+  return sanitized;
+}
+
+/**
  * Persiste pagamento em quarentena para auditoria humana sem perda de histórico.
+ * Verifica erros na escrita do Supabase e sanitiza os dados antes de gravar.
  */
 export async function quarantinePayment(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -452,42 +550,78 @@ export async function quarantinePayment(
     amount?: number | string | null;
     currency?: string | null;
     months?: number | null;
+    checkoutId?: string | null;
     rawPayload?: Record<string, unknown>;
   },
 ): Promise<void> {
   if (!params.paymentId || typeof admin?.from !== "function") return;
+  const sanitized = sanitizePaymentPayload(params.rawPayload || {});
   try {
-    await admin.from("subscription_payments_quarantine").insert({
+    const { error } = await admin.from("subscription_payments_quarantine").insert({
       mercadopago_payment_id: String(params.paymentId),
       user_id: params.userId,
+      checkout_id: params.checkoutId || null,
       reason: params.reason,
       amount: params.amount !== null && params.amount !== undefined ? Number(params.amount) : null,
       currency: params.currency || null,
       months: params.months || null,
-      raw_payload: params.rawPayload || {},
+      sanitized_payload: sanitized,
       status: "quarantined",
+      review_status: "pending_review",
     });
-  } catch {
-    // Fail-safe: não interrompe o fluxo caso a tabela esteja em migração ou em mock
+    if (error) {
+      captureFinancialRpcError(error, {
+        rpcName: "quarantinePayment",
+        paymentId: String(params.paymentId),
+        userId: params.userId || undefined,
+        extra: { reason: params.reason },
+      });
+    }
+  } catch (err) {
+    captureFinancialRpcError(err, {
+      rpcName: "quarantinePayment.exception",
+      paymentId: String(params.paymentId),
+      userId: params.userId || undefined,
+      extra: { reason: params.reason },
+    });
   }
 }
 
 /**
  * Marca a intenção de checkout como completada após sucesso do processamento atômico.
+ * Registra o payment_id que consumiu a cotação para proteção contra replay.
  */
 export async function completeSubscriptionCheckout(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: SupabaseClient<any, any, any>,
   checkoutId: string,
+  completedPaymentId?: string | number,
 ): Promise<void> {
   if (!checkoutId || typeof admin?.from !== "function") return;
   try {
-    await admin
+    const updatePayload: Record<string, unknown> = {
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    };
+    if (completedPaymentId) {
+      updatePayload.completed_payment_id = String(completedPaymentId);
+    }
+    const { error } = await admin
       .from("subscription_checkouts")
-      .update({ status: "completed" })
+      .update(updatePayload)
       .eq("id", checkoutId);
-  } catch {
-    // Fail-safe
+
+    if (error) {
+      captureFinancialRpcError(error, {
+        rpcName: "completeSubscriptionCheckout",
+        extra: { checkoutId, completedPaymentId },
+      });
+    }
+  } catch (err) {
+    captureFinancialRpcError(err, {
+      rpcName: "completeSubscriptionCheckout.exception",
+      extra: { checkoutId, completedPaymentId },
+    });
   }
 }
 

@@ -8,6 +8,7 @@ import test from "node:test";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
 const paymentsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "payments.ts")).href;
+const reversalsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "reversals.ts")).href;
 const observabilityUrl = pathToFileURL(path.join(ROOT, "src", "lib", "observability", "index.ts")).href;
 
 registerHooks({
@@ -23,6 +24,12 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") {
       return {
         url: paymentsUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return {
+        url: reversalsUrl,
         shortCircuit: true,
       };
     }

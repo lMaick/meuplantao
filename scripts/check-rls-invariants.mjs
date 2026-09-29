@@ -67,6 +67,7 @@ export const SECURITY_FUNCTIONS = [
   "save_shift_with_obligation",
   "register_payment",
   "process_mercadopago_subscription_payment",
+  "reconcile_mercadopago_reversal",
   "has_active_entitlement",
 ];
 
