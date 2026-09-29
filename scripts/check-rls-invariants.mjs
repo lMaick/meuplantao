@@ -61,6 +61,9 @@ export const SECURITY_TABLES = [
   "subscription_payments",
   "payments",
   "obligations",
+  "subscription_checkouts",
+  "subscription_payments_quarantine",
+  "subscription_payment_events",
 ];
 
 export const SECURITY_FUNCTIONS = [

@@ -37,6 +37,15 @@ test("MAI-147 fail-closed: migration 29400000 remove overload de 6 args e exige 
   );
   assert.match(
     sql,
+    /drop function if exists public\.process_mercadopago_subscription_payment\(text, uuid, integer, integer, numeric, text, uuid\)/i,
+    "migration deve dropar a assinatura de 7 args com DEFAULT (SQLSTATE 42P13: CREATE OR REPLACE nao pode remover parameter defaults)",
+  );
+  // Ordem fail-closed: ambos os DROPs antes do CREATE OR REPLACE.
+  const drop7 = sql.search(/drop function if exists public\.process_mercadopago_subscription_payment\(text, uuid, integer, integer, numeric, text, uuid\)/i);
+  const createFn = sql.search(/create or replace function public\.process_mercadopago_subscription_payment\(/i);
+  assert.ok(drop7 !== -1 && createFn !== -1 && drop7 < createFn, "DROP da assinatura de 7 args deve preceder o CREATE OR REPLACE");
+  assert.match(
+    sql,
     /p_checkout_id uuid\s*\)/i,
     "assinatura de 7 args deve declarar p_checkout_id sem DEFAULT (obrigatorio)",
   );
