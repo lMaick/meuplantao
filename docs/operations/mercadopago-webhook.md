@@ -71,11 +71,16 @@ slices/PRs da mesma issue.
   `/api/mercadopago/checkout`, `/api/mercadopago/sync`, `/api/mercadopago/verify`)
   aplicam rate limit + cooldown ANTES de qualquer consulta ao Mercado Pago.
 - Rajadas do mesmo pagamento retornam `200 { deduped: true }` SEM nova consulta
-  externa (webhooks/IPN); abuso por IP/usuário recebe `429` com `Retry-After`.
+  externa (webhooks/IPN) SOMENTE com prova de persistência (payment já gravado
+  em `subscription_payments`); sem prova — concorrência em voo ou falha anterior —
+  a marca prematura é liberada e a notificação é PROCESSADA normalmente (a RPC
+  atômica garante extensão única de vigência), nunca descartada; abuso por
+  IP/usuário recebe `429` com `Retry-After`.
   Falhas retentáveis (502/500/429 upstream) liberam o cooldown para preservar o
   retry legítimo do provedor; a idempotência financeira segue na RPC atômica.
 - Store distribuído (nunca contador local como garantia global): Upstash Redis
-  via REST quando `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` existem;
+  via REST em chamada ÚNICA (`EVAL` Lua: `INCR` + `PEXPIRE` atômicos, TTL
+  garantido) quando `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` existem;
   senão Supabase (`billing_rate_limits` + RPC `billing_rate_limit_hit`, service_role);
   memória local só como fallback fail-open por instância, com log sanitizado.
   Nenhum log carrega segredos, tokens, corpo ou IP bruto (apenas hash truncado).

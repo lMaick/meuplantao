@@ -56,6 +56,7 @@ const { GET: ipnGet, POST: ipnPost } = await import("../src/app/api/webhooks/mer
 const {
   BILLING_LIMITS,
   MemoryRateLimitStore,
+  UpstashRateLimitStore,
   buildBillingRateLimitedResponse,
   checkBillingCooldownAndMark,
   checkBillingLimit,
@@ -72,9 +73,13 @@ const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts
 const USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const USER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
+// Prova de persistência simulada: payment ids já gravados em subscription_payments.
+const processedPayments = new Set();
+
 function useFreshStore() {
   setRateLimitStoreForTesting(new MemoryRateLimitStore());
   resetBillingRateLimitsForTesting();
+  processedPayments.clear();
   globalThis.__mockWebhookSecret = null;
   globalThis.__mockLegacyIpnEnabled = null;
 }
@@ -89,14 +94,24 @@ function authenticatedAs(userId) {
 function approvedPaymentRpc() {
   const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
   globalThis.adminClient = {
-    rpc: async () => ({
-      data: { already_processed: false, current_period_end: futureEnd, validity_days_added: 30, status: "active" },
-      error: null,
-    }),
-    from: () => ({
+    rpc: async (fn, params) => {
+      if (params?.p_payment_id) processedPayments.add(String(params.p_payment_id));
+      return {
+        data: { already_processed: false, current_period_end: futureEnd, validity_days_added: 30, status: "active" },
+        error: null,
+      };
+    },
+    from: (table) => ({
       select: () => ({
-        eq: () => ({
-          maybeSingle: async () => ({ data: { status: "active", current_period_end: futureEnd }, error: null }),
+        eq: (col, val) => ({
+          maybeSingle: async () => {
+            if (table === "subscription_payments") {
+              return processedPayments.has(String(val))
+                ? { data: { mercadopago_payment_id: String(val) }, error: null }
+                : { data: null, error: null };
+            }
+            return { data: { status: "active", current_period_end: futureEnd }, error: null };
+          },
         }),
       }),
     }),
@@ -497,4 +512,70 @@ test("13. 429 helper: corpo genérico + teto de Retry-After", async () => {
   const cooldown2 = await checkBillingCooldownAndMark("billing:test:cooldown-helper", 60_000);
   assert.equal(cooldown2.deduped, true);
   resetBillingRateLimitsForTesting();
+});
+
+// ---------------------------------------------------------------------------
+// 14. Auditoria §3: dedupe exige prova — sem prova, reprocessa (não descarta)
+// ---------------------------------------------------------------------------
+
+test("14. webhook: dedupe sem prova de persistência reprocessa; com prova, deduplica sem fetch", async () => {
+  useFreshStore();
+  approvedPaymentRpc();
+  const counter = { calls: [] };
+  mockMpApproved(USER_A, counter);
+
+  const bodyFor = (id) => JSON.stringify({ type: "payment", data: { id } });
+  const reqFor = (id) => new Request("http://localhost/api/webhooks/mercadopago", { method: "POST", body: bodyFor(id) });
+
+  // Simula marca prematura sem persistência (concorrência em voo / falha anterior):
+  // a notificação DEVE ser processada, nunca descartada com 200.
+  const premarked = await checkBillingCooldownAndMark(
+    `billing:webhook:cooldown:race-noproof-1`,
+    BILLING_LIMITS.webhookPaymentCooldownMs,
+  );
+  assert.equal(premarked.deduped, false);
+  const r1 = await webhookPost(reqFor("race-noproof-1"));
+  assert.equal(r1.status, 200);
+  const j1 = await r1.json();
+  assert.equal(j1.processed, true);
+  assert.notEqual(j1.deduped, true);
+  assert.equal(counter.calls.length, 1);
+
+  // Com prova de persistência (payment já processado): dedupe legítimo, sem fetch.
+  const before = counter.calls.length;
+  const r2 = await webhookPost(reqFor("race-noproof-1"));
+  assert.equal(r2.status, 200);
+  assert.equal((await r2.json()).deduped, true);
+  assert.equal(counter.calls.length, before);
+});
+
+// ---------------------------------------------------------------------------
+// 15. Auditoria §2: Upstash aplica INCR+TTL em 1 única chamada (EVAL Lua)
+// ---------------------------------------------------------------------------
+
+test("15. upstash: hit usa EVAL atômico em chamada única, com TTL garantido", async () => {
+  const savedFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ result: [3, 42000] }), { status: 200 });
+  };
+  try {
+    const store = new UpstashRateLimitStore("https://mock.upstash.io", "tok");
+    assert.equal(store.isDistributed, true);
+    const hit = await store.hit("billing:test:atomic", 60_000);
+    assert.deepEqual(hit, { count: 3, ttlMs: 42000 });
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.endsWith("/eval"), "incremento e TTL na mesma chamada /eval");
+    const [script, numkeys, key, windowArg] = calls[0].body;
+    assert.equal(numkeys, 1);
+    assert.equal(key, "billing:test:atomic");
+    assert.equal(windowArg, "60000");
+    assert.ok(String(script).includes("PEXPIRE"), "script garante expiração");
+
+    globalThis.fetch = async () => new Response("upstream down", { status: 500 });
+    await assert.rejects(() => store.hit("billing:test:atomic", 60_000), /Upstash eval failed/);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 });

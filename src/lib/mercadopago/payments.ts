@@ -36,6 +36,37 @@ export interface ProcessPaymentResult {
 }
 
 /**
+ * MAI-138 — Prova de idempotência: indica se um payment_id já foi persistido
+ * com sucesso em `subscription_payments`.
+ *
+ * Usado pelo dedupe de webhook/IPN: só responde `200 deduped` (sem consultar
+ * o Mercado Pago) quando há prova de persistência. Sem prova — concorrência
+ * em voo ou falha anterior — a notificação é PROCESSADA normalmente (a RPC
+ * atômica garante que a vigência só é estendida uma vez), nunca descartada.
+ * Falha na consulta = sem prova (fail-open para processar, nunca descartar).
+ */
+export async function hasProcessedMercadoPagoPayment(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  admin: SupabaseClient<any, any, any>,
+  paymentId: string | number,
+): Promise<boolean> {
+  const normalized = String(paymentId ?? "").trim();
+  if (!normalized) return false;
+  try {
+    const query = admin.from("subscription_payments");
+    if (!query || typeof query.select !== "function") return false;
+    const { data, error } = await query
+      .select("mercadopago_payment_id")
+      .eq("mercadopago_payment_id", normalized)
+      .maybeSingle();
+    if (error || !data) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Processa um pagamento do Mercado Pago de forma idempotente e atômica.
  * Garante que cada payment_id único só adicione vigência à assinatura exatamente uma vez.
  */
