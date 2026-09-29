@@ -1,8 +1,8 @@
-export const DEFAULT_SITE_URL = "https://meuplantao.com.br";
+export const DEFAULT_SITE_URL = "https://meuplantao.pro";
 
 /**
  * Retorna a URL base canônica do MeuPlantão, garantindo normalização determinística:
- * - Fallback canônico padrão: https://meuplantao.com.br
+ * - Fallback canônico padrão: https://meuplantao.pro
  * - Remove espaços em branco
  * - Remove trailing slash (/ no final), evitando rotas com '//'
  */

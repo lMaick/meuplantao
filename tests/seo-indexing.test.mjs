@@ -27,26 +27,26 @@ test("getSiteUrl normaliza URLs determinísticas com ou sem trailing slash", () 
   const originalEnv = process.env.NEXT_PUBLIC_APP_URL;
 
   try {
-    // 1. Sem variável definida: usa fallback canônico
+    // 1. Sem variável definida: usa fallback canônico oficial
     delete process.env.NEXT_PUBLIC_APP_URL;
-    assert.equal(getSiteUrl(), DEFAULT_SITE_URL);
-    assert.equal(getSiteUrl(), "https://meuplantao.com.br");
+    assert.equal(DEFAULT_SITE_URL, "https://meuplantao.pro");
+    assert.equal(getSiteUrl(), "https://meuplantao.pro");
 
     // 2. Com URL sem trailing slash
-    process.env.NEXT_PUBLIC_APP_URL = "https://meuplantao.com.br";
-    assert.equal(getSiteUrl(), "https://meuplantao.com.br");
+    process.env.NEXT_PUBLIC_APP_URL = "https://meuplantao.pro";
+    assert.equal(getSiteUrl(), "https://meuplantao.pro");
 
     // 3. Com trailing slash simples
-    process.env.NEXT_PUBLIC_APP_URL = "https://meuplantao.com.br/";
-    assert.equal(getSiteUrl(), "https://meuplantao.com.br");
+    process.env.NEXT_PUBLIC_APP_URL = "https://meuplantao.pro/";
+    assert.equal(getSiteUrl(), "https://meuplantao.pro");
 
     // 4. Com múltiplos trailing slashes e espaços
-    process.env.NEXT_PUBLIC_APP_URL = "  https://meuplantao.com.br///  ";
-    assert.equal(getSiteUrl(), "https://meuplantao.com.br");
+    process.env.NEXT_PUBLIC_APP_URL = "  https://meuplantao.pro///  ";
+    assert.equal(getSiteUrl(), "https://meuplantao.pro");
 
     // 5. Domínio alternativo de staging
-    process.env.NEXT_PUBLIC_APP_URL = "https://staging.meuplantao.com.br/";
-    assert.equal(getSiteUrl(), "https://staging.meuplantao.com.br");
+    process.env.NEXT_PUBLIC_APP_URL = "https://staging.meuplantao.pro/";
+    assert.equal(getSiteUrl(), "https://staging.meuplantao.pro");
   } finally {
     if (originalEnv !== undefined) {
       process.env.NEXT_PUBLIC_APP_URL = originalEnv;
@@ -115,7 +115,7 @@ test("sitemap.ts exporta exatamente as 3 URLs públicas sem barras duplas", asyn
   const originalEnv = process.env.NEXT_PUBLIC_APP_URL;
 
   // Testa tanto sem barra quanto com barra no env
-  for (const testBase of ["https://meuplantao.com.br", "https://meuplantao.com.br/"]) {
+  for (const testBase of ["https://meuplantao.pro", "https://meuplantao.pro/"]) {
     process.env.NEXT_PUBLIC_APP_URL = testBase;
 
     const entries = sitemapFn();
@@ -129,9 +129,9 @@ test("sitemap.ts exporta exatamente as 3 URLs públicas sem barras duplas", asyn
       assert.ok(!pathPart.includes("//"), `URL ${url} não pode conter barras duplas no path`);
     }
 
-    assert.ok(urls.includes("https://meuplantao.com.br"), "deve incluir a raiz");
-    assert.ok(urls.includes("https://meuplantao.com.br/privacidade"), "deve incluir /privacidade");
-    assert.ok(urls.includes("https://meuplantao.com.br/termos"), "deve incluir /termos");
+    assert.ok(urls.includes("https://meuplantao.pro"), "deve incluir a raiz");
+    assert.ok(urls.includes("https://meuplantao.pro/privacidade"), "deve incluir /privacidade");
+    assert.ok(urls.includes("https://meuplantao.pro/termos"), "deve incluir /termos");
 
     // Nenhuma rota privada no sitemap
     for (const forbidden of [
