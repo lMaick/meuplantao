@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
@@ -56,6 +57,7 @@ const { GET: ipnGet, POST: ipnPost } = await import("../src/app/api/webhooks/mer
 const {
   BILLING_LIMITS,
   MemoryRateLimitStore,
+  SupabaseRateLimitStore,
   UpstashRateLimitStore,
   buildBillingRateLimitedResponse,
   checkBillingCooldownAndMark,
@@ -64,6 +66,7 @@ const {
   getBillingBodySizeOk,
   isBillingRateLimitEnabled,
   isValidBillingPaymentId,
+  releaseBillingCooldown,
   resetBillingRateLimitsForTesting,
   resolveSupabaseStoreIfConfigured,
   setRateLimitStoreForTesting,
@@ -738,4 +741,79 @@ test("18. webhook: falha do dono libera o in-flight; retry legítimo reprocessa"
   assert.equal(retryJson.processed, true);
   assert.notEqual(retryJson.deduped, true);
   assert.equal(counter.calls.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// 19. Auditoria Luna Extra Alto: release da RPC Supabase é unlock total —
+//     após contenção concorrente (múltiplos hits), o release desbloqueia
+//     completamente o bucket (retry legítimo não recebe 429 preso)
+// ---------------------------------------------------------------------------
+
+// Admin Supabase simulado com semântica fiel às RPCs da migration
+// `supabase/migrations/20260929000000_billing_rate_limits.sql`:
+// hit = incremento atômico com janela; release = DELETE (unlock total).
+function makeSimulatedSupabaseAdmin() {
+  const rows = new Map();
+  return {
+    rows,
+    rpc: async (fn, params) => {
+      if (fn === "billing_rate_limit_hit") {
+        const key = String(params?.p_bucket_key ?? "");
+        const windowMs = Math.max(1, Math.ceil(Number(params?.p_window_seconds ?? 60))) * 1000;
+        const now = Date.now();
+        let row = rows.get(key);
+        if (!row || row.expiresAt <= now) {
+          row = { count: 1, expiresAt: now + windowMs };
+          rows.set(key, row);
+        } else {
+          row.count += 1;
+        }
+        return { data: { count: row.count, ttl_ms: Math.max(0, row.expiresAt - now) }, error: null };
+      }
+      if (fn === "billing_rate_limit_release") {
+        // Espelha a migration corrigida: DELETE, nunca decremento.
+        rows.delete(String(params?.p_bucket_key ?? ""));
+        return { data: true, error: null };
+      }
+      return { data: null, error: { message: `unknown rpc ${fn}` } };
+    },
+  };
+}
+
+test("19. supabase: release após contenção concorrente desbloqueia totalmente o bucket", async () => {
+  // 19a. Guarda da migration: a RPC de release declara DELETE (unlock total)
+  // e não mais o decremento `hit_count - 1`.
+  const migrationPath = path.join(__rlDir, "..", "supabase", "migrations", "20260929000000_billing_rate_limits.sql");
+  const migrationSql = fs.readFileSync(migrationPath, "utf8");
+  const releaseStart = migrationSql.indexOf("billing_rate_limit_release(");
+  assert.ok(releaseStart >= 0, "migration deve declarar billing_rate_limit_release");
+  const releaseSql = migrationSql.slice(releaseStart).toLowerCase();
+  assert.ok(
+    releaseSql.includes("delete from public.billing_rate_limits"),
+    "release deve remover o registro (DELETE/unlock total)",
+  );
+  assert.ok(!releaseSql.includes("hit_count - 1"), "release não pode decrementar o contador");
+
+  // 19b. Contenção concorrente + release: o bucket desbloqueia por completo.
+  const admin = makeSimulatedSupabaseAdmin();
+  const store = new SupabaseRateLimitStore(() => admin);
+  assert.equal(store.isDistributed, true);
+  setRateLimitStoreForTesting(store);
+  try {
+    const key = "billing:test:supabase-release";
+    const burst = await Promise.all(Array.from({ length: 5 }, () => checkBillingCooldownAndMark(key, 30_000)));
+    assert.ok(burst.every((r) => !r.collapsed), "store simulado operacional não colapsa");
+    assert.equal(burst.filter((r) => !r.deduped).length, 1, "só 1 request adquire o lock");
+    assert.equal(admin.rows.get(key)?.count, 5, "contenção eleva o contador");
+
+    // O dono falha e libera: unlock total, não decremento (5 -> 4 ainda preso).
+    await releaseBillingCooldown(key, store.name);
+    assert.ok(!admin.rows.has(key), "release deve remover o bucket por completo");
+
+    const after = await checkBillingCooldownAndMark(key, 30_000);
+    assert.equal(after.collapsed, false);
+    assert.equal(after.deduped, false, "retry legítimo pós-release não pode ser dedupado/429 preso");
+  } finally {
+    useFreshStore();
+  }
 });
