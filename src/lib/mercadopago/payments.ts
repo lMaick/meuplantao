@@ -177,7 +177,8 @@ export type PaymentValidationResult =
       amount: number;
       amountCents: number;
       currency: "BRL";
-      checkoutId: string | null;
+      // MAI-147 fail-closed: pagamento valido sempre possui cotacao vinculada.
+      checkoutId: string;
       catalogVersion: string;
       isLegacy: boolean;
     }
@@ -694,8 +695,12 @@ export interface ProcessPaymentParams {
   validityDays?: number;
   amount?: number | string | null;
   status?: string | null;
-  /** Cotação vinculada (claim atômico dentro da RPC — MAI-147). */
-  checkoutId?: string | null;
+  /**
+   * Cotação vinculada (claim atômico dentro da RPC — MAI-147).
+   * Obrigatória (fail-closed): sem cotação não há concessão de vigência.
+   * A RPC 20260929400000 rejeita p_checkout_id nulo com 22023.
+   */
+  checkoutId: string;
 }
 
 /**
@@ -750,10 +755,15 @@ export async function processMercadoPagoPayment(
   if (!userId) {
     throw new Error("Identificador do usuario ausente");
   }
+  const checkoutId = String(params.checkoutId || "").trim();
+  if (!checkoutId) {
+    throw new Error("Cotacao de checkout obrigatoria");
+  }
 
   // Execução estritamente atômica e fail-closed via RPC do Supabase.
-  // Com checkoutId, o claim da cotação ocorre na MESMA transação que concede
-  // vigência (migration 29300000); marcar completed depois, sem condição, não basta.
+  // O claim da cotação ocorre na MESMA transação que concede vigência
+  // (migrations 29300000 + 29400000 fail-closed); marcar completed depois,
+  // sem condição, não basta. p_checkout_id é sempre enviado.
   const rpcParams: Record<string, unknown> = {
     p_payment_id: paymentId,
     p_user_id: userId,
@@ -761,10 +771,8 @@ export async function processMercadoPagoPayment(
     p_validity_days: validityDays,
     p_amount: amount,
     p_status: status,
+    p_checkout_id: checkoutId,
   };
-  if (params.checkoutId) {
-    rpcParams.p_checkout_id = params.checkoutId;
-  }
   const { data, error } = await admin.rpc("process_mercadopago_subscription_payment", rpcParams);
 
   if (error) {

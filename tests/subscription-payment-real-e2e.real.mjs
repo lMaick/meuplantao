@@ -87,6 +87,8 @@ async function callRpc(params) {
     p_validity_days: params.validity_days ?? 30,
     p_amount: params.amount ?? 49.9,
     p_status: params.status ?? "approved",
+    // MAI-147 fail-closed (migration 29400000): cotacao obrigatoria.
+    ...(params.checkout_id ? { p_checkout_id: params.checkout_id } : {}),
   };
 
   const res = await fetch(url, {
@@ -596,8 +598,8 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
     try {
       await assert.rejects(
         () => client.query(
-          "SELECT public.process_mercadopago_subscription_payment($1, $2, $3, $4, $5, $6)",
-          ["valid-payment-nulluser-e208", null, 1, 30, 49.9, "approved"],
+          "SELECT public.process_mercadopago_subscription_payment($1, $2, $3, $4, $5, $6, $7)",
+          ["valid-payment-nulluser-e208", null, 1, 30, 49.9, "approved", "00000000-0000-4000-8000-000000000208"],
         ),
         (err) => {
           return (

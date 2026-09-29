@@ -49,7 +49,7 @@ Com o descomissionamento definitivo do Stripe (PR #94 e PR #104, referente à Is
 | :--- | :--- | :--- | :--- |
 | `save_shift_with_obligation` | Criação/atualização atômica de plantões e sincronização financeira de obrigações. | 11 argumentos (`uuid, uuid, date, time, time, numeric, text, date, uuid, uuid, text`) | `authenticated`, `service_role` |
 | `register_payment` | Registro de repasses e recálculo atômico de saldos financeiros. | 3 argumentos (`uuid, numeric, date`) | `authenticated`, `service_role` |
-| `process_mercadopago_subscription_payment` | Processamento idempotente de webhooks do Mercado Pago e ativação de período Pro. | 6 argumentos (`text, uuid, integer, integer, numeric, text`) | `service_role` |
+| `process_mercadopago_subscription_payment` | Processamento idempotente de webhooks do Mercado Pago e ativação de período Pro (MAI-147: cotação obrigatória fail-closed). | 7 argumentos (`text, uuid, integer, integer, numeric, text, uuid`) | `service_role` |
 
 Se qualquer uma dessas funções estiver ausente ou possuir assinatura incompatível, o deploy/build aborta com **exit code 1**.
 
