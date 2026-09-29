@@ -165,6 +165,44 @@ test("non-approved payment is reported without changing the subscription", async
   assert.equal(json.payment_status, "pending");
 });
 
+test("MAI-136+MAI-137: refunded payment reconciles via provider state instead of validation", async () => {
+  globalThis.authenticatedClient = authenticatedClient();
+  globalThis.fetch = async () => new Response(JSON.stringify({ status: "refunded", external_reference: userId }), { status: 200 });
+  const calls = [];
+  const revokedEnd = new Date(Date.now() - 1000).toISOString();
+  globalThis.adminClient = {
+    rpc: async (fn, params) => {
+      calls.push({ fn, params });
+      assert.equal(fn, "reconcile_mercadopago_reversal");
+      return {
+        data: {
+          reversed: true,
+          already_reversed: false,
+          not_found: false,
+          ownership_mismatch: false,
+          contributed: true,
+          current_period_end: revokedEnd,
+          status: "expired",
+          active_payments: 0,
+          validity_days_removed: 30,
+        },
+        error: null,
+      };
+    },
+  };
+
+  const response = await verifyPayment(verifyRequest("payment_id=refund-123"));
+  assert.equal(response.status, 200);
+  const json = await response.json();
+  assert.equal(json.verified, true);
+  assert.equal(json.reversed, true);
+  assert.equal(json.activated, false);
+  assert.equal(json.subscription_active, false);
+  assert.equal(json.payment_status, "refunded");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].params.p_reversal_status, "refunded");
+});
+
 test("renewal with pending payment when user already has active Pro subscription returns subscription_active=true and payment_status=pending", async () => {
   globalThis.authenticatedClient = authenticatedClient();
   globalThis.fetch = async () => new Response(JSON.stringify({ status: "pending", external_reference: userId }), { status: 200 });

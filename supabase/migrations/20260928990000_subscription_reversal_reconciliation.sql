@@ -3,6 +3,11 @@
 -- vigencia concedida permanecia intacta. Esta migration modela estados de reversao
 -- no ledger sem apagar pagamentos, com historico auditavel e recomposicao
 -- deterministica da vigencia a partir dos pagamentos ativos remanescentes.
+--
+-- ORDEM: o timestamp 20260928990000 posiciona esta migration logo apos
+-- 20260928210000_subscription_payment_validity_guard.sql e dentro do glob
+-- 20260928* movido para o lado no bootstrap legado do job "Supabase real E2E"
+-- do CI, de modo que nunca execute antes da criacao de subscription_payments.
 
 -- 1. Colunas de auditoria no ledger (aditivas, sem reescrever historico)
 alter table public.subscription_payments
@@ -38,13 +43,23 @@ grant all on public.subscription_payment_events to service_role;
 
 -- 3. RPC de reconciliacao de reversao (somente service_role, SECURITY DEFINER)
 -- Regra de recomposicao (documentada em docs/operations/mercadopago-reversals.md):
--- a vigencia e recomposta por replay cronologico dos pagamentos com status='approved'
--- remanescentes, usando o processed_at original como ancora:
---   cur = null
---   para cada pagamento ativo em ordem de processed_at:
---     se cur e null ou cur <= processed_at: cur = processed_at + validity_days
---     senao: cur = cur + validity_days
--- Sem ativos remanescentes, a vigencia futura e revogada (teto em now()).
+-- a vigencia e o MAIOR entre:
+--   (a) replay cronologico dos pagamentos com status='approved' remanescentes,
+--       usando o processed_at original como ancora:
+--         cur = null
+--         para cada pagamento ativo em ordem de processed_at:
+--           se cur e null ou cur <= processed_at: cur = processed_at + validity_days
+--           senao: cur = cur + validity_days
+--   (b) piso decremental: current_period_end anterior menos os validity_days do
+--       pagamento estornado. Preserva vigencia legitima sem lastro modelado no
+--       ledger (conta com trial/vigencia anterior ou legado), removendo apenas a
+--       contribuicao do pagamento revertido.
+-- Status gravado respeita o CHECK subscriptions_status_check
+-- ('trialing','active','past_due','canceled','unpaid'): 'active' quando o novo fim
+-- e futuro, 'canceled' caso contrario. 'canceled' preserva a semantica de
+-- calculateTrial (conta volta ao ciclo natural de trial) e nunca inventa Pro:
+-- entitlement continua derivado exclusivamente de current_period_end > now().
+-- O rotulo 'expired' e apenas derivado na resposta da RPC, nunca persistido.
 -- in_mediation/disputa NAO revoga automaticamente (requer decisao humana).
 create or replace function public.reconcile_mercadopago_reversal(
   p_payment_id text,
@@ -68,11 +83,14 @@ declare
   v_current_end timestamptz;
   v_current_status text;
   v_new_end timestamptz;
-  v_new_status text;
+  v_write_status text;
+  v_label text;
   v_active_count integer := 0;
   v_removed_days integer := 0;
   v_rec record;
-  v_cur timestamptz := null;
+  v_replay timestamptz := null;
+  v_decrement timestamptz := null;
+  v_stub_created boolean := false;
 begin
   if v_pid is null then
     raise exception using errcode = '22023', message = 'Identificador do pagamento ausente';
@@ -98,6 +116,8 @@ begin
   -- Caso fora de ordem: estorno chegou antes do aprovado (linha inexistente).
   -- Cria stub ja revertido com contribuicao zero para que um evento approved
   -- antigo posterior nao conceda vigencia (ON CONFLICT protege concorrencia).
+  -- Se a linha apareceu concorrentemente (approved inserido ao mesmo tempo),
+  -- cai no fluxo compartilhado abaixo em vez de retornar not_found.
   if v_row.id is null then
     insert into public.subscription_payments (
       mercadopago_payment_id, user_id, months, validity_days, amount, status,
@@ -109,35 +129,56 @@ begin
     on conflict (mercadopago_payment_id) do nothing
     returning * into v_row;
 
-    -- Concorrencia: outra transacao inseriu primeiro; recarrega.
     if v_row.id is null then
       select * into v_row from public.subscription_payments
        where mercadopago_payment_id = v_pid for update;
+    else
+      v_stub_created := true;
     end if;
 
-    insert into public.subscription_payment_events (
-      user_id, mercadopago_payment_id, from_status, to_status, provider_status
-    ) values (
-      p_user_id, v_pid, null, v_reversal, v_reversal
-    );
+    if v_stub_created then
+      insert into public.subscription_payment_events (
+        user_id, mercadopago_payment_id, from_status, to_status, provider_status
+      ) values (
+        p_user_id, v_pid, null, v_reversal, v_reversal
+      );
 
-    select status, current_period_end into v_current_status, v_current_end
-      from public.subscriptions where user_id = p_user_id;
+      select status, current_period_end into v_current_status, v_current_end
+        from public.subscriptions where user_id = p_user_id;
 
-    return jsonb_build_object(
-      'reversed', false,
-      'already_reversed', false,
-      'not_found', true,
-      'ownership_mismatch', false,
-      'contributed', false,
-      'current_period_end', v_current_end,
-      'status', case
-        when v_current_end is not null and v_current_end > v_now then 'active'
-        else coalesce(v_current_status, 'expired')
-      end,
-      'active_payments', 0,
-      'validity_days_removed', 0
-    );
+      return jsonb_build_object(
+        'reversed', false,
+        'already_reversed', false,
+        'not_found', true,
+        'ownership_mismatch', false,
+        'contributed', false,
+        'current_period_end', v_current_end,
+        'status', case
+          when v_current_end is not null and v_current_end > v_now then 'active'
+          else coalesce(v_current_status, 'expired')
+        end,
+        'active_payments', 0,
+        'validity_days_removed', 0
+      );
+    end if;
+
+    if v_row.id is null then
+      -- Defensivo: nada a reconciliar e nada foi alterado.
+      select status, current_period_end into v_current_status, v_current_end
+        from public.subscriptions where user_id = p_user_id;
+      return jsonb_build_object(
+        'reversed', false,
+        'already_reversed', false,
+        'not_found', true,
+        'ownership_mismatch', false,
+        'contributed', false,
+        'current_period_end', v_current_end,
+        'status', coalesce(v_current_status, 'expired'),
+        'active_payments', 0,
+        'validity_days_removed', 0
+      );
+    end if;
+    -- Linha concorrente encontrada: segue para ownership/idempotencia/reconciliacao.
   end if;
 
   -- Ownership: pagamento pertence a outro usuario -> nunca altera entitlement.
@@ -239,32 +280,41 @@ begin
      order by processed_at asc, created_at asc
   loop
     v_active_count := v_active_count + 1;
-    if v_cur is null or v_cur <= v_rec.processed_at then
-      v_cur := v_rec.processed_at + (v_rec.validity_days || ' days')::interval;
+    if v_replay is null or v_replay <= v_rec.processed_at then
+      v_replay := v_rec.processed_at + (v_rec.validity_days || ' days')::interval;
     else
-      v_cur := v_cur + (v_rec.validity_days || ' days')::interval;
+      v_replay := v_replay + (v_rec.validity_days || ' days')::interval;
     end if;
   end loop;
 
   select status, current_period_end into v_current_status, v_current_end
     from public.subscriptions where user_id = p_user_id for update;
 
-  if v_cur is null then
-    -- Sem lastro ativo: revoga vigencia futura (teto em now), preserva passado.
-    if v_current_end is not null and v_current_end > v_now then
-      v_new_end := v_now;
-    else
-      v_new_end := v_current_end;
-    end if;
-    v_new_status := 'expired';
+  -- Piso decremental: preserva lastro sem modelo no ledger (legado/trial
+  -- anterior), removendo apenas a contribuicao do pagamento revertido.
+  if v_current_end is not null and v_removed_days > 0 then
+    v_decrement := v_current_end - (v_removed_days || ' days')::interval;
+  end if;
+
+  -- Vigencia recomposta = maior entre replay e piso (ignora nulos).
+  v_new_end := v_replay;
+  if v_decrement is not null and (v_new_end is null or v_decrement > v_new_end) then
+    v_new_end := v_decrement;
+  end if;
+
+  -- Escrita restrita ao dominio do CHECK subscriptions_status_check.
+  -- Rotulo derivado 'expired' vai so na resposta, nunca no banco.
+  if v_new_end is not null and v_new_end > v_now then
+    v_write_status := 'active';
+    v_label := 'active';
   else
-    v_new_end := v_cur;
-    v_new_status := case when v_cur > v_now then 'active' else 'expired' end;
+    v_write_status := 'canceled';
+    v_label := 'expired';
   end if;
 
   if v_current_end is not null or v_new_end is not null then
     insert into public.subscriptions (user_id, status, current_period_end, updated_at)
-    values (p_user_id, v_new_status, v_new_end, v_now)
+    values (p_user_id, v_write_status, v_new_end, v_now)
     on conflict (user_id) do update set
       status = excluded.status,
       current_period_end = excluded.current_period_end,
@@ -278,7 +328,7 @@ begin
     'ownership_mismatch', false,
     'contributed', true,
     'current_period_end', v_new_end,
-    'status', v_new_status,
+    'status', v_label,
     'active_payments', v_active_count,
     'validity_days_removed', v_removed_days
   );

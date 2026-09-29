@@ -103,6 +103,7 @@ function fixtureUUID(suffix) {
     "r103": "000000000103",
     "r104": "000000000104",
     "r105": "000000000105",
+    "r106": "000000000106",
   };
   const hex = suffixMap[suffix] ?? suffix.padStart(12, "0").slice(-12);
   return `00000000-0000-4000-8000-${hex}`;
@@ -178,10 +179,12 @@ test("1. aprovado → reembolsado: vigencia revogada, ledger preservado com hist
     // Historico auditavel
     assert.equal(await countEvents(paymentId), 1);
 
-    // Entitlement revogado: fim <= now e status expired
+    // Entitlement revogado: fim <= now e status canceled no banco
+    // ('canceled' respeita o CHECK subscriptions_status_check; o rotulo
+    // 'expired' e derivado de current_period_end > now nas leituras).
     const sub = await getSubscription(userId);
     assert.ok(sub, "assinatura deve continuar existindo");
-    assert.equal(sub.status, "expired");
+    assert.equal(sub.status, "canceled");
     assert.ok(
       new Date(sub.current_period_end).getTime() <= Date.now() + 60_000,
       `current_period_end deve estar revogado, obtido ${sub.current_period_end}`,
@@ -309,5 +312,45 @@ test("5. chargeback de usuario distinto nao altera entitlement (ownership)", asy
     void userB;
   } finally {
     await cleanupUser(userA, userBAlt);
+  }
+});
+
+test("6. lastro legado sem linha no ledger: estorno remove so a contribuicao revertida", async () => {
+  const userId = await createTestUser("r106");
+  const paymentA = `real-rev-test6-A-${Date.now()}`;
+  const paymentB = `real-rev-test6-B-${Date.now()}`;
+  try {
+    // Vigencia legitima anterior sem lastro no ledger (trial convertido/legado).
+    await pgQuery(
+      `INSERT INTO public.subscriptions (user_id, status, current_period_end, updated_at)
+       VALUES ($1, 'active', now() + interval '60 days', now())`,
+      [userId],
+    );
+
+    const resA = await callProcess({ payment_id: paymentA, user_id: userId, validity_days: 30 });
+    assert.ok(resA.ok);
+    const resB = await callProcess({ payment_id: paymentB, user_id: userId, validity_days: 90 });
+    assert.ok(resB.ok);
+
+    // Fim acumulado: legado 60d + A 30d + B 90d = ~180d.
+    const before = await getSubscription(userId);
+    const beforeDays = Math.round((new Date(before.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
+    assert.ok(beforeDays >= 178 && beforeDays <= 182, `Esperado ~180 dias antes do estorno, obtido ${beforeDays}`);
+
+    const revA = await callReversal({ payment_id: paymentA, user_id: userId, reversal_status: "refunded" });
+    assert.ok(revA.ok, `reversao A falhou: HTTP ${revA.status} ${JSON.stringify(revA.data)}`);
+    assert.equal(revA.data.reversed, true);
+
+    // Replay so de B daria ~90d; o piso decremental preserva legado + B (~150d).
+    const sub = await getSubscription(userId);
+    assert.ok(sub, "assinatura deve existir");
+    assert.equal(sub.status, "active");
+    const diffDays = Math.round((new Date(sub.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
+    assert.ok(
+      diffDays >= 148 && diffDays <= 152,
+      `Esperado ~150 dias (legado 60 + B 90), obtido ${diffDays}`,
+    );
+  } finally {
+    await cleanupUser(userId);
   }
 });

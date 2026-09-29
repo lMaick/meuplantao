@@ -1,5 +1,12 @@
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getWebhookSetupState } from "@/lib/mercadopago/config";
-import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import {
+  completeSubscriptionCheckout,
+  getValidityDays,
+  processMercadoPagoPayment,
+  quarantinePayment,
+  validatePaymentBeforeGrantingPro,
+  type MercadoPagoPaymentPayload,
+} from "@/lib/mercadopago/payments";
 import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { WEBHOOK_NOT_CONFIGURED_CODE, WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR, extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
 import { captureWebhookError } from "@/lib/observability";
@@ -106,47 +113,39 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
       );
     }
 
-    const payment = (await paymentResponse.json()) as {
-      status?: string;
-      external_reference?: string;
-      date_created?: string;
-      date_approved?: string;
-      transaction_amount?: number;
-      metadata?: { user_id?: string; userId?: string; months?: number };
-    };
-
-    const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
-    const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
-
-    if (externalUserId && metadataUserId && externalUserId !== metadataUserId) {
-      return Response.json(
-        { received: true, ignored: true, error: "Identificadores de usuario divergentes no pagamento" },
-        { status: 200 },
-      );
-    }
-
-    const userId = externalUserId || metadataUserId;
-    if (!isUserId(userId)) {
-      return Response.json(
-        { received: true, ignored: true, error: "Pagamento sem usuario valido associado" },
-        { status: 200 },
-      );
-    }
-
-    const months = Number(payment.metadata?.months || externalMonths || 1);
-    const validityDays = getValidityDays(months);
+    const payment = (await paymentResponse.json()) as MercadoPagoPaymentPayload;
     const admin = createAdminClient();
 
-    // 4a. Reversao definitiva (provedor como fonte da verdade): reconcilia sem apagar ledger.
-    // Cobre aprovado -> reembolsado/chargeback, duplicacao, fora de ordem e
-    // notificacao antiga (o estado atual do provedor decide, nunca o evento isolado).
+    // 4a. Reversao definitiva (provedor como fonte da verdade — MAI-136).
+    // Tem precedencia sobre a validacao de concessao: o estado atual do provedor
+    // decide, nunca o evento isolado (cobre aprovado→reembolsado/chargeback,
+    // duplicacao, fora de ordem e notificacao approved antiga).
     if (isReversalStatus(payment.status)) {
+      const [externalUserId, externalMonths] = (payment.external_reference || "").split("#");
+      const metadataUserId = (payment.metadata?.user_id || payment.metadata?.userId || "").trim();
+
+      if (externalUserId && metadataUserId && externalUserId !== metadataUserId) {
+        return Response.json(
+          { received: true, ignored: true, error: "Identificadores de usuario divergentes no pagamento" },
+          { status: 200 },
+        );
+      }
+
+      const reversalUserId = externalUserId || metadataUserId;
+      if (!isUserId(reversalUserId)) {
+        return Response.json(
+          { received: true, ignored: true, error: "Pagamento sem usuario valido associado" },
+          { status: 200 },
+        );
+      }
+
+      const reversalMonths = Number(payment.metadata?.months || externalMonths || 1);
       const result = await reconcileMercadoPagoReversal(admin, {
         paymentId,
-        userId,
+        userId: reversalUserId,
         reversalStatus: payment.status ?? "refunded",
-        months,
-        validityDays,
+        months: reversalMonths,
+        validityDays: getValidityDays(reversalMonths),
         amount: payment.transaction_amount,
       });
       if (result.ownership_mismatch) {
@@ -169,10 +168,13 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
 
     // 4b. Disputa em aberto: sinaliza revisao humana, sem revogar automaticamente (MAI-136).
     if (isDisputeStatus(payment.status)) {
+      const disputeUserId = (payment.external_reference || "").split("#")[0]
+        || (payment.metadata?.user_id || payment.metadata?.userId || "").trim()
+        || undefined;
       captureWebhookError(new Error("Mercado Pago payment under dispute review"), {
         route: "/api/webhooks/mercadopago",
         paymentId,
-        userId,
+        userId: disputeUserId,
         extra: { provider_status: payment.status, needs_review: true },
       });
       return Response.json(
@@ -181,22 +183,54 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
       );
     }
 
-    // 4c. Pagamento recebido, mas ainda não aprovado (status !== "approved")
-    if (payment.status !== "approved") {
+    // 4c. Validação rigorosa de segurança, plano, preço, moeda e integridade antes de conceder Pro (MAI-137)
+    const valResult = await validatePaymentBeforeGrantingPro(admin, payment);
+
+    if (!valResult.valid) {
+      if (valResult.quarantine) {
+        await quarantinePayment(admin, {
+          paymentId,
+          userId: valResult.userId,
+          reason: valResult.reason,
+          amount: payment.transaction_amount,
+          currency: payment.currency_id,
+          months: payment.metadata?.months,
+          rawPayload: payment as Record<string, unknown>,
+        });
+        captureWebhookError(new Error(`Pagamento Mercado Pago em quarentena: ${valResult.reason}`), {
+          paymentId,
+          userId: valResult.userId || undefined,
+          extra: {
+            quarantine_reason: valResult.reason,
+            details: valResult.details,
+          },
+        });
+        return Response.json(
+          { received: true, processed: false, quarantined: true, reason: valResult.reason },
+          { status: 200 },
+        );
+      }
+
+      // Pagamento não aprovado (status !== "approved")
       return Response.json(
-        { received: true, ignored: true, status: payment.status ?? "unknown" },
+        { received: true, ignored: true, status: valResult.status ?? payment.status ?? "unknown" },
         { status: 200 },
       );
     }
 
+    // 5. Pagamento válido: executa concessão atômica de vigência via RPC
     const result = await processMercadoPagoPayment(admin, {
       paymentId,
-      userId,
-      months,
-      validityDays,
-      amount: payment.transaction_amount,
+      userId: valResult.userId,
+      months: valResult.months,
+      validityDays: valResult.validityDays,
+      amount: valResult.amount,
       status: payment.status ?? "approved",
     });
+
+    if (valResult.checkoutId) {
+      await completeSubscriptionCheckout(admin, valResult.checkoutId);
+    }
 
     return Response.json(
       {
