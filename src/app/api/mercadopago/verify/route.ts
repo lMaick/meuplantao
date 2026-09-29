@@ -1,10 +1,23 @@
 import { NextResponse, type NextRequest } from "next/server";
+import {
+  BILLING_LIMITS,
+  billingLimitKey,
+  buildBillingRateLimitedResponse,
+  checkBillingCooldownAndMark,
+  checkBillingLimit,
+  getClientIp,
+  hashIpForLog,
+  isBillingRateLimitEnabled,
+  releaseBillingCooldown,
+} from "@/lib/billing/rate-limit";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
 import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
-import { captureError } from "@/lib/observability";
+import { captureError, captureRateLimitHit } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+
+const VERIFY_ROUTE = "/api/mercadopago/verify";
 
 interface MercadoPagoPayment {
   id?: string | number;
@@ -26,6 +39,29 @@ export async function GET(request: NextRequest) {
   const requestedPaymentId = getPaymentId(request);
   let currentUserId: string | undefined;
 
+  // MAI-138: limitador distribuído (ligado em produção / opt-in em dev/teste).
+  const limiterOn = isBillingRateLimitEnabled();
+  const clientIp = limiterOn ? getClientIp(request) : "unknown";
+  const ipHash = limiterOn ? hashIpForLog(clientIp) : "unknown";
+  const logStoreFallback = (storeName: string, errorMessage: string) => {
+    captureRateLimitHit({
+      route: VERIFY_ROUTE,
+      limitKind: "store_fallback",
+      limit: 0,
+      windowMs: 0,
+      storeName,
+      distributed: false,
+      storeFallback: true,
+      paymentId: requestedPaymentId ?? undefined,
+      userId: currentUserId,
+      ipHash,
+      storeError: errorMessage,
+    });
+  };
+  let cooldownMarked = false;
+  let cooldownStoreName: string | undefined;
+  let cooldownKey = "";
+
   try {
     const supabase = createAuthenticatedClient(request, sessionResponse);
     const { data: { user }, error: userError } = await supabase.auth.getUser();
@@ -35,10 +71,69 @@ export async function GET(request: NextRequest) {
     const paymentId = getPaymentId(request);
     if (!paymentId) return NextResponse.json({ error: "Identificador do pagamento ausente" }, { status: 400 });
 
+    // MAI-138: teto por usuário + cooldown por (usuário, pagamento).
+    if (limiterOn) {
+      const userDecision = await checkBillingLimit(
+        billingLimitKey("billing", "verify", "user", user.id),
+        BILLING_LIMITS.verifyUser.limit,
+        BILLING_LIMITS.verifyUser.windowMs,
+        ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+      );
+      if (!userDecision.allowed) {
+        captureRateLimitHit({
+          route: VERIFY_ROUTE,
+          limitKind: "user",
+          limit: BILLING_LIMITS.verifyUser.limit,
+          windowMs: BILLING_LIMITS.verifyUser.windowMs,
+          retryAfterSeconds: userDecision.retryAfterSeconds,
+          paymentId,
+          userId: user.id,
+          storeName: userDecision.storeName,
+          distributed: userDecision.distributed,
+          storeFallback: userDecision.fallback,
+          ipHash,
+        });
+        return buildBillingRateLimitedResponse(userDecision.retryAfterSeconds);
+      }
+
+      cooldownKey = billingLimitKey("billing", "verify", "cooldown", user.id, paymentId);
+      const cooldown = await checkBillingCooldownAndMark(
+        cooldownKey,
+        BILLING_LIMITS.verifyPaymentCooldownMs,
+        ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+      );
+      cooldownMarked = true;
+      cooldownStoreName = cooldown.storeName;
+      if (cooldown.deduped) {
+        captureRateLimitHit({
+          route: VERIFY_ROUTE,
+          limitKind: "payment_cooldown",
+          limit: 1,
+          windowMs: BILLING_LIMITS.verifyPaymentCooldownMs,
+          retryAfterSeconds: Math.max(1, Math.ceil(BILLING_LIMITS.verifyPaymentCooldownMs / 1000)),
+          paymentId,
+          userId: user.id,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return buildBillingRateLimitedResponse(Math.ceil(BILLING_LIMITS.verifyPaymentCooldownMs / 1000));
+      }
+    }
+
+    const releaseCooldown = () => {
+      if (limiterOn && cooldownMarked && cooldownKey) {
+        return releaseBillingCooldown(cooldownKey, cooldownStoreName).catch(() => undefined);
+      }
+      return Promise.resolve();
+    };
+
     const paymentResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/${encodeURIComponent(paymentId)}`, {
       headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
     });
     if (!paymentResponse.ok) {
+      await releaseCooldown();
       captureError(new Error(`Mercado Pago verify query failed with status ${paymentResponse.status}`), {
         route: "/api/mercadopago/verify",
         userId: user.id,
@@ -123,6 +218,9 @@ export async function GET(request: NextRequest) {
       status: subscriptionStatus,
     });
   } catch (error) {
+    if (limiterOn && cooldownMarked && cooldownKey) {
+      await releaseBillingCooldown(cooldownKey, cooldownStoreName).catch(() => undefined);
+    }
     captureError(error, {
       route: "/api/mercadopago/verify",
       userId: currentUserId,

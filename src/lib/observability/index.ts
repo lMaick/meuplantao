@@ -9,6 +9,7 @@ export type AlertRule =
   | "checkout_5xx"
   | "sync_5xx"
   | "financial_rpc_error"
+  | "billing_rate_limit"
   | "critical_error";
 
 export type SeverityLevel = "fatal" | "error" | "warning" | "info";
@@ -513,6 +514,52 @@ export function captureWebhookError(
     extra: {
       ...context.extra,
       local_instance_failure_count: failureStats.count,
+    },
+  });
+}
+
+export interface RateLimitHitContext {
+  route: string;
+  limitKind: string;
+  limit: number;
+  windowMs: number;
+  retryAfterSeconds?: number;
+  deduped?: boolean;
+  storeName?: string;
+  distributed?: boolean;
+  storeFallback?: boolean;
+  paymentId?: string | number;
+  userId?: string;
+  /** Hash truncado do IP (nunca o IP bruto — evita PII em logs). */
+  ipHash?: string;
+  /** Detalhe sanitizado de falha do store (apenas diagnóstico infra). */
+  storeError?: string;
+}
+
+/**
+ * MAI-138 — Observabilidade de rate limit/cooldown de billing.
+ * Nível `warning` (não dispara alertas fatais nem o contador de falhas
+ * repetidas de webhook); nunca recebe segredos, tokens, IP bruto ou corpo.
+ */
+export function captureRateLimitHit(context: RateLimitHitContext): StructuredLogEntry {
+  return captureError(new Error("billing_rate_limit_exceeded"), {
+    route: context.route,
+    paymentId: context.paymentId,
+    userId: context.userId,
+    httpStatus: context.deduped ? 200 : 429,
+    alertRule: "billing_rate_limit",
+    level: "warning",
+    extra: {
+      limit_kind: context.limitKind,
+      limit: context.limit,
+      window_ms: context.windowMs,
+      retry_after_seconds: context.retryAfterSeconds ?? 0,
+      deduped: context.deduped ?? false,
+      store_name: context.storeName ?? "unknown",
+      distributed: context.distributed ?? false,
+      store_fallback: context.storeFallback ?? false,
+      ip_hash: context.ipHash ?? "unknown",
+      store_error: context.storeError ?? "none",
     },
   });
 }

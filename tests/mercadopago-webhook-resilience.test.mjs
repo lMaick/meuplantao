@@ -6,6 +6,7 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 
 const __whTestFile = fileURLToPath(import.meta.url);
+const __billingRateLimitUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "billing", "rate-limit.ts")).href;
 const __whTrialUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "subscription", "trial.ts")).href;
 const __whPaymentsUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "payments.ts")).href;
 const __whWebhookUrl = pathToFileURL(path.join(path.dirname(__whTestFile), "..", "src", "lib", "mercadopago", "webhook.ts")).href;
@@ -13,6 +14,7 @@ const __whObservabilityUrl = pathToFileURL(path.join(path.dirname(__whTestFile),
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@/lib/billing/rate-limit") return { url: __billingRateLimitUrl, shortCircuit: true };
     if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
     if (specifier === "@/lib/observability") return { url: __whObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") {
@@ -26,7 +28,7 @@ registerHooks({
     }
     if (specifier === "@/lib/mercadopago/config") {
       return {
-        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-test-token'; export const getMercadoPagoWebhookSecret = () => globalThis.__mockWebhookSecret ?? null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com'; export const isProductionEnvironment = () => process.env.VERCEL_ENV?.trim() === 'production' || process.env.NODE_ENV?.trim() === 'production'; export const isMissingWebhookSecretAllowed = () => { if (isProductionEnvironment()) return false; const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase(); return raw !== 'false' && raw !== '0' && raw !== 'no'; }; export const getWebhookSetupState = () => { if (globalThis.__mockWebhookSecret) return { configured: true, failClosed: false }; return { configured: false, failClosed: !isMissingWebhookSecretAllowed() }; }",
+        url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-test-token'; export const getMercadoPagoWebhookSecret = () => globalThis.__mockWebhookSecret ?? null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com'; export const isProductionEnvironment = () => process.env.VERCEL_ENV?.trim() === 'production' || process.env.NODE_ENV?.trim() === 'production'; export const isMissingWebhookSecretAllowed = () => { if (isProductionEnvironment()) return false; const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase(); return raw !== 'false' && raw !== '0' && raw !== 'no'; }; export const getWebhookSetupState = () => { if (globalThis.__mockWebhookSecret) return { configured: true, failClosed: false }; return { configured: false, failClosed: !isMissingWebhookSecretAllowed() }; }; export const LEGACY_IPN_DISABLED_CODE = 'legacy_ipn_disabled'; export const LEGACY_IPN_DISABLED_PUBLIC_ERROR = 'IPN legado desabilitado'; export const isLegacyIpnEnabled = () => { if (globalThis.__mockLegacyIpnEnabled !== undefined && globalThis.__mockLegacyIpnEnabled !== null) return globalThis.__mockLegacyIpnEnabled; const raw = process.env.MERCADO_PAGO_ENABLE_LEGACY_IPN?.trim().toLowerCase(); if (raw === 'true' || raw === '1' || raw === 'yes') return true; if (raw === 'false' || raw === '0' || raw === 'no') return false; return !isProductionEnvironment(); };",
         shortCircuit: true,
       };
     }

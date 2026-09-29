@@ -69,10 +69,26 @@ export interface WebhookSetupState {
   configured: boolean;
   failClosed: boolean;
 }
-
 export function getWebhookSetupState(): WebhookSetupState {
   if (getMercadoPagoWebhookSecret()) {
     return { configured: true, failClosed: false };
   }
   return { configured: false, failClosed: !isMissingWebhookSecretAllowed() };
+}
+
+export const LEGACY_IPN_DISABLED_CODE = "legacy_ipn_disabled";
+export const LEGACY_IPN_DISABLED_PUBLIC_ERROR = "IPN legado desabilitado";
+
+/**
+ * MAI-138 — Kill-switch explícito do IPN legado (sem assinatura).
+ * Em produção o IPN legado é DESABILITADO por padrão (410 Gone, sem consultar
+ * o Mercado Pago); fora de produção permanece habilitado para dev/teste.
+ * `MERCADO_PAGO_ENABLE_LEGACY_IPN=true` habilita explicitamente em qualquer
+ * ambiente; `=false` desabilita em qualquer ambiente.
+ */
+export function isLegacyIpnEnabled(): boolean {
+  const raw = process.env.MERCADO_PAGO_ENABLE_LEGACY_IPN?.trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "yes") return true;
+  if (raw === "false" || raw === "0" || raw === "no") return false;
+  return !isProductionEnvironment();
 }

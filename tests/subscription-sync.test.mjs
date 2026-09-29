@@ -5,6 +5,7 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 
 const __syncTestFile = fileURLToPath(import.meta.url);
+const __billingRateLimitUrl = pathToFileURL(path.join(path.dirname(__syncTestFile), "..", "src", "lib", "billing", "rate-limit.ts")).href;
 const __syncDirname = path.dirname(__syncTestFile);
 const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
@@ -15,6 +16,7 @@ process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@/lib/billing/rate-limit") return { url: __billingRateLimitUrl, shortCircuit: true };
     if (specifier === "@sentry/nextjs") return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
     if (specifier === "@/lib/observability") return { url: __syncObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") {
