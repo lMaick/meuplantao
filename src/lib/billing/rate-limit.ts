@@ -96,6 +96,21 @@ export class MemoryRateLimitStore implements RateLimitStore {
 // Upstash Redis via REST (distribuído, sem dependência extra)
 // ---------------------------------------------------------------------------
 
+/**
+ * Script Lua atômico: INCR + garantia de TTL na MESMA execução.
+ * Sem ele, um INCR sem PEXPIRE deixaria a chave sem expiração para sempre.
+ * Auto-repara chaves legadas sem TTL (PTTL < 0).
+ */
+const RATE_LIMIT_LUA = [
+  "local current = redis.call('INCR', KEYS[1])",
+  "local ttl = redis.call('PTTL', KEYS[1])",
+  "if current == 1 or ttl < 0 then",
+  "  redis.call('PEXPIRE', KEYS[1], ARGV[1])",
+  "  ttl = tonumber(ARGV[1])",
+  "end",
+  "return {current, ttl}",
+].join("\n");
+
 export class UpstashRateLimitStore implements RateLimitStore {
   readonly name = "upstash-redis";
   readonly isDistributed = true;
@@ -110,26 +125,20 @@ export class UpstashRateLimitStore implements RateLimitStore {
   async hit(key: string, windowMs: number): Promise<RateLimitHit> {
     const window = normalizeWindow(windowMs);
     const normKey = normalizeKey(key);
-    const headers = { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" };
-    const incrRes = await fetch(`${this.url}/pipeline`, {
+    // UMA única chamada REST: incremento e expiração aplicados atomicamente
+    // no servidor (sem janela entre INCR e PEXPIRE).
+    const evalRes = await fetch(`${this.url}/eval`, {
       method: "POST",
-      headers,
-      body: JSON.stringify([["INCR", normKey], ["PTTL", normKey]]),
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify([RATE_LIMIT_LUA, 1, normKey, String(window)]),
     });
-    if (!incrRes.ok) throw new Error(`Upstash pipeline failed: ${incrRes.status}`);
-    const payload = (await incrRes.json()) as Array<{ result?: unknown }>;
-    const count = Number(payload?.[0]?.result ?? NaN);
-    let ttlMs = Number(payload?.[1]?.result ?? NaN);
-    if (!Number.isFinite(count)) throw new Error("Upstash INCR sem resultado numerico");
-    if (!Number.isFinite(ttlMs) || ttlMs < 0) {
-      await fetch(`${this.url}/pexpire`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify([normKey, window, "NX"]),
-      }).catch(() => undefined);
-      ttlMs = window;
-    }
-    return { count, ttlMs };
+    if (!evalRes.ok) throw new Error(`Upstash eval failed: ${evalRes.status}`);
+    const payload = (await evalRes.json()) as { result?: unknown };
+    const tuple = payload?.result as Array<unknown> | undefined;
+    const count = Number(tuple?.[0]);
+    const ttlMs = Number(tuple?.[1]);
+    if (!Number.isFinite(count) || count < 1) throw new Error("Upstash EVAL sem contagem valida");
+    return { count, ttlMs: Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : window };
   }
 
   async release(key: string): Promise<void> {

@@ -31,8 +31,6 @@ interface MercadoPagoSearchResult {
   }>;
 }
 
-export { paymentBelongsToUser };
-
 export async function POST(request: NextRequest) {
   const sessionResponse = NextResponse.json({ error: "Nao foi possivel sincronizar o status da assinatura" }, { status: 500 });
   let currentUserId: string | undefined;

@@ -12,7 +12,7 @@ import {
   releaseBillingCooldown,
 } from "@/lib/billing/rate-limit";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getWebhookSetupState } from "@/lib/mercadopago/config";
-import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { getValidityDays, hasProcessedMercadoPagoPayment, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { WEBHOOK_NOT_CONFIGURED_CODE, WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR, extractPaymentInfo, isUserId, validateWebhookSignature } from "@/lib/mercadopago/webhook";
 import { captureRateLimitHit, captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
@@ -21,9 +21,7 @@ export const runtime = "nodejs";
 
 const WEBHOOK_ROUTE = "/api/webhooks/mercadopago";
 
-export { extractPaymentInfo, validateWebhookSignature };
-
-export async function processPaymentWebhook(request: Request, rawBody: string) {
+async function processPaymentWebhook(request: Request, rawBody: string) {
   if (getWebhookSetupState().failClosed) {
     return Response.json({ error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR }, { status: 503 });
   }
@@ -108,7 +106,10 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
 
   let cooldownStoreName: string | undefined;
   if (limiterOn) {
-    // Cooldown/dedupe por pagamento: rajadas retornam 200 SEM nova consulta.
+    // Cooldown/dedupe por pagamento: SÓ responde 200 sem nova consulta quando
+    // há prova de persistência (idempotência comprovada no banco). Sem prova —
+    // concorrência em voo ou falha anterior — libera a marca prematura e
+    // PROCESSA normalmente (nunca descarta retry legítimo).
     const cooldownKey = billingLimitKey("billing", "webhook", "cooldown", paymentId);
     const cooldown = await checkBillingCooldownAndMark(
       cooldownKey,
@@ -117,19 +118,28 @@ export async function processPaymentWebhook(request: Request, rawBody: string) {
     );
     cooldownStoreName = cooldown.storeName;
     if (cooldown.deduped) {
-      captureRateLimitHit({
-        route: WEBHOOK_ROUTE,
-        limitKind: "payment_cooldown",
-        limit: 1,
-        windowMs: BILLING_LIMITS.webhookPaymentCooldownMs,
-        deduped: true,
-        paymentId,
-        storeName: cooldown.storeName,
-        distributed: cooldown.distributed,
-        storeFallback: cooldown.fallback,
-        ipHash,
-      });
-      return Response.json({ received: true, deduped: true }, { status: 200 });
+      let persisted = false;
+      try {
+        persisted = await hasProcessedMercadoPagoPayment(createAdminClient(), paymentId);
+      } catch {
+        persisted = false;
+      }
+      if (persisted) {
+        captureRateLimitHit({
+          route: WEBHOOK_ROUTE,
+          limitKind: "payment_cooldown",
+          limit: 1,
+          windowMs: BILLING_LIMITS.webhookPaymentCooldownMs,
+          deduped: true,
+          paymentId,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return Response.json({ received: true, deduped: true }, { status: 200 });
+      }
+      await releaseBillingCooldown(cooldownKey, cooldown.storeName).catch(() => undefined);
     }
 
     const paymentDecision = await checkBillingLimit(

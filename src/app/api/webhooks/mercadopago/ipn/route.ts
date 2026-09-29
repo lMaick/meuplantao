@@ -18,7 +18,7 @@ import {
   getMercadoPagoApiUrl,
   isLegacyIpnEnabled,
 } from "@/lib/mercadopago/config";
-import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import { getValidityDays, hasProcessedMercadoPagoPayment, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
 import { extractPaymentInfo } from "@/lib/mercadopago/webhook";
 import { captureError, captureRateLimitHit, captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
@@ -124,7 +124,10 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
 
   let cooldownStoreName: string | undefined;
   if (limiterOn) {
-    // 5. Cooldown/dedupe por pagamento: rajadas retornam 200 SEM nova consulta.
+    // 5. Cooldown/dedupe por pagamento: SÓ responde 200 sem nova consulta quando
+    // há prova de persistência (idempotência comprovada no banco). Sem prova —
+    // concorrência em voo ou falha anterior — libera a marca prematura e
+    // PROCESSA normalmente (nunca descarta retry legítimo).
     const cooldownKey = billingLimitKey("billing", "ipn", "cooldown", paymentId);
     const cooldown = await checkBillingCooldownAndMark(
       cooldownKey,
@@ -133,19 +136,28 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
     );
     cooldownStoreName = cooldown.storeName;
     if (cooldown.deduped) {
-      captureRateLimitHit({
-        route: IPN_ROUTE,
-        limitKind: "payment_cooldown",
-        limit: 1,
-        windowMs: BILLING_LIMITS.ipnPaymentCooldownMs,
-        deduped: true,
-        paymentId,
-        storeName: cooldown.storeName,
-        distributed: cooldown.distributed,
-        storeFallback: cooldown.fallback,
-        ipHash,
-      });
-      return Response.json({ received: true, deduped: true }, { status: 200 });
+      let persisted = false;
+      try {
+        persisted = await hasProcessedMercadoPagoPayment(createAdminClient(), paymentId);
+      } catch {
+        persisted = false;
+      }
+      if (persisted) {
+        captureRateLimitHit({
+          route: IPN_ROUTE,
+          limitKind: "payment_cooldown",
+          limit: 1,
+          windowMs: BILLING_LIMITS.ipnPaymentCooldownMs,
+          deduped: true,
+          paymentId,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return Response.json({ received: true, deduped: true }, { status: 200 });
+      }
+      await releaseBillingCooldown(cooldownKey, cooldown.storeName).catch(() => undefined);
     }
 
     // 6. Teto por pagamento (proteção adicional além do cooldown).

@@ -42,7 +42,8 @@ registerHooks({
   },
 });
 
-const { POST: syncRoute, paymentBelongsToUser } = await import("../src/app/api/mercadopago/sync/route.ts");
+const { POST: syncRoute } = await import("../src/app/api/mercadopago/sync/route.ts");
+const { paymentBelongsToUser } = await import("../src/lib/mercadopago/config.ts");
 const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts");
 
 const testUserId = "33333333-3333-4333-8333-333333333333";
