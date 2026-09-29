@@ -12,6 +12,7 @@ const realConfig = await import(pathToFileURL(path.join(__setupDir, "..", "src",
 
 const __setupTrialUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __setupPaymentsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __setupReversalsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __setupWebhookUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const __setupObservabilityUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -21,6 +22,7 @@ registerHooks({
     if (specifier === "@/lib/observability") return { url: __setupObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: __setupTrialUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: __setupPaymentsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/reversals") return { url: __setupReversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: __setupWebhookUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
