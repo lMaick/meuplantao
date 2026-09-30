@@ -6,10 +6,26 @@ export function safeNext(value?: string | string[]): string {
   return value;
 }
 
+/**
+ * Validate the origin resolved by a Server Component and passed as a prop.
+ * Never read window.location here: production aliases must keep the configured
+ * canonical origin, while Preview origins are resolved from server env first.
+ */
+export function getClientOrigin(serverResolvedOrigin: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(serverResolvedOrigin);
+  } catch {
+    throw new Error("Origem inválida para callback de autenticação");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("Origem inválida para callback de autenticação");
+  }
+  return parsed.origin;
+}
+
 export function authCallbackUrl(origin: string, next: string): string {
-  const parsed = new URL(origin);
-  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("Origem inválida para callback de autenticação");
-  const url = new URL("/auth/callback", parsed);
+  const url = new URL("/auth/callback", getClientOrigin(origin));
   url.searchParams.set("next", safeNext(next));
   return url.toString();
 }

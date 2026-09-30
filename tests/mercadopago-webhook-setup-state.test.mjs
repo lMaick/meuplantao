@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
@@ -8,8 +9,6 @@ import test from "node:test";
 const __setupFile = fileURLToPath(import.meta.url);
 const __billingRateLimitUrl = pathToFileURL(path.join(path.dirname(__setupFile), "..", "src", "lib", "billing", "rate-limit.ts")).href;
 const __setupDir = path.dirname(__setupFile);
-
-const realConfig = await import(pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "config.ts")).href);
 
 const __setupTrialUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __setupPaymentsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "payments.ts")).href;
@@ -41,10 +40,18 @@ registerHooks({
       };
     }
     if (specifier === "next/server") return nextResolve("next/server.js", context);
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
     return nextResolve(specifier, context);
   },
 });
 
+const realConfig = await import(pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "config.ts")).href);
 const { GET: webhookGet, POST: webhookPost } = await import("../src/app/api/webhooks/mercadopago/route.ts");
 const { WEBHOOK_NOT_CONFIGURED_CODE, WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR, validateWebhookSignature } = await import("../src/lib/mercadopago/webhook.ts");
 

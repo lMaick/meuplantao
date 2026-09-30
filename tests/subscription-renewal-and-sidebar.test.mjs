@@ -2,8 +2,25 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerHooks } from "node:module";
 import test from "node:test";
-import { paymentBelongsToUser } from "../src/lib/mercadopago/config.ts";
+
+// MAI-139: hook de resolução .ts para o import aninhado
+// src/lib/mercadopago/config.ts -> ../config/site-url
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (fs.existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const { paymentBelongsToUser } = await import("../src/lib/mercadopago/config.ts");
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 

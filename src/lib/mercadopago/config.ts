@@ -1,3 +1,5 @@
+import { getCanonicalOrigin } from "../config/site-url";
+
 const MERCADO_PAGO_API_URL = "https://api.mercadopago.com";
 
 function requiredEnv(name: "MERCADO_PAGO_ACCESS_TOKEN"): string {
@@ -15,13 +17,10 @@ export function getMercadoPagoWebhookSecret(): string | null {
 }
 
 export function getApplicationOrigin(requestUrl: string): string {
-  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  const origin = configured || new URL(requestUrl).origin;
-  const parsed = new URL(origin);
-  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
-    throw new Error("Origem da aplicacao invalida");
-  }
-  return parsed.origin;
+  // MAI-139: delega ao helper canônico seguro. Em produção a origem da
+  // request é ignorada (anti Host Header Poisoning); em dev local com
+  // localhost ela é permitida apenas como fallback sem config manual.
+  return getCanonicalOrigin(requestUrl, { requireConfig: isProductionEnvironment() });
 }
 
 export function getMercadoPagoApiUrl(): string {

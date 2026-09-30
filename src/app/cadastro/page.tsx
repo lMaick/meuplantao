@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { safeNext } from "@/lib/auth/redirect";
 import Link from "next/link";
 import { AuthForm } from "@/lib/auth/auth-forms";
+import { getCanonicalOrigin } from "@/lib/config/site-url";
 
 export const metadata: Metadata = {
   title: "Criar Conta | MeuPlantão",
@@ -14,6 +15,7 @@ export const metadata: Metadata = {
 
 export default async function CadastroPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
   const next = safeNext((await searchParams).next);
+  const authOrigin = getCanonicalOrigin();
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/40 px-4 py-8">
       <section className="w-full max-w-md space-y-6 rounded-xl border bg-background p-6 shadow-sm sm:p-8">
@@ -22,7 +24,7 @@ export default async function CadastroPage({ searchParams }: { searchParams: Pro
           <h1 className="text-2xl font-semibold tracking-tight">Crie sua conta</h1>
           <p className="text-sm text-muted-foreground">Organize seus plantões em um só lugar.</p>
         </div>
-        <AuthForm mode="signup" next={next} />
+        <AuthForm mode="signup" next={next} authOrigin={authOrigin} />
         <p className="text-center text-xs text-muted-foreground leading-relaxed">
           Ao criar sua conta, você concorda com nossos{" "}
           <Link href="/termos" className="font-medium text-foreground underline underline-offset-4">

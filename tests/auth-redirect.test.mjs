@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { registerHooks } from "node:module";
 import test from "node:test";
-import { authCallbackUrl, safeNext } from "../src/lib/auth/redirect.ts";
-import { oauthProviderConfig } from "../src/lib/auth/redirect.ts";
+
+// MAI-139: hook de resolução .ts para o import aninhado
+// src/lib/auth/redirect.ts -> ../config/site-url
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const { authCallbackUrl, oauthProviderConfig, safeNext } = await import("../src/lib/auth/redirect.ts");
 
 test("preserves local destination with query and fragment", () => {
   assert.equal(safeNext("/calendario?dia=2026-09-05#novo"), "/calendario?dia=2026-09-05#novo");
