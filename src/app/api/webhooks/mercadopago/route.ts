@@ -12,7 +12,15 @@ import {
   isValidBillingPaymentId,
   releaseBillingCooldown,
 } from "@/lib/billing/rate-limit";
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, getWebhookSetupState } from "@/lib/mercadopago/config";
+import { getWebhookSetupState } from "@/lib/mercadopago/config";
+import {
+  MercadoPagoTimeoutError,
+  SupabaseRpcTimeoutError,
+  fetchMercadoPago,
+  getTimeoutForOperation,
+  isTransientMercadoPagoStatus,
+  sanitizedMercadoPagoLogContext,
+} from "@/lib/mercadopago/http";
 import {
   completeSubscriptionCheckout,
   getValidityDays,
@@ -303,23 +311,36 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
   const releaseCooldown = () => releaseOwnLocks();
 
   try {
+    // MAI-144: GET idempotente com deadline explícito. Timeout/queda => 504/502
+    // retentável (o provedor retenta) SEM conceder Pro e SEM tocar o ledger.
+    // Erro definitivo (400/401/403/404/422) => 200 ignored, sem retry.
+    const webhookTimeoutMs = getTimeoutForOperation("payments.get");
     let paymentResponse: Response;
     try {
-      paymentResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/${encodeURIComponent(paymentId)}`, {
-        headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
+      paymentResponse = await fetchMercadoPago(`/v1/payments/${encodeURIComponent(paymentId)}`, {
+        operation: "payments.get",
+        timeoutMs: webhookTimeoutMs,
+        method: "GET",
       });
     } catch (networkErr) {
       await releaseCooldown();
+      const isTimeout = networkErr instanceof MercadoPagoTimeoutError;
       captureWebhookError(networkErr, {
         paymentId,
-        httpStatus: 502,
+        httpStatus: isTimeout ? 504 : 502,
         extra: {
-          failure_kind: "mercadopago_network",
+          retryable: true,
+          ...sanitizedMercadoPagoLogContext({
+            operation: "payments.get",
+            timeoutMs: webhookTimeoutMs,
+            paymentId,
+            failureKind: isTimeout ? "mercadopago_timeout" : "mercadopago_network",
+          }),
         },
       });
       return Response.json(
-        { error: "Falha temporaria de conexao com a API do Mercado Pago" },
-        { status: 502 },
+        { error: isTimeout ? "Tempo esgotado na consulta a API do Mercado Pago" : "Falha temporaria de conexao com a API do Mercado Pago" },
+        { status: isTimeout ? 504 : 502 },
       );
     }
 
@@ -370,6 +391,29 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
       );
     }
 
+    // MAI-144 (auditoria): transitório restante (408/425) => 502 retentável,
+    // com locks liberados para o retry legítimo do provedor — nunca 200.
+    if (!paymentResponse.ok && isTransientMercadoPagoStatus(paymentResponse.status)) {
+      await releaseCooldown();
+      captureWebhookError(
+        new Error(`Mercado Pago upstream transient ${paymentResponse.status}`),
+        {
+          paymentId,
+          httpStatus: 502,
+          extra: {
+            retryable: true,
+            upstream_status: paymentResponse.status,
+          },
+        }
+      );
+      return Response.json(
+        { error: "Falha temporaria na API do Mercado Pago", status: paymentResponse.status },
+        { status: 502 },
+      );
+    }
+
+    // MAI-144: neste ponto restam apenas erros definitivos (400/401/403/422) —
+    // 200 ignored, sem retry storm e sem tocar o ledger.
     if (!paymentResponse.ok) {
       await releaseInflight();
       return Response.json(
@@ -547,6 +591,25 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
     );
   } catch (error) {
     await releaseCooldown();
+    // MAI-144 (auditoria): deadline da RPC do Supabase estourado é transitório
+    // — 502 retentável com locks liberados para o retry do provedor; o retry é
+    // seguro pela idempotência da RPC (claim único por payment_id).
+    if (error instanceof SupabaseRpcTimeoutError) {
+      captureWebhookError(error, {
+        route: "/api/webhooks/mercadopago",
+        paymentId,
+        httpStatus: 502,
+        extra: {
+          retryable: true,
+          failure_kind: "supabase_rpc_timeout",
+          rpc_name: error.rpcName,
+        },
+      });
+      return Response.json(
+        { error: "Tempo esgotado no processamento. Tente novamente.", retryable: true },
+        { status: 502 },
+      );
+    }
     captureWebhookError(error, {
       route: "/api/webhooks/mercadopago",
       paymentId,

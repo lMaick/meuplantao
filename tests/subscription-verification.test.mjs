@@ -9,6 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
 const paymentsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "payments.ts")).href;
 const reversalsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "reversals.ts")).href;
+const httpUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "http.ts")).href;
 const observabilityUrl = pathToFileURL(path.join(ROOT, "src", "lib", "observability", "index.ts")).href;
 const rateLimitUrl = pathToFileURL(path.join(ROOT, "src", "lib", "billing", "rate-limit.ts")).href;
 
@@ -32,6 +33,12 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/reversals") {
       return {
         url: reversalsUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/http") {
+      return {
+        url: httpUrl,
         shortCircuit: true,
       };
     }

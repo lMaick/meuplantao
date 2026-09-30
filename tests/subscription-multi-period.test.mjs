@@ -10,6 +10,7 @@ const subscriptionTrialUrl = pathToFileURL(resolve("src/lib/subscription/trial.t
 const subscriptionPaymentsUrl = pathToFileURL(resolve("src/lib/mercadopago/payments.ts")).href;
 const subscriptionReversalsUrl = pathToFileURL(resolve("src/lib/mercadopago/reversals.ts")).href;
 const subscriptionWebhookUrl = pathToFileURL(resolve("src/lib/mercadopago/webhook.ts")).href;
+const subscriptionHttpUrl = pathToFileURL(resolve("src/lib/mercadopago/http.ts")).href;
 const subscriptionObservabilityUrl = pathToFileURL(resolve("src/lib/observability/index.ts")).href;
 const subscriptionRateLimitUrl = pathToFileURL(resolve("src/lib/billing/rate-limit.ts")).href;
 
@@ -22,6 +23,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: subscriptionPaymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/reversals") return { url: subscriptionReversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: subscriptionWebhookUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: subscriptionHttpUrl, shortCircuit: true };
     if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") return { url: "data:text/javascript,export const createAuthenticatedClient = () => globalThis.authenticatedClient; export const createAdminClient = () => globalThis.adminClient;", shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: subscriptionTypesUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: subscriptionTrialUrl, shortCircuit: true };
