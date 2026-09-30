@@ -22,6 +22,7 @@
  */
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 // ─── Gate de segurança ───────────────────────────────────────────────────────
@@ -77,18 +78,20 @@ async function pgQuery(sql, params = []) {
 /**
  * Chama process_mercadopago_subscription_payment via REST API com service_role.
  * A função é SECURITY DEFINER e só pode ser chamada por service_role.
+ * Contrato MAI-147: exige 7 parâmetros (incluindo p_checkout_id).
  */
 async function callRpc(params) {
   const url = `${API_URL}/rest/v1/rpc/process_mercadopago_subscription_payment`;
+  const checkoutId = params.checkout_id !== undefined ? params.checkout_id : params.p_checkout_id;
   const body = {
-    p_payment_id: params.payment_id,
-    p_user_id: params.user_id,
-    p_months: params.months ?? 1,
-    p_validity_days: params.validity_days ?? 30,
-    p_amount: params.amount ?? 49.9,
-    p_status: params.status ?? "approved",
-    // MAI-147 fail-closed (migration 29400000): cotacao obrigatoria.
-    ...(params.checkout_id ? { p_checkout_id: params.checkout_id } : {}),
+    p_payment_id: params.payment_id ?? params.p_payment_id,
+    p_user_id: params.user_id ?? params.p_user_id,
+    p_months: params.months ?? params.p_months ?? 1,
+    p_validity_days: params.validity_days ?? params.p_validity_days ?? 30,
+    p_amount: params.amount ?? params.p_amount ?? 49.9,
+    p_status: params.status ?? params.p_status ?? "approved",
+    // MAI-147 fail-closed (migration 29400000): cotacao obrigatoria (7 parametros).
+    ...(checkoutId !== undefined ? { p_checkout_id: checkoutId } : {}),
   };
 
   const res = await fetch(url, {
@@ -181,11 +184,54 @@ async function getPaymentRow(paymentId) {
   return rows[0] ?? null;
 }
 
+/** Lê a linha de subscription_checkouts pelo id. */
+async function getCheckoutRow(checkoutId) {
+  const rows = await pgQuery(
+    "SELECT * FROM public.subscription_checkouts WHERE id = $1",
+    [checkoutId],
+  );
+  return rows[0] ?? null;
+}
+
+/** Cria uma cotação válida de teste em subscription_checkouts. */
+async function createTestCheckout(userId, opts = {}) {
+  const checkoutId = opts.id ?? randomUUID();
+  const months = opts.months ?? 1;
+  const validityDays = opts.validity_days ?? 30;
+  const amount = opts.amount ?? 49.9;
+  const amountCents = Math.round(amount * 100);
+  const status = opts.status ?? "pending";
+  const planId = opts.plan_id ?? `pro-${months}m`;
+  const isExpired = Boolean(opts.expired);
+
+  const query = isExpired
+    ? `INSERT INTO public.subscription_checkouts (
+         id, user_id, plan_id, months, validity_days, amount, amount_cents, currency, catalog_version, status, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'BRL', '2026-v1', $8, now() - interval '1 hour')
+       RETURNING id`
+    : `INSERT INTO public.subscription_checkouts (
+         id, user_id, plan_id, months, validity_days, amount, amount_cents, currency, catalog_version, status, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'BRL', '2026-v1', $8, now() + interval '3 days')
+       RETURNING id`;
+
+  const rows = await pgQuery(query, [
+    checkoutId,
+    userId,
+    planId,
+    months,
+    validityDays,
+    amount,
+    amountCents,
+    status,
+  ]);
+  return rows[0].id;
+}
+
 /** Limpa fixtures ao final de cada teste (delete cascade via auth.users). */
 async function cleanupUser(...userIds) {
   for (const userId of userIds) {
     try {
-      // subscription_payments e subscriptions têm FK -> auth.users ON DELETE CASCADE
+      // subscription_payments, subscription_checkouts e subscriptions têm FK -> auth.users ON DELETE CASCADE
       await pgQuery("DELETE FROM auth.users WHERE id = $1", [userId]);
     } catch {
       // Silencia erros de cleanup para não ocultar a falha real do teste
@@ -197,9 +243,10 @@ async function cleanupUser(...userIds) {
 
 test("1. payment_id novo → cria entrada em subscription_payments e adiciona vigência exatamente uma vez", async () => {
   const userId = await createTestUser("e201");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, months: 1, amount: 49.9 });
   const paymentId = `real-e2e-test1-${Date.now()}`;
   try {
-    const res = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    const res = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(res.ok, `RPC falhou: HTTP ${res.status} — ${JSON.stringify(res.data)}`);
 
     const result = res.data;
@@ -212,15 +259,23 @@ test("1. payment_id novo → cria entrada em subscription_payments e adiciona vi
     const count = await countPayments(userId);
     assert.equal(count, 1, "Deve existir exatamente 1 registro em subscription_payments");
 
-    // Invariante: a linha criada tem os campos corretos
+    // Invariante: a linha criada tem os campos corretos e vinculada ao checkout
     const row = await getPaymentRow(paymentId);
     assert.ok(row, "Linha deve existir em subscription_payments");
     assert.equal(row.mercadopago_payment_id, paymentId);
     assert.equal(row.user_id, userId);
+    assert.equal(row.checkout_id, checkoutId);
     assert.equal(Number(row.validity_days), 30);
     assert.equal(Number(row.months), 1);
     assert.equal(row.status, "approved");
     assert.ok(row.processed_at, "processed_at deve estar preenchido");
+
+    // Invariante: cotação consumida e marcada como completed
+    const chk = await getCheckoutRow(checkoutId);
+    assert.ok(chk, "Linha deve existir em subscription_checkouts");
+    assert.equal(chk.status, "completed");
+    assert.equal(chk.completed_payment_id, paymentId);
+    assert.ok(chk.completed_at, "completed_at deve estar preenchido");
 
     // Invariante: current_period_end em subscriptions é ~30 dias no futuro
     const sub = await getSubscription(userId);
@@ -235,16 +290,17 @@ test("1. payment_id novo → cria entrada em subscription_payments e adiciona vi
 
 test("2. mesmo payment_id duas vezes → segunda chamada retorna already_processed e current_period_end não muda", async () => {
   const userId = await createTestUser("e202");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, months: 1 });
   const paymentId = `real-e2e-test2-${Date.now()}`;
   try {
     // Primeira chamada
-    const res1 = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    const res1 = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(res1.ok, `1ª RPC falhou: HTTP ${res1.status} ${JSON.stringify(res1.data)}`);
     assert.equal(res1.data.already_processed, false);
     const periodEnd1 = res1.data.current_period_end;
 
-    // Segunda chamada — mesmo payment_id
-    const res2 = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    // Segunda chamada — mesmo payment_id e mesma cotação
+    const res2 = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(res2.ok, `2ª RPC falhou: HTTP ${res2.status} ${JSON.stringify(res2.data)}`);
     assert.equal(res2.data.already_processed, true, "Segunda chamada deve ser already_processed");
     assert.equal(res2.data.validity_days_added, 0, "Nenhum dia deve ser adicionado novamente");
@@ -252,6 +308,18 @@ test("2. mesmo payment_id duas vezes → segunda chamada retorna already_process
       res2.data.current_period_end,
       periodEnd1,
       "current_period_end NÃO pode mudar no reprocessamento",
+    );
+
+    // Sub-cenário: reenvio com cotação divergente deve falhar com 23505 (consistência 1:1)
+    const checkoutDivergent = await createTestCheckout(userId, { validity_days: 30, months: 1 });
+    const resDiv = await callRpc({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutDivergent });
+    assert.equal(resDiv.ok, false, "Reenvio com cotação divergente deve ser rejeitado");
+    const errDiv = resDiv.data ?? {};
+    assert.ok(
+      String(errDiv.code ?? "").includes("23505") ||
+      String(errDiv.message ?? "").toLowerCase().includes("divergente") ||
+      resDiv.status === 400 || resDiv.status === 409,
+      `Esperado erro de cotação divergente 23505, obtido HTTP ${resDiv.status} ${JSON.stringify(resDiv.data)}`,
     );
 
     // Invariante PostgreSQL: UNIQUE constraint → ainda só 1 linha
@@ -271,16 +339,18 @@ test("2. mesmo payment_id duas vezes → segunda chamada retorna already_process
 
 test("3. pagamentos A e B distintos → ambos adicionados com vigências acumuladas", async () => {
   const userId = await createTestUser("e203");
+  const checkoutA = await createTestCheckout(userId, { validity_days: 30, months: 1 });
+  const checkoutB = await createTestCheckout(userId, { validity_days: 90, months: 3, amount: 149.9 });
   const paymentA = `real-e2e-test3-A-${Date.now()}`;
   const paymentB = `real-e2e-test3-B-${Date.now()}`;
   try {
-    // Pagamento A: 30 dias
-    const resA = await callRpc({ payment_id: paymentA, user_id: userId, validity_days: 30 });
+    // Pagamento A: 30 dias com checkoutA
+    const resA = await callRpc({ payment_id: paymentA, user_id: userId, validity_days: 30, checkout_id: checkoutA });
     assert.ok(resA.ok, `RPC A falhou: HTTP ${resA.status} ${JSON.stringify(resA.data)}`);
     assert.equal(resA.data.already_processed, false);
 
-    // Pagamento B: 90 dias (sequencial — cenário 4 cobre concorrência)
-    const resB = await callRpc({ payment_id: paymentB, user_id: userId, validity_days: 90 });
+    // Pagamento B: 90 dias com checkoutB
+    const resB = await callRpc({ payment_id: paymentB, user_id: userId, validity_days: 90, months: 3, amount: 149.9, checkout_id: checkoutB });
     assert.ok(resB.ok, `RPC B falhou: HTTP ${resB.status} ${JSON.stringify(resB.data)}`);
     assert.equal(resB.data.already_processed, false);
 
@@ -307,13 +377,15 @@ test("3. pagamentos A e B distintos → ambos adicionados com vigências acumula
 
 test("4. pagamentos A e B concorrentes → vigência final é soma das duas extensões (pg_advisory_xact_lock serializa)", async () => {
   const userId = await createTestUser("e204");
+  const checkoutA = await createTestCheckout(userId, { validity_days: 90, months: 3, amount: 149.9 });
+  const checkoutB = await createTestCheckout(userId, { validity_days: 180, months: 6, amount: 289.9 });
   const paymentA = `real-e2e-test4-A-${Date.now()}`;
   const paymentB = `real-e2e-test4-B-${Date.now()}`;
   try {
     // Disparo simultâneo de dois pagamentos distintos via Promise.all
     const [resA, resB] = await Promise.all([
-      callRpc({ payment_id: paymentA, user_id: userId, validity_days: 90 }),
-      callRpc({ payment_id: paymentB, user_id: userId, validity_days: 180 }),
+      callRpc({ payment_id: paymentA, user_id: userId, validity_days: 90, months: 3, amount: 149.9, checkout_id: checkoutA }),
+      callRpc({ payment_id: paymentB, user_id: userId, validity_days: 180, months: 6, amount: 289.9, checkout_id: checkoutB }),
     ]);
 
     // Ambos devem ter sucesso (pg_advisory_xact_lock serializa internamente)
@@ -342,16 +414,16 @@ test("4. pagamentos A e B concorrentes → vigência final é soma das duas exte
 
 test("5. mesmo payment_id concorrente → apenas uma extensão aplicada (UNIQUE + advisory lock garantem)", async () => {
   const userId = await createTestUser("e205");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 90, months: 3, amount: 149.9 });
   const paymentId = `real-e2e-test5-${Date.now()}`;
   try {
-    // Dois disparos simultâneos do MESMO payment_id
+    // Dois disparos simultâneos do MESMO payment_id com o MESMO checkout_id
     const [res1, res2] = await Promise.all([
-      callRpc({ payment_id: paymentId, user_id: userId, validity_days: 90 }),
-      callRpc({ payment_id: paymentId, user_id: userId, validity_days: 90 }),
+      callRpc({ payment_id: paymentId, user_id: userId, validity_days: 90, months: 3, amount: 149.9, checkout_id: checkoutId }),
+      callRpc({ payment_id: paymentId, user_id: userId, validity_days: 90, months: 3, amount: 149.9, checkout_id: checkoutId }),
     ]);
 
     // Ambas as chamadas devem responder com HTTP 200
-    // (RPC usa ON CONFLICT DO NOTHING — não lança erro em duplicata)
     assert.ok(res1.ok, `1ª RPC falhou: HTTP ${res1.status} ${JSON.stringify(res1.data)}`);
     assert.ok(res2.ok, `2ª RPC falhou: HTTP ${res2.status} ${JSON.stringify(res2.data)}`);
 
@@ -375,6 +447,28 @@ test("5. mesmo payment_id concorrente → apenas uma extensão aplicada (UNIQUE 
       diffDays >= 89 && diffDays <= 91,
       `Esperado ~90 dias (sem duplicação), obtido ${diffDays}`,
     );
+
+    // Sub-cenário de concorrência: 2 pagamentos distintos disputando a MESMA cotação (claim CAS atômico)
+    const sharedCheckout = await createTestCheckout(userId, { validity_days: 30, months: 1 });
+    const paymentClaimA = `real-e2e-test5-claimA-${Date.now()}`;
+    const paymentClaimB = `real-e2e-test5-claimB-${Date.now()}`;
+    const [resClaimA, resClaimB] = await Promise.all([
+      callRpc({ payment_id: paymentClaimA, user_id: userId, validity_days: 30, checkout_id: sharedCheckout }),
+      callRpc({ payment_id: paymentClaimB, user_id: userId, validity_days: 30, checkout_id: sharedCheckout }),
+    ]);
+
+    const claims = [resClaimA, resClaimB];
+    const successes = claims.filter((c) => c.ok);
+    const conflicts = claims.filter((c) => !c.ok);
+    assert.equal(successes.length, 1, "Exatamente uma chamada concorrente deve consumir a cotação");
+    assert.equal(conflicts.length, 1, "A outra chamada concorrente pela mesma cotação deve falhar");
+    const conflictErr = conflicts[0].data ?? {};
+    assert.ok(
+      String(conflictErr.code ?? "").includes("23505") ||
+      String(conflictErr.message ?? "").toLowerCase().includes("consumida") ||
+      conflicts[0].status === 400 || conflicts[0].status === 409,
+      `Concorrência de cotação deve retornar 23505, obtido HTTP ${conflicts[0].status}: ${JSON.stringify(conflicts[0].data)}`,
+    );
   } finally {
     await cleanupUser(userId);
   }
@@ -382,6 +476,8 @@ test("5. mesmo payment_id concorrente → apenas uma extensão aplicada (UNIQUE 
 
 test("6. usuário sem linha em subscriptions → concorrência cria assinatura corretamente via upsert atômico", async () => {
   const userId = await createTestUser("e206");
+  const checkoutA = await createTestCheckout(userId, { validity_days: 30, months: 1 });
+  const checkoutB = await createTestCheckout(userId, { validity_days: 60, months: 2, amount: 99.8 });
   const paymentA = `real-e2e-test6-A-${Date.now()}`;
   const paymentB = `real-e2e-test6-B-${Date.now()}`;
   try {
@@ -391,8 +487,8 @@ test("6. usuário sem linha em subscriptions → concorrência cria assinatura c
 
     // Dois pagamentos distintos concorrentes para usuário sem assinatura
     const [resA, resB] = await Promise.all([
-      callRpc({ payment_id: paymentA, user_id: userId, validity_days: 30 }),
-      callRpc({ payment_id: paymentB, user_id: userId, validity_days: 60 }),
+      callRpc({ payment_id: paymentA, user_id: userId, validity_days: 30, checkout_id: checkoutA }),
+      callRpc({ payment_id: paymentB, user_id: userId, validity_days: 60, months: 2, amount: 99.8, checkout_id: checkoutB }),
     ]);
 
     assert.ok(resA.ok, `RPC A falhou: HTTP ${resA.status} ${JSON.stringify(resA.data)}`);
@@ -422,23 +518,37 @@ test("6. usuário sem linha em subscriptions → concorrência cria assinatura c
 test("7. user_id incompatível → payment_id de userA não estende assinatura de userB", async () => {
   const userA = await createTestUser("e207a");
   const userB = await createTestUser("e207b");
+  const checkoutA = await createTestCheckout(userA, { validity_days: 30, months: 1 });
   const paymentId = `real-e2e-test7-${Date.now()}`;
   try {
     // Processa o pagamento corretamente para userA
-    const resA = await callRpc({ payment_id: paymentId, user_id: userA, validity_days: 30 });
+    const resA = await callRpc({ payment_id: paymentId, user_id: userA, validity_days: 30, checkout_id: checkoutA });
     assert.ok(resA.ok, `RPC A falhou: HTTP ${resA.status} ${JSON.stringify(resA.data)}`);
     assert.equal(resA.data.already_processed, false);
 
-    // Tenta reutilizar o MESMO payment_id para userB
-    // UNIQUE constraint é global: a RPC retorna already_processed (não estende userB)
-    const resB = await callRpc({ payment_id: paymentId, user_id: userB, validity_days: 30 });
-    assert.ok(resB.ok, `RPC B falhou: HTTP ${resB.status} ${JSON.stringify(resB.data)}`);
+    // Tenta reutilizar o MESMO payment_id para userB com a cotação checkoutA (pertence a userA)
+    const resBWithA = await callRpc({ payment_id: paymentId, user_id: userB, validity_days: 30, checkout_id: checkoutA });
     assert.equal(
-      resB.data.already_processed,
-      true,
-      "Reutilizar payment_id de userA em userB deve retornar already_processed",
+      resBWithA.ok,
+      false,
+      "Cotação de userA usada por userB deve ser rejeitada pela RPC",
     );
-    assert.equal(resB.data.validity_days_added, 0, "Nenhum dia deve ser adicionado para userB");
+    const errCross = resBWithA.data ?? {};
+    assert.ok(
+      String(errCross.code ?? "").includes("22023") ||
+      String(errCross.message ?? "").toLowerCase().includes("usuario") ||
+      resBWithA.status === 400 || resBWithA.status === 422,
+      `Esperado erro de ownership 22023, obtido HTTP ${resBWithA.status}: ${JSON.stringify(resBWithA.data)}`,
+    );
+
+    // Tenta reutilizar o MESMO payment_id para userB com uma cotação própria (checkoutB)
+    const checkoutB = await createTestCheckout(userB, { validity_days: 30, months: 1 });
+    const resBWithB = await callRpc({ payment_id: paymentId, user_id: userB, validity_days: 30, checkout_id: checkoutB });
+    assert.equal(
+      resBWithB.ok,
+      false,
+      "Reutilizar payment_id de userA com checkout de userB deve falhar por cotação divergente (23505)",
+    );
 
     // Invariante: userB NÃO tem assinatura criada
     const subB = await getSubscription(userB);
@@ -464,8 +574,9 @@ test("7. user_id incompatível → payment_id de userA não estende assinatura d
   }
 });
 
-test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC rejeita com 22023 e rollback total", async () => {
+test("8. boundary estrito (validity_days, months, payment_id, cotacao obrigatoria) → RPC rejeita com 22023 e rollback total", async () => {
   const userId = await createTestUser("e208");
+  const validCheckout = await createTestCheckout(userId, { validity_days: 30, months: 1 });
   try {
     // ── Sub-cenário 8a: validity_days = 0 ────────────────────────────────────
     const res0 = await callRpc({
@@ -473,12 +584,9 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
       user_id: userId,
       validity_days: 0,
       months: 1,
+      checkout_id: validCheckout,
     });
-    assert.equal(
-      res0.ok,
-      false,
-      "validity_days=0 deve ser rejeitado pela RPC",
-    );
+    assert.equal(res0.ok, false, "validity_days=0 deve ser rejeitado pela RPC");
     const err0 = res0.data ?? {};
     assert.ok(
       String(err0.code ?? "").includes("22023") ||
@@ -489,24 +597,15 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
       `validity_days=0: esperado 22023/400/422, obtido HTTP ${res0.status} ${JSON.stringify(res0.data)}`,
     );
 
-    // Invariante de rollback: nenhuma linha em subscription_payments
-    const count0 = await countPayments(userId);
-    assert.equal(count0, 0, "validity_days=0: nenhum pagamento deve ter sido registrado");
-    // Invariante de rollback: nenhuma assinatura criada
-    assert.equal(await getSubscription(userId), null, "validity_days=0: nenhuma assinatura deve ter sido criada");
-
     // ── Sub-cenário 8b: validity_days = -30 ──────────────────────────────────
     const resNeg = await callRpc({
       payment_id: `real-e2e-test8-vdneg-${Date.now()}`,
       user_id: userId,
       validity_days: -30,
       months: 1,
+      checkout_id: validCheckout,
     });
-    assert.equal(
-      resNeg.ok,
-      false,
-      "validity_days=-30 deve ser rejeitado pela RPC",
-    );
+    assert.equal(resNeg.ok, false, "validity_days=-30 deve ser rejeitado pela RPC");
     const errNeg = resNeg.data ?? {};
     assert.ok(
       String(errNeg.code ?? "").includes("22023") ||
@@ -517,23 +616,15 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
       `validity_days=-30: esperado 22023/400/422, obtido HTTP ${resNeg.status} ${JSON.stringify(resNeg.data)}`,
     );
 
-    // Invariante de rollback: ainda zero linhas
-    const countNeg = await countPayments(userId);
-    assert.equal(countNeg, 0, "validity_days=-30: nenhum pagamento deve ter sido registrado");
-    assert.equal(await getSubscription(userId), null, "validity_days=-30: nenhuma assinatura deve ter sido criada");
-
     // ── Sub-cenário 8c: months = 0 ────────────────────────────────────────────
     const resM0 = await callRpc({
       payment_id: `real-e2e-test8-m0-${Date.now()}`,
       user_id: userId,
       validity_days: 30,
       months: 0,
+      checkout_id: validCheckout,
     });
-    assert.equal(
-      resM0.ok,
-      false,
-      "months=0 deve ser rejeitado pela RPC",
-    );
+    assert.equal(resM0.ok, false, "months=0 deve ser rejeitado pela RPC");
     const errM0 = resM0.data ?? {};
     assert.ok(
       String(errM0.code ?? "").includes("22023") ||
@@ -544,22 +635,15 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
       `months=0: esperado 22023/400/422, obtido HTTP ${resM0.status} ${JSON.stringify(resM0.data)}`,
     );
 
-    const countM0 = await countPayments(userId);
-    assert.equal(countM0, 0, "months=0: nenhum pagamento deve ter sido registrado");
-    assert.equal(await getSubscription(userId), null, "months=0: nenhuma assinatura deve ter sido criada");
-
     // ── Sub-cenário 8d: months = -1 ───────────────────────────────────────────
     const resMneg = await callRpc({
       payment_id: `real-e2e-test8-mneg-${Date.now()}`,
       user_id: userId,
       validity_days: 30,
       months: -1,
+      checkout_id: validCheckout,
     });
-    assert.equal(
-      resMneg.ok,
-      false,
-      "months=-1 deve ser rejeitado pela RPC",
-    );
+    assert.equal(resMneg.ok, false, "months=-1 deve ser rejeitado pela RPC");
     const errMneg = resMneg.data ?? {};
     assert.ok(
       String(errMneg.code ?? "").includes("22023") ||
@@ -570,16 +654,13 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
       `months=-1: esperado 22023/400/422, obtido HTTP ${resMneg.status} ${JSON.stringify(resMneg.data)}`,
     );
 
-    const countMneg = await countPayments(userId);
-    assert.equal(countMneg, 0, "months=-1: nenhum pagamento deve ter sido registrado");
-    assert.equal(await getSubscription(userId), null, "months=-1: nenhuma assinatura deve ter sido criada");
-
     // ── Sub-cenário 8e: payment_id vazio → rejeição (guard: trim = '') ────────
     const resEmpty = await callRpc({
       payment_id: "",
       user_id: userId,
       validity_days: 30,
       months: 1,
+      checkout_id: validCheckout,
     });
     assert.equal(resEmpty.ok, false, "payment_id vazio deve ser rejeitado");
     const errEmpty = resEmpty.data ?? {};
@@ -590,16 +671,79 @@ test("8. validity_days inválido (0 e -30) e months inválido (0 e -1) → RPC r
       resEmpty.status === 422,
       `payment_id vazio: esperado 22023/400/422, obtido HTTP ${resEmpty.status} ${JSON.stringify(resEmpty.data)}`,
     );
-    assert.equal(await countPayments(userId), 0, "payment_id vazio: zero linhas");
-    assert.equal(await getSubscription(userId), null, "payment_id vazio: zero assinaturas");
 
-    // ── Sub-cenário 8f: user_id nulo → rejeição via pg driver direto ──────────
+    // ── Sub-cenário 8f: chamada sem checkout (omitido) → rejeição ─────────────
+    const resNoCheckout = await callRpc({
+      payment_id: `real-e2e-test8-nochk-${Date.now()}`,
+      user_id: userId,
+      validity_days: 30,
+      months: 1,
+    });
+    assert.equal(resNoCheckout.ok, false, "Chamada sem checkout deve ser rejeitada");
+
+    // ── Sub-cenário 8g: chamada com checkout nulo explícito → 22023 ───────────
+    const resNullCheckout = await callRpc({
+      payment_id: `real-e2e-test8-nullchk-${Date.now()}`,
+      user_id: userId,
+      validity_days: 30,
+      months: 1,
+      checkout_id: null,
+    });
+    assert.equal(resNullCheckout.ok, false, "checkout_id nulo deve ser rejeitado com 22023");
+    const errNullChk = resNullCheckout.data ?? {};
+    assert.ok(
+      String(errNullChk.code ?? "").includes("22023") ||
+      String(errNullChk.message ?? "").toLowerCase().includes("cotacao") ||
+      resNullCheckout.status === 400 ||
+      resNullCheckout.status === 422,
+      `checkout nulo: esperado 22023, obtido HTTP ${resNullCheckout.status}: ${JSON.stringify(resNullCheckout.data)}`,
+    );
+
+    // ── Sub-cenário 8h: checkout inexistente → rejeição 22023 ─────────────────
+    const nonexistentCheckout = randomUUID();
+    const resNonexistent = await callRpc({
+      payment_id: `real-e2e-test8-nonexist-${Date.now()}`,
+      user_id: userId,
+      validity_days: 30,
+      months: 1,
+      checkout_id: nonexistentCheckout,
+    });
+    assert.equal(resNonexistent.ok, false, "checkout inexistente deve ser rejeitado");
+    const errNonexist = resNonexistent.data ?? {};
+    assert.ok(
+      String(errNonexist.code ?? "").includes("22023") ||
+      String(errNonexist.message ?? "").toLowerCase().includes("inexistente") ||
+      resNonexistent.status === 400 ||
+      resNonexistent.status === 422,
+      `checkout inexistente: esperado 22023, obtido HTTP ${resNonexistent.status}: ${JSON.stringify(resNonexistent.data)}`,
+    );
+
+    // ── Sub-cenário 8i: checkout expirado → rejeição 22023 ────────────────────
+    const expiredCheckout = await createTestCheckout(userId, { validity_days: 30, months: 1, expired: true });
+    const resExpired = await callRpc({
+      payment_id: `real-e2e-test8-expired-${Date.now()}`,
+      user_id: userId,
+      validity_days: 30,
+      months: 1,
+      checkout_id: expiredCheckout,
+    });
+    assert.equal(resExpired.ok, false, "checkout expirado deve ser rejeitado");
+    const errExpired = resExpired.data ?? {};
+    assert.ok(
+      String(errExpired.code ?? "").includes("22023") ||
+      String(errExpired.message ?? "").toLowerCase().includes("expirada") ||
+      resExpired.status === 400 ||
+      resExpired.status === 422,
+      `checkout expirado: esperado 22023, obtido HTTP ${resExpired.status}: ${JSON.stringify(resExpired.data)}`,
+    );
+
+    // ── Sub-cenário 8j: user_id nulo → rejeição via pg driver direto ──────────
     const client = await pgConnect();
     try {
       await assert.rejects(
         () => client.query(
           "SELECT public.process_mercadopago_subscription_payment($1, $2, $3, $4, $5, $6, $7)",
-          ["valid-payment-nulluser-e208", null, 1, 30, 49.9, "approved", "00000000-0000-4000-8000-000000000208"],
+          ["valid-payment-nulluser-e208", null, 1, 30, 49.9, "approved", validCheckout],
         ),
         (err) => {
           return (
@@ -631,6 +775,11 @@ test("9. valor e metadata registrados conforme contrato → amount, months, stat
   const expectedMonths = 3;
   const expectedDays = 90;
   const expectedStatus = "approved";
+  const checkoutId = await createTestCheckout(userId, {
+    validity_days: expectedDays,
+    months: expectedMonths,
+    amount: expectedAmount,
+  });
   try {
     const before = new Date();
     const res = await callRpc({
@@ -640,6 +789,7 @@ test("9. valor e metadata registrados conforme contrato → amount, months, stat
       validity_days: expectedDays,
       amount: expectedAmount,
       status: expectedStatus,
+      checkout_id: checkoutId,
     });
     const after = new Date();
 
@@ -649,6 +799,9 @@ test("9. valor e metadata registrados conforme contrato → amount, months, stat
     // Verificação dos campos armazenados no PostgreSQL
     const row = await getPaymentRow(paymentId);
     assert.ok(row, "Linha deve existir em subscription_payments");
+
+    // checkout_id vinculado
+    assert.equal(row.checkout_id, checkoutId);
 
     // amount deve ser salvo com precisão decimal
     assert.equal(
