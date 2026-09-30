@@ -15,10 +15,14 @@ import {
 import {
   LEGACY_IPN_DISABLED_CODE,
   LEGACY_IPN_DISABLED_PUBLIC_ERROR,
-  getMercadoPagoAccessToken,
-  getMercadoPagoApiUrl,
   isLegacyIpnEnabled,
 } from "@/lib/mercadopago/config";
+import {
+  MercadoPagoTimeoutError,
+  fetchMercadoPago,
+  getTimeoutForOperation,
+  sanitizedMercadoPagoLogContext,
+} from "@/lib/mercadopago/http";
 import {
   completeSubscriptionCheckout,
   getValidityDays,
@@ -316,22 +320,38 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
   const releaseCooldown = () => releaseOwnLocks();
 
   try {
+    // MAI-144: GET idempotente com deadline explícito. Timeout/queda => 504/502
+    // retentável (o provedor retenta) SEM conceder Pro e SEM tocar o ledger.
+    // Erro definitivo (400/401/403/404/422) => 200 ignored, sem retry.
+    const ipnTimeoutMs = getTimeoutForOperation("payments.get");
     let paymentResponse: Response;
     try {
-      paymentResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/${encodeURIComponent(paymentId)}`, {
-        headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
+      paymentResponse = await fetchMercadoPago(`/v1/payments/${encodeURIComponent(paymentId)}`, {
+        operation: "payments.get",
+        timeoutMs: ipnTimeoutMs,
+        method: "GET",
       });
     } catch (networkErr) {
       await releaseCooldown();
+      const isTimeout = networkErr instanceof MercadoPagoTimeoutError;
       captureWebhookError(networkErr, {
         route: IPN_ROUTE,
         paymentId,
-        httpStatus: 502,
+        httpStatus: isTimeout ? 504 : 502,
         extra: {
-          failure_kind: "mercadopago_network",
+          retryable: true,
+          ...sanitizedMercadoPagoLogContext({
+            operation: "payments.get",
+            timeoutMs: ipnTimeoutMs,
+            paymentId,
+            failureKind: isTimeout ? "mercadopago_timeout" : "mercadopago_network",
+          }),
         },
       });
-      return Response.json({ error: "Falha temporaria de conexao com a API do Mercado Pago" }, { status: 502 });
+      return Response.json(
+        { error: isTimeout ? "Tempo esgotado na consulta a API do Mercado Pago" : "Falha temporaria de conexao com a API do Mercado Pago" },
+        { status: isTimeout ? 504 : 502 },
+      );
     }
 
     if (paymentResponse.status >= 500) {
