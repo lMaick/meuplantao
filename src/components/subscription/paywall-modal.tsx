@@ -104,7 +104,7 @@ export function PaywallModal({ open, onClose }: PaywallModalProps) {
             "Controle ilimitado de plantões, locais e contatos",
             "Alertas automáticos de atrasos e conciliação",
             "Extratos detalhados e exportação em CSV",
-            "Sem fidelidade — cancele quando quiser",
+            "Compra pré-paga — acesso por período fixo, sem renovação automática",
           ].map((benefit) => (
             <li key={benefit} className="flex items-start gap-2.5">
               <CheckCircle2 className="mt-0.5 size-4.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
@@ -131,7 +131,7 @@ export function PaywallModal({ open, onClose }: PaywallModalProps) {
             Continuar em modo leitura
           </Button>
           <p className="text-center text-xs text-muted-foreground">
-            PIX ou Cartão • Garantia de 7 dias ou seu dinheiro de volta
+            PIX ou Cartão • Acesso por período fixo. Sem renovação automática. Sem cobranças recorrentes.
           </p>
         </div>
       </div>
