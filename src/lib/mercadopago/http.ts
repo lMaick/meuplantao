@@ -143,9 +143,6 @@ function buildTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cleanup: 
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`Mercado Pago timeout after ${timeoutMs}ms`)), timeoutMs);
-  if (typeof timer === "object" && typeof (timer as unknown as { unref?: unknown }).unref === "function") {
-    (timer as unknown as { unref: () => void }).unref();
-  }
   return { signal: controller.signal, cleanup: () => clearTimeout(timer) };
 }
 
