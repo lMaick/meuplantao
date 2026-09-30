@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { registerHooks } from "node:module";
 import path from "node:path";
 import test, { describe, beforeEach } from "node:test";
@@ -25,6 +26,11 @@ registerHooks({
       const parentDir = path.dirname(fileURLToPath(context.parentURL));
       const target = path.join(parentDir, specifier.endsWith(".ts") ? specifier : `${specifier}.ts`);
       return { url: pathToFileURL(target).href, shortCircuit: true };
+    }
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && context.parentURL && !/\.(?:ts|tsx|js|mjs|json)$/.test(specifier)) {
+      const resolved = new URL(specifier, context.parentURL);
+      const typescriptModule = new URL(`${resolved.href}.ts`);
+      if (existsSync(typescriptModule)) return nextResolve(typescriptModule.href, context);
     }
     return nextResolve(specifier, context);
   },
