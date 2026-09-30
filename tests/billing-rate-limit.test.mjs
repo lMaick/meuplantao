@@ -77,6 +77,19 @@ const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts
 
 const USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const USER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const CHECKOUT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+function validApprovedPayment(userId, paymentId = "mp-valid-payment") {
+  globalThis.__mockPaymentUserId = userId;
+  return {
+    id: paymentId,
+    status: "approved",
+    external_reference: `${userId}#1#${CHECKOUT_ID}`,
+    currency_id: "BRL",
+    transaction_amount: 12.9,
+    metadata: { user_id: userId, months: 1, checkout_id: CHECKOUT_ID },
+  };
+}
 
 // Prova de persistência simulada: payment ids já gravados em subscription_payments.
 const processedPayments = new Set();
@@ -115,10 +128,31 @@ function approvedPaymentRpc() {
                 ? { data: { mercadopago_payment_id: String(val) }, error: null }
                 : { data: null, error: null };
             }
+            if (table === "subscription_checkouts") {
+              return {
+                data: {
+                  id: CHECKOUT_ID,
+                  user_id: globalThis.__mockPaymentUserId || USER_A,
+                  plan_id: "meuplantao-pro-1",
+                  months: 1,
+                  validity_days: 30,
+                  amount: 12.9,
+                  amount_cents: 1290,
+                  currency: "BRL",
+                  status: "pending",
+                  completed_payment_id: null,
+                  expires_at: new Date(Date.now() + 86400000).toISOString(),
+                  catalog_version: "2026-v1",
+                },
+                error: null,
+              };
+            }
             return { data: { status: "active", current_period_end: futureEnd }, error: null };
           },
         }),
       }),
+      update: () => ({ eq: () => ({ error: null }) }),
+      insert: async () => ({ error: null }),
     }),
   };
   return futureEnd;
@@ -127,7 +161,7 @@ function approvedPaymentRpc() {
 function mockMpApproved(externalReference, counter) {
   globalThis.fetch = async (url) => {
     counter.calls.push(String(url));
-    return new Response(JSON.stringify({ status: "approved", external_reference: externalReference }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(externalReference)), { status: 200 });
   };
 }
 
@@ -181,7 +215,7 @@ test("1. IPN: rajada por IP recebe 429 com Retry-After e não gera fetch além d
   approvedPaymentRpc();
   globalThis.fetch = async (url) => {
     counter.calls.push(String(url));
-    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(USER_A, "race-concurrent-1")), { status: 200 });
   };
 
   const total = BILLING_LIMITS.ipnIp.limit + 5;
@@ -323,7 +357,7 @@ test("6. colapso: stores distribuídos fora => 503 + Retry-After com zero fetch 
   const counter = { calls: [] };
   globalThis.fetch = async (url) => {
     counter.calls.push(String(url));
-    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(USER_A, "race-ipn-1")), { status: 200 });
   };
   try {
     authenticatedAs(USER_A);
@@ -493,7 +527,7 @@ test("10. webhook: retry legítimo após 502 upstream volta a consultar e proces
   globalThis.fetch = async () => {
     attempt++;
     if (attempt === 1) return new Response(JSON.stringify({ message: "Upstream down" }), { status: 503 });
-    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(USER_A, "race-failrelease-1")), { status: 200 });
   };
 
   const body = JSON.stringify({ type: "payment", data: { id: "retry-legit-1" } });
