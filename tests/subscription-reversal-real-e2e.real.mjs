@@ -15,6 +15,7 @@
  */
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
 if (process.env.RUN_REAL_E2E !== "1") {
@@ -144,6 +145,26 @@ async function countEvents(paymentId) {
   return rows[0].n;
 }
 
+/** Cria uma cotação válida de teste em subscription_checkouts para suportar a RPC de 7 args. */
+async function createTestCheckout(userId, opts = {}) {
+  const checkoutId = opts.id ?? randomUUID();
+  const months = opts.months ?? 1;
+  const validityDays = opts.validity_days ?? 30;
+  const amount = opts.amount ?? 12.9;
+  const amountCents = Math.round(amount * 100);
+  const status = opts.status ?? "pending";
+  const planId = opts.plan_id ?? `pro-${months}m`;
+
+  const rows = await pgQuery(
+    `INSERT INTO public.subscription_checkouts (
+       id, user_id, plan_id, months, validity_days, amount, amount_cents, currency, catalog_version, status, expires_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'BRL', '2026-v1', $8, now() + interval '3 days')
+     RETURNING id`,
+    [checkoutId, userId, planId, months, validityDays, amount, amountCents, status]
+  );
+  return rows[0].id;
+}
+
 async function cleanupUser(...userIds) {
   for (const userId of userIds) {
     try {
@@ -156,9 +177,10 @@ async function cleanupUser(...userIds) {
 
 test("1. aprovado → reembolsado: vigencia revogada, ledger preservado com historico", async () => {
   const userId = await createTestUser("r101");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, amount: 12.9 });
   const paymentId = `real-rev-test1-${Date.now()}`;
   try {
-    const approved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    const approved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(approved.ok, `aprovado falhou: HTTP ${approved.status} ${JSON.stringify(approved.data)}`);
     assert.equal(approved.data.already_processed, false);
 
@@ -199,9 +221,10 @@ test("1. aprovado → reembolsado: vigencia revogada, ledger preservado com hist
 
 test("2. evento de estorno duplicado e idempotente (sem dupla subtracao)", async () => {
   const userId = await createTestUser("r102");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, amount: 12.9 });
   const paymentId = `real-rev-test2-${Date.now()}`;
   try {
-    const approved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    const approved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(approved.ok);
 
     const rev1 = await callReversal({ payment_id: paymentId, user_id: userId, reversal_status: "charged_back" });
@@ -230,6 +253,7 @@ test("2. evento de estorno duplicado e idempotente (sem dupla subtracao)", async
 
 test("3. fora de ordem: estorno antes do aprovado nao concede vigencia posterior", async () => {
   const userId = await createTestUser("r103");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, amount: 12.9 });
   const paymentId = `real-rev-test3-${Date.now()}`;
   try {
     // Estorno chega primeiro (pagamento desconhecido): cria stub revertido.
@@ -238,7 +262,7 @@ test("3. fora de ordem: estorno antes do aprovado nao concede vigencia posterior
     assert.equal(revFirst.data.not_found, true);
 
     // Evento approved antigo chega depois: nao pode conceder vigencia.
-    const lateApproved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    const lateApproved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(lateApproved.ok);
     assert.equal(lateApproved.data.already_processed, true, "approved tardio nao deve processar novamente");
     assert.equal(lateApproved.data.validity_days_added, 0);
@@ -255,12 +279,14 @@ test("3. fora de ordem: estorno antes do aprovado nao concede vigencia posterior
 
 test("4. dois pagamentos com um estornado: preserva o periodo do pagamento saudavel", async () => {
   const userId = await createTestUser("r104");
+  const checkoutA = await createTestCheckout(userId, { validity_days: 30, amount: 12.9 });
+  const checkoutB = await createTestCheckout(userId, { validity_days: 90, months: 3, amount: 38.7 });
   const paymentA = `real-rev-test4-A-${Date.now()}`;
   const paymentB = `real-rev-test4-B-${Date.now()}`;
   try {
-    const resA = await callProcess({ payment_id: paymentA, user_id: userId, validity_days: 30 });
+    const resA = await callProcess({ payment_id: paymentA, user_id: userId, validity_days: 30, checkout_id: checkoutA });
     assert.ok(resA.ok);
-    const resB = await callProcess({ payment_id: paymentB, user_id: userId, validity_days: 90 });
+    const resB = await callProcess({ payment_id: paymentB, user_id: userId, validity_days: 90, months: 3, amount: 38.7, checkout_id: checkoutB });
     assert.ok(resB.ok);
 
     const revA = await callReversal({ payment_id: paymentA, user_id: userId, reversal_status: "refunded" });
@@ -296,9 +322,10 @@ test("5. chargeback de usuario distinto nao altera entitlement (ownership)", asy
      ON CONFLICT (id) DO NOTHING`,
     [userBAlt, "sub-rev-e2e-r105b@test.local"],
   );
+  const checkoutA = await createTestCheckout(userA, { validity_days: 30, amount: 12.9 });
   const paymentId = `real-rev-test5-${Date.now()}`;
   try {
-    const approved = await callProcess({ payment_id: paymentId, user_id: userA, validity_days: 30 });
+    const approved = await callProcess({ payment_id: paymentId, user_id: userA, validity_days: 30, checkout_id: checkoutA });
     assert.ok(approved.ok);
 
     const cross = await callReversal({ payment_id: paymentId, user_id: userBAlt, reversal_status: "refunded" });
@@ -320,6 +347,7 @@ test("5. chargeback de usuario distinto nao altera entitlement (ownership)", asy
 
 test("6. MAI-147: estorno preserva lastro legitimo anterior sem modelo no ledger (piso decremental)", async () => {
   const userId = await createTestUser("r106");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, amount: 12.9 });
   const paymentId = `real-rev-test6-${Date.now()}`;
   try {
     // Lastro legítimo anterior (trial convertido/legado): vigência futura sem linha no ledger.
@@ -331,7 +359,7 @@ test("6. MAI-147: estorno preserva lastro legitimo anterior sem modelo no ledger
       [userId, legacyEnd],
     );
 
-    const approved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30 });
+    const approved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(approved.ok);
 
     const rev = await callReversal({ payment_id: paymentId, user_id: userId, reversal_status: "refunded" });
