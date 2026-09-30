@@ -20,7 +20,7 @@ export function getApplicationOrigin(requestUrl: string): string {
   // MAI-139: delega ao helper canônico seguro. Em produção a origem da
   // request é ignorada (anti Host Header Poisoning); em dev local com
   // localhost ela é permitida apenas como fallback sem config manual.
-  return getCanonicalOrigin(requestUrl);
+  return getCanonicalOrigin(requestUrl, { requireConfig: isProductionEnvironment() });
 }
 
 export function getMercadoPagoApiUrl(): string {

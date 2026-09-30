@@ -5,7 +5,7 @@ import { FormEvent, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { getCanonicalOrigin, isProductionEnvironment } from "@/lib/config/site-url";
+import { getClientOrigin } from "@/lib/config/site-url";
 
 function EsqueciSenhaContent() {
   const searchParams = useSearchParams();
@@ -21,9 +21,9 @@ function EsqueciSenhaContent() {
 
     try {
       const supabase = createClient();
-      // MAI-139: em produção o redirect de recuperação usa a origem
-      // canônica configurada; fora de produção usa a origem do navegador.
-      const origin = isProductionEnvironment() ? getCanonicalOrigin() : window.location.origin;
+      // MAI-139: no client component usa getClientOrigin(), que preserva
+      // window.location.origin em Vercel Previews no navegador.
+      const origin = getClientOrigin();
       const redirectTo = `${origin}/auth/callback?next=/redefinir-senha`;
       await supabase.auth.resetPasswordForEmail(email, { redirectTo });
     } catch {

@@ -83,14 +83,23 @@ function hasManualConfig(): boolean {
   return Boolean(site || app);
 }
 
+function isBuildPhase(): boolean {
+  return (
+    process.env.NEXT_PHASE === "phase-production-build" ||
+    process.env.npm_lifecycle_event === "build" ||
+    Boolean(process.env.NEXT_BUILD)
+  );
+}
+
 /**
  * Resolução hierárquica da URL canônica:
  * a) NEXT_PUBLIC_SITE_URL (preferencial)
  * b) NEXT_PUBLIC_APP_URL (retrocompatível; warn se divergir de SITE_URL)
  * c) VERCEL_PROJECT_PRODUCTION_URL / VERCEL_URL (prefixando https://)
- * d) fallback padrão https://meuplantao.pro
+ * d) em produção: fail-closed se não houver configuração crítica
+ * e) fallback padrão https://meuplantao.pro em dev/testes ou build estático offline
  */
-export function getSiteUrl(): string {
+export function getSiteUrl(options?: { requireConfig?: boolean }): string {
   const { site, app } = readManualSiteUrl();
 
   if (site) {
@@ -117,7 +126,39 @@ export function getSiteUrl(): string {
   const vercel = readVercelFallback();
   if (vercel) return normalizeSiteUrl(vercel);
 
+  // MAI-139: Fail-closed em produção se não houver nenhuma configuração de URL crítica.
+  // Permite fallback apenas fora de produção ou durante compilação offline de assets (build phase).
+  const mustRequire = options?.requireConfig ?? (isProductionEnvironment() && !isBuildPhase());
+  if (mustRequire) {
+    throw new Error(
+      "Configuração ausente: URL pública do MeuPlantão não configurada em ambiente de produção (defina NEXT_PUBLIC_SITE_URL)",
+    );
+  }
+
   return DEFAULT_SITE_URL;
+}
+
+/**
+ * Origem segura para Client Components no navegador.
+ * No browser (`typeof window !== "undefined"`), preserva a origem real
+ * da navegação (`window.location.origin`), garantindo suporte perfeito
+ * a previews da Vercel (onde variáveis de ambiente sem NEXT_PUBLIC_
+ * não são expostas ao cliente e NODE_ENV é "production").
+ * No SSR / servidor, delega para `getCanonicalOrigin()`.
+ */
+export function getClientOrigin(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    try {
+      const origin = window.location.origin.trim().replace(/\/+$/, "");
+      const parsed = new URL(origin);
+      if (["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password) {
+        return parsed.origin;
+      }
+    } catch {
+      // fallback para getCanonicalOrigin se window.location for inválido
+    }
+  }
+  return getCanonicalOrigin();
 }
 
 /**
@@ -127,8 +168,8 @@ export function getSiteUrl(): string {
  * - Fora de produção: se não houver configuração manual e `requestUrl`
  *   for localhost (dev local), permite a origem da request para testes.
  */
-export function getCanonicalOrigin(requestUrl?: string): string {
-  const canonical = getSiteUrl();
+export function getCanonicalOrigin(requestUrl?: string, options?: { requireConfig?: boolean }): string {
+  const canonical = getSiteUrl(options);
 
   if (!requestUrl) return canonical;
 
