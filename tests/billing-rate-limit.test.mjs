@@ -23,6 +23,7 @@ const __rlPaymentsUrl = fileUrl("src/lib/mercadopago/payments.ts");
 const __rlWebhookUrl = fileUrl("src/lib/mercadopago/webhook.ts");
 const __rlObservabilityUrl = fileUrl("src/lib/observability/index.ts");
 const __rlRateLimitUrl = fileUrl("src/lib/billing/rate-limit.ts");
+const __rlReversalsUrl = fileUrl("src/lib/mercadopago/reversals.ts");
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -31,6 +32,7 @@ registerHooks({
     if (specifier === "@/lib/subscription/trial") return { url: __rlTrialUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: __rlPaymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: __rlWebhookUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/reversals") return { url: __rlReversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/billing/rate-limit") return { url: __rlRateLimitUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
