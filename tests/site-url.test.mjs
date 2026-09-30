@@ -24,6 +24,7 @@ registerHooks({
 import {
   DEFAULT_SITE_URL,
   getCanonicalOrigin,
+  getClientOrigin,
   getSiteUrl,
   normalizeSiteUrl,
 } from "../src/lib/config/site-url.ts";
@@ -107,14 +108,22 @@ test("MAI-139: SITE_URL preferencial sobre APP_URL com warn de divergência", ()
   }
 });
 
-test("MAI-139: fallback padrão sem variáveis", () => {
+test("MAI-139: fallback padrão em dev/teste e fail-closed em produção sem config", () => {
   const snap = snapshotEnv();
   try {
     clearSiteEnv();
-    process.env.NODE_ENV = "production";
+    // Fora de produção: fallback padrão DEFAULT_SITE_URL
+    process.env.NODE_ENV = "development";
     delete process.env.VERCEL_ENV;
     assert.equal(DEFAULT_SITE_URL, "https://meuplantao.pro");
     assert.equal(getSiteUrl(), "https://meuplantao.pro");
+
+    // Em produção sem nenhuma configuração crítica: FAIL-CLOSED explícito
+    process.env.NODE_ENV = "production";
+    assert.throws(
+      () => getSiteUrl(),
+      /Configuração ausente: URL pública do MeuPlantão não configurada em ambiente de produção/,
+    );
   } finally {
     restoreEnv(snap);
   }
@@ -186,9 +195,16 @@ test("MAI-139: Host Header Injection bloqueado em produção (checkout/auth)", (
     const evil = "https://evil-attacker.example.com/checkout?x=1";
     assert.equal(getCanonicalOrigin(evil), "https://meuplantao.pro");
     assert.equal(getApplicationOrigin(evil), "https://meuplantao.pro");
-    // Sem config manual, produção cai no default e ignora request host.
+    // Sem config manual em produção: fail-closed imediato (não usa default silencioso)
     clearSiteEnv();
-    assert.equal(getApplicationOrigin("https://evil.example.com/"), "https://meuplantao.pro");
+    assert.throws(
+      () => getApplicationOrigin("https://evil.example.com/"),
+      /Configuração ausente/,
+    );
+    assert.throws(
+      () => getCanonicalOrigin("https://evil.example.com/"),
+      /Configuração ausente/,
+    );
   } finally {
     restoreEnv(snap);
   }
@@ -266,3 +282,29 @@ test("MAI-139: SEO e Mercado Pago usam a mesma fonte canônica", () => {
     restoreEnv(snap);
   }
 });
+
+test("MAI-139: getClientOrigin preserva preview no navegador e usa canonical no servidor", () => {
+  const snap = snapshotEnv();
+  const originalWindow = globalThis.window;
+  try {
+    clearSiteEnv();
+    process.env.NODE_ENV = "production";
+    process.env.NEXT_PUBLIC_SITE_URL = "https://meuplantao.pro";
+
+    // 1. No servidor (sem window): usa canonical
+    delete globalThis.window;
+    assert.equal(getClientOrigin(), "https://meuplantao.pro");
+
+    // 2. No navegador em preview: usa window.location.origin do preview
+    globalThis.window = {
+      location: {
+        origin: "https://meuplantao-git-feat-preview.vercel.app",
+      },
+    };
+    assert.equal(getClientOrigin(), "https://meuplantao-git-feat-preview.vercel.app");
+  } finally {
+    globalThis.window = originalWindow;
+    restoreEnv(snap);
+  }
+});
+
