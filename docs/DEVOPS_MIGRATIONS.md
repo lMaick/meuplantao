@@ -72,7 +72,7 @@ Se qualquer uma dessas funções estiver ausente ou possuir assinatura incompat�
 ### Modo Automático (Recomendado via GitHub Actions)
 Ao realizar o merge de um PR na branch `main`, o workflow `.github/workflows/deploy-production.yml` é disparado automaticamente:
 1. Conecta ao banco via `PRODUCTION_DATABASE_URL` (ou project link do Supabase CLI).
-2. Executa `supabase db push`, aplicando todas as migrations pendentes de forma sequencial e idempotente.
+2. Executa `supabase db push --include-all`, aplicando todas as migrations pendentes de forma sequencial e idempotente, incluindo migrations originadas em feature branches paralelas cujo timestamp seja anterior ao topo atual.
 3. Executa o smoke test das RPCs críticas.
 4. Caso ocorra qualquer erro de migration, o workflow falha imediatamente e bloqueia a release.
 
@@ -82,8 +82,8 @@ Caso seja necessário aplicar migrations manualmente a partir de uma máquina au
 # 1. Definir a URL direta do banco de produção (Session Pooler ou conexão direta)
 export PRODUCTION_DATABASE_URL="postgresql://postgres:[SENHA]@[HOST]:5432/postgres"
 
-# 2. Executar o db push oficial da Supabase CLI
-npx supabase db push --db-url "$PRODUCTION_DATABASE_URL"
+# 2. Executar o db push oficial da Supabase CLI (com --include-all para histórico consistente)
+npx supabase db push --include-all --db-url "$PRODUCTION_DATABASE_URL"
 
 # 3. Executar o smoke test de validação
 DATABASE_URL="$PRODUCTION_DATABASE_URL" npm run db:smoke
