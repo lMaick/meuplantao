@@ -443,6 +443,40 @@ test("3b. Webhook 408 transitório responde 502 (nunca 200) e o retry processa s
   assert.equal(ledger.length, 1, "pagamento registrado exatamente 1 vez após o retry");
 });
 
+test("3c. Webhook com RPC do banco lenta responde 502 retryable SEM conceder Pro", async () => {
+  globalThis.__mockWebhookSecret = null;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        status: "approved",
+        external_reference: validUserId,
+        currency_id: "BRL",
+        transaction_amount: 12.9,
+        preference_id: "pref-timeout-1",
+      }),
+      { status: 200 },
+    );
+
+  const base = checkoutLookupAdmin();
+  globalThis.adminClient = {
+    ...base,
+    // Banco lento: a RPC nunca responde; o deadline estoura primeiro.
+    rpc: () => new Promise(() => {}),
+  };
+
+  const request = new Request("http://localhost/api/webhooks/mercadopago", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: { id: "payment-rpc-slow" }, type: "payment" }),
+  });
+  const started = Date.now();
+  const response = await webhookPost(request);
+  assert.equal(response.status, 502, "timeout da RPC deve responder 502 para o provedor retentar");
+  const json = await response.json();
+  assert.equal(json.retryable, true, "payload sinaliza retryable:true");
+  assert.ok(Date.now() - started < 5000, "deadline da RPC estoura rápido");
+});
+
 test("4. Checkout diferencia transitório (502/429 retentável) de definitivo (422 claro)", async () => {
   globalThis.authenticatedClient = {
     auth: { getUser: async () => ({ data: { user: { id: validUserId, email: "user@example.com" } }, error: null }) },
@@ -471,6 +505,7 @@ test("4. Checkout diferencia transitório (502/429 retentável) de definitivo (4
   const jsonDefinitive = await resDefinitive.json();
   assert.match(jsonDefinitive.error, /rejeitou/i);
   assert.equal(jsonDefinitive.retryable, false, "payload definitivo sinaliza retryable:false");
+  assert.equal(jsonDefinitive.status, "checkout_failed", "payload definitivo inclui status checkout_failed");
 });
 
 test("4b. IPN 408/425 transitório responde 502 (nunca 200) e preserva o retry", async () => {

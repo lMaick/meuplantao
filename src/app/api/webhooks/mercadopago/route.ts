@@ -15,6 +15,7 @@ import {
 import { getWebhookSetupState } from "@/lib/mercadopago/config";
 import {
   MercadoPagoTimeoutError,
+  SupabaseRpcTimeoutError,
   fetchMercadoPago,
   getTimeoutForOperation,
   isTransientMercadoPagoStatus,
@@ -590,6 +591,25 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
     );
   } catch (error) {
     await releaseCooldown();
+    // MAI-144 (auditoria): deadline da RPC do Supabase estourado é transitório
+    // — 502 retentável com locks liberados para o retry do provedor; o retry é
+    // seguro pela idempotência da RPC (claim único por payment_id).
+    if (error instanceof SupabaseRpcTimeoutError) {
+      captureWebhookError(error, {
+        route: "/api/webhooks/mercadopago",
+        paymentId,
+        httpStatus: 502,
+        extra: {
+          retryable: true,
+          failure_kind: "supabase_rpc_timeout",
+          rpc_name: error.rpcName,
+        },
+      });
+      return Response.json(
+        { error: "Tempo esgotado no processamento. Tente novamente.", retryable: true },
+        { status: 502 },
+      );
+    }
     captureWebhookError(error, {
       route: "/api/webhooks/mercadopago",
       paymentId,
