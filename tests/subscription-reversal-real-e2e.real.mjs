@@ -104,6 +104,7 @@ function fixtureUUID(suffix) {
     "r101": "000000000101",
     "r102": "000000000102",
     "r103": "000000000103",
+    "r103b": "00000000103b",
     "r104": "000000000104",
     "r105": "000000000105",
     "r106": "000000000106",
@@ -253,7 +254,9 @@ test("2. evento de estorno duplicado e idempotente (sem dupla subtracao)", async
 
 test("3. fora de ordem: estorno antes do aprovado nao concede vigencia posterior", async () => {
   const userId = await createTestUser("r103");
+  const userB = await createTestUser("r103b");
   const checkoutId = await createTestCheckout(userId, { validity_days: 30, amount: 12.9 });
+  const checkoutB = await createTestCheckout(userB, { validity_days: 30, amount: 12.9 });
   const paymentId = `real-rev-test3-${Date.now()}`;
   try {
     // Estorno chega primeiro (pagamento desconhecido): cria stub revertido.
@@ -261,7 +264,18 @@ test("3. fora de ordem: estorno antes do aprovado nao concede vigencia posterior
     assert.ok(revFirst.ok, `estorno fora de ordem falhou: HTTP ${revFirst.status}`);
     assert.equal(revFirst.data.not_found, true);
 
-    // Evento approved antigo chega depois: nao pode conceder vigencia.
+    // Tentativa cross-user: userB tenta chamar process no stub pertencente a userId -> rejeitado com 22023 por ownership
+    const crossProcess = await callProcess({ payment_id: paymentId, user_id: userB, validity_days: 30, checkout_id: checkoutB });
+    assert.equal(crossProcess.ok, false, "Chamada com usuario divergente para stub existente deve falhar");
+    const errCross = crossProcess.data ?? {};
+    assert.ok(
+      String(errCross.code ?? "").includes("22023") ||
+      String(errCross.message ?? "").toLowerCase().includes("usuario"),
+      `Esperado erro 22023 por ownership divergente, obtido: ${JSON.stringify(crossProcess.data)}`,
+    );
+    assert.ok(crossProcess.status === 400 || crossProcess.status === 422);
+
+    // Evento approved antigo de userId chega depois: nao pode conceder vigencia.
     const lateApproved = await callProcess({ payment_id: paymentId, user_id: userId, validity_days: 30, checkout_id: checkoutId });
     assert.ok(lateApproved.ok);
     assert.equal(lateApproved.data.already_processed, true, "approved tardio nao deve processar novamente");
@@ -273,7 +287,7 @@ test("3. fora de ordem: estorno antes do aprovado nao concede vigencia posterior
     const sub = await getSubscription(userId);
     assert.equal(sub, null, "nenhuma vigencia deve ser concedida fora de ordem");
   } finally {
-    await cleanupUser(userId);
+    await cleanupUser(userId, userB);
   }
 });
 

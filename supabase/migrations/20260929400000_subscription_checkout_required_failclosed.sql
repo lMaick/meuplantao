@@ -53,6 +53,7 @@ declare
   v_now timestamptz := now();
   v_checkout public.subscription_checkouts;
   v_existing_checkout_id uuid;
+  v_existing_user_id uuid;
 begin
   -- 1. Validacoes de entrada (boundary estrito — fail-closed)
   if v_pid is null then
@@ -129,9 +130,16 @@ begin
     -- ja registrado esta vinculado a uma unica cotacao. Reenviar o mesmo
     -- payment ID com outro checkout_id deve falhar em vez de marcar um
     -- segundo checkout como concluido.
-    select checkout_id into v_existing_checkout_id
+    select checkout_id, user_id into v_existing_checkout_id, v_existing_user_id
       from public.subscription_payments
      where mercadopago_payment_id = v_pid;
+
+    -- Validacao de ownership (MAI-147 auditoria): um pagamento ja registrado para userA
+    -- nao pode ser consumido, vinculado ou estendido por userB.
+    if v_existing_user_id is distinct from p_user_id then
+      raise exception using errcode = '22023',
+        message = 'Pagamento pertence a outro usuario';
+    end if;
 
     if v_existing_checkout_id is not null and v_existing_checkout_id <> p_checkout_id then
       raise exception using errcode = '23505',
