@@ -32,6 +32,9 @@ export function normalizeSiteUrl(raw: string): string {
   const trimmed = (raw ?? "").trim().replace(/\/+$/, "");
   if (!trimmed) throw new Error("URL canônica vazia");
   if (/[@?#]$/.test(trimmed)) throw new Error("URL canônica inválida");
+  // MAI-139 (auditoria): qualquer "@" indica userinfo vazio ou embutido
+  // (ex.: "https://@example.com"); origem canônica nunca contém "@".
+  if (trimmed.includes("@")) throw new Error("URL canônica inválida");
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
