@@ -12,6 +12,7 @@ const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib
 const paymentsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
 const reversalsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const webhookModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
+const httpModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "http.ts")).href;
 const observabilityModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
@@ -52,6 +53,12 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/webhook") {
       return {
         url: webhookModuleUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/http") {
+      return {
+        url: httpModuleUrl,
         shortCircuit: true,
       };
     }

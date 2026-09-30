@@ -24,6 +24,7 @@ const __rlWebhookUrl = fileUrl("src/lib/mercadopago/webhook.ts");
 const __rlObservabilityUrl = fileUrl("src/lib/observability/index.ts");
 const __rlRateLimitUrl = fileUrl("src/lib/billing/rate-limit.ts");
 const __rlReversalsUrl = fileUrl("src/lib/mercadopago/reversals.ts");
+const __rlHttpUrl = fileUrl("src/lib/mercadopago/http.ts");
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -33,6 +34,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: __rlPaymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: __rlWebhookUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/reversals") return { url: __rlReversalsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: __rlHttpUrl, shortCircuit: true };
     if (specifier === "@/lib/billing/rate-limit") return { url: __rlRateLimitUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
@@ -518,7 +520,9 @@ test("9. checkout: 2º POST imediato é 429; falha upstream libera retry imediat
     );
   };
   const f1 = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
-  assert.equal(f1.status, 500);
+  // MAI-144: falha de rede/timeout no POST responde 504 retentável (sem retry
+  // automático de POST não idempotente) e libera o cooldown.
+  assert.equal(f1.status, 504);
   const f2 = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
   assert.equal(f2.status, 200);
   assert.deepEqual(await f2.json(), { init_point: "https://www.mercadopago.com/checkout/retry" });
@@ -669,6 +673,43 @@ test("15. upstash: hit usa EVAL atômico em chamada única, com TTL garantido", 
 
     globalThis.fetch = async () => new Response("upstream down", { status: 500 });
     await assert.rejects(() => store.hit("billing:test:atomic", 60_000), /Upstash eval failed/);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 15b. MAI-144: Upstash lento estoura o deadline sem travar a rota
+// ---------------------------------------------------------------------------
+
+test("15b. upstash: hit com Redis lento rejeita no deadline (AbortSignal.timeout)", async () => {
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = (_url, opts) =>
+    new Promise((_resolve, reject) => {
+      const signal = opts?.signal;
+      const latency = setTimeout(() => {
+        reject(new DOMException("Mock upstash excedeu a latência simulada", "AbortError"));
+      }, 2000);
+      const abortErr = () => {
+        clearTimeout(latency);
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      };
+      if (!signal) return;
+      if (signal.aborted) {
+        abortErr();
+        return;
+      }
+      signal.addEventListener("abort", abortErr, { once: true });
+    });
+  try {
+    const store = new UpstashRateLimitStore("https://mock.upstash.io", "tok", 50);
+    const started = Date.now();
+    await assert.rejects(() => store.hit("billing:test:slow", 60_000), (err) => {
+      assert.match(err.name, /AbortError|TimeoutError/);
+      return true;
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 5000, `deadline do Upstash deve estourar rápido (levou ${elapsed}ms)`);
   } finally {
     globalThis.fetch = savedFetch;
   }
