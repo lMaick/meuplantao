@@ -297,7 +297,7 @@ export async function POST(request: NextRequest) {
         },
       });
       return NextResponse.json(
-        { error: "Tempo esgotado ao contatar o Mercado Pago. Tente novamente." },
+        { error: "Tempo esgotado ao contatar o Mercado Pago. Tente novamente.", retryable: transient },
         { status: transient ? 504 : 502 },
       );
     }
@@ -323,12 +323,12 @@ export async function POST(request: NextRequest) {
         });
         if (upstreamStatus === 429) {
           return NextResponse.json(
-            { error: "Mercado Pago com muitas requisições. Tente novamente em instantes." },
+            { error: "Mercado Pago com muitas requisições. Tente novamente em instantes.", retryable: true },
             { status: 429 },
           );
         }
         return NextResponse.json(
-          { error: "Mercado Pago indisponível no momento. Tente novamente." },
+          { error: "Mercado Pago indisponível no momento. Tente novamente.", retryable: true },
           { status: 502 },
         );
       }
@@ -342,8 +342,10 @@ export async function POST(request: NextRequest) {
           upstream_status: upstreamStatus,
         },
       });
+      // MAI-144 (auditoria ciclo 2): `retryable: false` explícito no payload
+      // para o cliente não repetir uma rejeição definitiva.
       return NextResponse.json(
-        { error: "Mercado Pago rejeitou a preferência. Verifique os dados e tente novamente." },
+        { error: "Mercado Pago rejeitou a preferência. Verifique os dados e tente novamente.", retryable: false },
         { status: 422 },
       );
     }
