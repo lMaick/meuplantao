@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
@@ -6,6 +7,8 @@ import test from "node:test";
 
 // MAI-144: deadline curto para simular lentidão sem estourar a suíte.
 process.env.MERCADO_PAGO_TIMEOUT_MS = "50";
+// MAI-144 ciclo 5: deadline curto também para RPCs do Supabase nos testes.
+process.env.SUPABASE_RPC_TIMEOUT_MS = "50";
 
 const __mpTimeoutFile = fileURLToPath(import.meta.url);
 const __billingRateLimitUrl = pathToFileURL(path.join(path.dirname(__mpTimeoutFile), "..", "src", "lib", "billing", "rate-limit.ts")).href;
@@ -47,12 +50,15 @@ const {
   fetchMercadoPago,
   MercadoPagoTimeoutError,
   MercadoPagoNetworkError,
+  SupabaseRpcTimeoutError,
   isTransientMercadoPagoStatus,
   isDefinitiveMercadoPagoStatus,
   isTransientMercadoPagoFailure,
   isSafeToRetry,
   getTimeoutForOperation,
 } = await import("../src/lib/mercadopago/http.ts");
+const { processMercadoPagoPayment } = await import("../src/lib/mercadopago/payments.ts");
+const { SupabaseRateLimitStore } = await import("../src/lib/billing/rate-limit.ts");
 const { POST: webhookPost } = await import("../src/app/api/webhooks/mercadopago/route.ts");
 const { GET: ipnGet } = await import("../src/app/api/webhooks/mercadopago/ipn/route.ts");
 const { GET: verifyGet } = await import("../src/app/api/mercadopago/verify/route.ts");
@@ -488,4 +494,67 @@ test("4b. IPN 408/425 transitório responde 502 (nunca 200) e preserva o retry",
   );
   assert.equal(res425.status, 502, "IPN 425 transitório deve responder 502 para o provedor retentar");
   assert.equal(rpcCalls, 0);
+});
+
+// -------------------------------------------------------------
+// 5. Deadline explícito nas RPCs do Supabase (MAI-144 ciclo 5)
+// -------------------------------------------------------------
+test("5. RPC financeira com banco lento estoura deadline SEM conceder Pro", async () => {
+  const hangingAdmin = { rpc: () => new Promise(() => {}) };
+  const started = Date.now();
+  await assert.rejects(
+    () =>
+      processMercadoPagoPayment(hangingAdmin, {
+        paymentId: "payment-rpc-slow",
+        userId: validUserId,
+        months: 1,
+        validityDays: 30,
+        amount: 12.9,
+        status: "approved",
+        checkoutId: "chk_timeout_mock",
+      }),
+    (err) => {
+      assert.ok(err instanceof SupabaseRpcTimeoutError, "deve ser SupabaseRpcTimeoutError");
+      assert.equal(err.rpcName, "process_mercadopago_subscription_payment");
+      assert.equal(isTransientMercadoPagoFailure(err), true, "timeout de RPC é transitório/retentável");
+      return true;
+    },
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5000, `deadline da RPC deve estourar rápido (levou ${elapsed}ms)`);
+});
+
+test("5b. RPC do rate limiter com banco lento estoura deadline (fail-closed a montante)", async () => {
+  const store = new SupabaseRateLimitStore(() => ({ rpc: () => new Promise(() => {}) }));
+  await assert.rejects(
+    () => store.hit("mai144-slow-bucket", 1000),
+    (err) => {
+      assert.ok(err instanceof SupabaseRpcTimeoutError, "deve ser SupabaseRpcTimeoutError");
+      assert.equal(err.rpcName, "billing_rate_limit_hit");
+      return true;
+    },
+  );
+  // Liberação best-effort nunca quebra a rota, mesmo com banco lento.
+  await store.release("mai144-slow-bucket");
+});
+
+test("5c. Idempotência real da RPC é comprovada na migration e na suíte real", async () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const migration = fs.readFileSync(
+    path.join(root, "supabase", "migrations", "20260920000000_subscription_payments_idempotency.sql"),
+    "utf8",
+  );
+  assert.match(migration, /process_mercadopago_subscription_payment/, "migration define a RPC do ledger");
+  assert.match(migration, /already_processed/, "RPC retorna already_processed (guarda idempotente no banco)");
+
+  const realSuite = fs.readFileSync(
+    path.join(root, "tests", "subscription-idempotency-and-renewal-real.test.mjs"),
+    "utf8",
+  );
+  assert.match(
+    realSuite,
+    /Concorrência com o mesmo pagamento/,
+    "suíte real cobre concorrência do mesmo payment_id (uma concessão, outra already_processed)",
+  );
+  assert.match(realSuite, /already_processed/, "suíte real asserts already_processed");
 });

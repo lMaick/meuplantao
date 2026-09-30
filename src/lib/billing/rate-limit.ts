@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
+import { getSupabaseRpcTimeout, withSupabaseRpcTimeout } from "@/lib/mercadopago/http";
 
 /**
  * MAI-138 — Rate limit / cooldown distribuído para billing (IPN, checkout, sync, verify).
@@ -204,10 +205,17 @@ export class SupabaseRateLimitStore implements RateLimitStore {
     const window = normalizeWindow(windowMs);
     const normKey = normalizeKey(key);
     const admin = this.getAdmin();
-    const { data, error } = await admin.rpc("billing_rate_limit_hit", {
-      p_bucket_key: normKey,
-      p_window_seconds: Math.max(1, Math.ceil(window / 1000)),
-    });
+    // MAI-144 ciclo 5: deadline explícito na RPC de fallback (lentidão no
+    // banco vira erro tratado a montante — colapso fail-closed — em vez de
+    // travar a rota sem limite).
+    const { data, error } = await withSupabaseRpcTimeout(
+      admin.rpc("billing_rate_limit_hit", {
+        p_bucket_key: normKey,
+        p_window_seconds: Math.max(1, Math.ceil(window / 1000)),
+      }),
+      "billing_rate_limit_hit",
+      getSupabaseRpcTimeout("rateLimit"),
+    );
     if (error) throw new Error(`Supabase rate limit RPC falhou: ${error.message || error.code || "unknown"}`);
     const row = (Array.isArray(data) ? data[0] : data) as {
       count?: unknown;
@@ -225,9 +233,14 @@ export class SupabaseRateLimitStore implements RateLimitStore {
       // Unlock total: a RPC executa DELETE do bucket (nunca decremento),
       // de modo que o dono sempre libera o in-flight mesmo sob contenção
       // que elevou o contador via hits concorrentes.
-      await this.getAdmin().rpc("billing_rate_limit_release", {
-        p_bucket_key: normalizeKey(key),
-      });
+      // MAI-144 ciclo 5: deadline explícito também na liberação best-effort.
+      await withSupabaseRpcTimeout(
+        this.getAdmin().rpc("billing_rate_limit_release", {
+          p_bucket_key: normalizeKey(key),
+        }),
+        "billing_rate_limit_release",
+        getSupabaseRpcTimeout("rateLimit"),
+      );
     } catch {
       // Best-effort (ex.: RPC ainda não migrada): nunca quebra a rota.
     }

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { captureFinancialRpcError } from "@/lib/observability";
+import { getSupabaseRpcTimeout, withSupabaseRpcTimeout } from "@/lib/mercadopago/http";
 export function isProductionEnvironment(): boolean {
   return process.env.VERCEL_ENV?.trim() === "production" || process.env.NODE_ENV?.trim() === "production";
 }
@@ -804,7 +805,14 @@ export async function processMercadoPagoPayment(
     p_status: status,
     p_checkout_id: checkoutId,
   };
-  const { data, error } = await admin.rpc("process_mercadopago_subscription_payment", rpcParams);
+  // MAI-144 ciclo 5: deadline explícito na RPC financeira crítica.
+  // Timeout NÃO concede Pro (rejeita antes de qualquer concessão) e o retry é
+  // seguro pela idempotência da RPC (claim único por payment_id).
+  const { data, error } = await withSupabaseRpcTimeout(
+    admin.rpc("process_mercadopago_subscription_payment", rpcParams),
+    "process_mercadopago_subscription_payment",
+    getSupabaseRpcTimeout("financial"),
+  );
 
   if (error) {
     captureFinancialRpcError(error, {

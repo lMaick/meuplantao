@@ -9,6 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const paymentsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "payments.ts")).href;
 const observabilityUrl = pathToFileURL(path.join(ROOT, "src", "lib", "observability", "index.ts")).href;
 const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "config.ts")).href;
+const httpUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "http.ts")).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -18,6 +19,7 @@ registerHooks({
     if (specifier === "@/lib/observability") return { url: observabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: paymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: configUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: httpUrl, shortCircuit: true };
     return nextResolve(specifier, context);
   },
 });
