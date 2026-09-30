@@ -103,6 +103,10 @@ describe("MAI-140: pagamento recebido nao aceita data futura (America/Bahia)", (
     assert.match(SQL, /data_prevista/);
     // View deriva saldo apenas de recebimentos quitados (data <= hoje Bahia).
     assert.match(SQL, /p\.data_pagamento <= \(now\(\) at time zone 'America\/Bahia'\)::date/);
+    // Limite de novos recebimentos (v_registered) alinhado ao saldo: soma só quitados.
+    // O predicado settled aparece 4x: limite RPC, limite do trigger e 2x na view (saldo + atraso).
+    const settled = SQL.match(/data_pagamento <= \(now\(\) at time zone 'America\/Bahia'\)::date/g) ?? [];
+    assert.ok(settled.length >= 4, `limite RPC/trigger/view deve somar só quitados (achados: ${settled.length})`);
   });
 
   test("6. DAL valida antes da RPC e UI trava data futura", () => {
@@ -110,5 +114,13 @@ describe("MAI-140: pagamento recebido nao aceita data futura (America/Bahia)", (
     assert.match(DAL, /\.rpc\("register_payment"/);
     assert.match(UI, /max=\{bahiaTodayIso\(\)\}/);
     assert.match(UI, /n.o pode ser futura/);
+  });
+
+  test("7. dashboard nao contabiliza recebimento futuro como quitado", () => {
+    const dashboard = fs.readFileSync(path.join(ROOT, "src", "components", "dashboard", "dashboard.tsx"), "utf8");
+    assert.match(dashboard, /payment\.data_pagamento > today/);
+    assert.match(dashboard, /nao conta como quitado/);
+    // payments-page e historico derivam recebido do saldo da view (quitados).
+    assert.match(UI, /expected - balance/);
   });
 });

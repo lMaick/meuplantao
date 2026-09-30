@@ -3,6 +3,9 @@
 -- (recebimento efetivo) e bloqueada acima de hoje no fuso America/Bahia.
 -- Defesa em 3 camadas: RPC register_payment, trigger de INSERT direto e
 -- view obligations_with_balance (saldo/total recebido ignoram legado futuro).
+-- O limite de novos recebimentos (v_registered) soma apenas recebimentos
+-- quitados (data <= hoje Bahia), alinhado ao saldo da view: legado futuro,
+-- se existir, nao conta como quitado nem consome o limite.
 
 create or replace function public.register_payment(p_obligation_id uuid, p_valor numeric, p_data_pagamento date) returns public.payments language plpgsql security invoker set search_path = public as $$
 declare v_payment public.payments; v_obligation public.obligations; v_registered numeric(12,2);
@@ -14,7 +17,7 @@ begin
   select * into v_obligation from public.obligations where id = p_obligation_id and user_id = auth.uid() for update;
   if not found then raise exception using errcode = '23503', message = 'Obrigacao nao encontrada'; end if;
   if v_obligation.valor_devido is null then raise exception using errcode = '23514', message = 'Obrigacao ainda nao possui valor devido'; end if;
-  select coalesce(sum(valor), 0)::numeric(12,2) into v_registered from public.payments where obligation_id = p_obligation_id and user_id = auth.uid() and status = 'registrado';
+  select coalesce(sum(valor), 0)::numeric(12,2) into v_registered from public.payments where obligation_id = p_obligation_id and user_id = auth.uid() and status = 'registrado' and data_pagamento <= (now() at time zone 'America/Bahia')::date;
   if v_registered + p_valor > v_obligation.valor_devido then raise exception using errcode = '22003', message = 'O pagamento excede o saldo da obrigacao'; end if;
   insert into public.payments (user_id, obligation_id, valor, data_pagamento, status) values (auth.uid(), p_obligation_id, p_valor, p_data_pagamento, 'registrado') returning * into v_payment;
   return v_payment;
@@ -85,7 +88,8 @@ begin
       from public.payments
      where obligation_id = new.obligation_id
        and user_id = new.user_id
-       and status = 'registrado';
+       and status = 'registrado'
+       and data_pagamento <= (now() at time zone 'America/Bahia')::date;
     if v_obligation.valor_devido is null or v_registered + new.valor > v_obligation.valor_devido then
       raise exception using errcode = '22003', message = 'O pagamento excede o saldo da obrigacao';
     end if;
