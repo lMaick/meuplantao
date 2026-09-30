@@ -19,12 +19,32 @@ import { Client } from "pg";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATION = path.join(ROOT, "supabase", "migrations", "20260930000000_payment_future_date_guard.sql");
-const DOCKER = "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe";
-const CONTAINER = "mai140-pg-guard";
-const PORT = "55433";
+// Nome único por execução: sem risco de conflito entre runs paralelos/CI.
+const CONTAINER = `mai140-pg-guard-${process.pid}-${Date.now().toString(36)}`;
+const PORT = String(55400 + (process.pid % 100));
 const PASSWORD = "mai140-test-only";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 
+function resolveDocker() {
+  const candidates = [
+    process.env.DOCKER_BIN,
+    "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+    "docker",
+  ].filter(Boolean);
+  for (const bin of candidates) {
+    try {
+      execFileSync(bin, ["info", "--format", "{{.ServerVersion}}"], { stdio: "pipe" });
+      return bin;
+    } catch { /* tenta o próximo */ }
+  }
+  return null;
+}
+
+const DOCKER = resolveDocker();
+if (!DOCKER) {
+  console.log("SKIP payment-future-date-real-pg: docker indisponível neste ambiente (prova offline em tests/payment-future-date-mai140.test.mjs).");
+  process.exit(0);
+}
 const docker = (...args) => execFileSync(DOCKER, args, { stdio: "pipe" }).toString();
 const bahiaToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(new Date());
 const addDays = (iso, days) => {
@@ -37,9 +57,6 @@ let client;
 let obligationId;
 
 before(async () => {
-  try {
-    docker("rm", "-f", CONTAINER);
-  } catch { /* sem container anterior */ }
   docker(
     "run", "-d", "--rm", "--name", CONTAINER,
     "-e", `POSTGRES_PASSWORD=${PASSWORD}`,
