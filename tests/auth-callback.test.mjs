@@ -149,3 +149,42 @@ test("MAI-139 (auditoria): em produção o callback ignora Host forjado e usa a 
     }
   }
 });
+
+test("MAI-139 (auditoria): em VERCEL_ENV=preview o callback preserva o domínio do preview mesmo com NEXT_PUBLIC_SITE_URL configurada", async () => {
+  const snap = {
+    site: process.env.NEXT_PUBLIC_SITE_URL,
+    app: process.env.NEXT_PUBLIC_APP_URL,
+    prod: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    preview: process.env.VERCEL_URL,
+    vercelEnv: process.env.VERCEL_ENV,
+    nodeEnv: process.env.NODE_ENV,
+  };
+  try {
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    process.env.NODE_ENV = "production";
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_URL = "meuplantao-preview-pr144.vercel.app";
+    process.env.NEXT_PUBLIC_SITE_URL = "https://meuplantao.pro";
+
+    globalThis.callbackClient = { auth: { exchangeCodeForSession: async () => ({ error: null }) } };
+    const ok = await GET(new NextRequest("https://meuplantao-preview-pr144.vercel.app/auth/callback?code=ok&next=%2Fdashboard"));
+    assert.equal(ok.headers.get("location"), "https://meuplantao-preview-pr144.vercel.app/dashboard");
+
+    globalThis.callbackClient = { auth: { exchangeCodeForSession: async () => ({ error: new Error("otp_expired") }) } };
+    const expired = await GET(new NextRequest("https://meuplantao-preview-pr144.vercel.app/auth/callback?code=bad&next=%2Fredefinir-senha"));
+    assert.equal(expired.headers.get("location"), "https://meuplantao-preview-pr144.vercel.app/esqueci-senha?error=link_expired");
+  } finally {
+    for (const [key, value] of Object.entries({
+      NEXT_PUBLIC_SITE_URL: snap.site,
+      NEXT_PUBLIC_APP_URL: snap.app,
+      VERCEL_PROJECT_PRODUCTION_URL: snap.prod,
+      VERCEL_URL: snap.preview,
+      VERCEL_ENV: snap.vercelEnv,
+      NODE_ENV: snap.nodeEnv,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

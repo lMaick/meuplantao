@@ -1,15 +1,16 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseConfig } from "@/lib/supabase/config";
-import { getCanonicalOrigin, isProductionEnvironment } from "@/lib/config/site-url";
+import { getCanonicalOrigin, isPreviewEnvironment, isProductionEnvironment } from "@/lib/config/site-url";
 import { safeNext } from "@/lib/auth/redirect";
 
 /**
- * MAI-139: em produção os redirects do callback usam SEMPRE a origem
- * canônica configurada (anti Host Header Poisoning); fora de produção
- * preserva a origem da request (dev local, previews e testes).
+ * MAI-139: em produção e previews Vercel os redirects do callback usam
+ * a origem canônica confiável (anti Host Header Injection);
+ * fora de produção preserva a origem da request (dev local e testes).
  */
 function callbackBase(requestUrl: string): string {
+  if (isPreviewEnvironment()) return getCanonicalOrigin();
   if (isProductionEnvironment()) return getCanonicalOrigin(requestUrl);
   return requestUrl;
 }
