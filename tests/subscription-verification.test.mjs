@@ -345,14 +345,22 @@ test("security: rejected payment belonging to another user returns 403 without d
   assert.equal(json.verified, undefined, "Nao deve vazar verified");
 });
 
-test("subscription hook reads the RLS-protected row and subscribes to changes", () => {
-  const source = fs.readFileSync(path.join(ROOT, "src/lib/subscription/use-subscription.ts"), "utf8");
-  assert.match(source, /from\("subscriptions"\)/);
-  assert.match(source, /select\(.*status.*\)/);
-  assert.match(source, /current_period_end/);
-  assert.match(source, /eq\("user_id", data\.user\.id\)/);
-  assert.match(source, /postgres_changes/);
-  assert.match(source, /filter: `user_id=eq\.\$\{userId\}`/);
+test("subscription hook reads the RLS-protected row and subscribes to changes (MAI-143: via DAL)", () => {
+  const hook = fs.readFileSync(path.join(ROOT, "src/lib/subscription/use-subscription.ts"), "utf8");
+  const provider = fs.readFileSync(path.join(ROOT, "src/lib/subscription/subscription-provider.tsx"), "utf8");
+  const dal = fs.readFileSync(path.join(ROOT, "src/lib/subscription/queries.ts"), "utf8");
+  // Fronteira de camadas: hook/provider delegam à DAL, sem query inline.
+  assert.ok(!hook.includes('from("subscriptions")'), "hook não deve ter query inline (usar DAL)");
+  assert.ok(!provider.includes('from("subscriptions")'), "provider não deve ter query inline (usar DAL)");
+  assert.match(hook, /fetchMySubscription/);
+  assert.match(hook, /createSubscriptionChannel/);
+  // DAL centraliza leitura RLS + realtime.
+  assert.match(dal, /from\(SUBSCRIPTION_TABLE\)|from\("subscriptions"\)/);
+  assert.match(dal, /select\(SUBSCRIPTION_SELECT\)|status,\s*current_period_end/);
+  assert.match(dal, /current_period_end/);
+  assert.match(dal, /eq\(\s*["']user_id["']/);
+  assert.match(dal, /postgres_changes/);
+  assert.match(dal, /user_id=eq\./);
 });
 
 test("verify MP !ok: gera evento estruturado via captureError e responde HTTP 502", async () => {

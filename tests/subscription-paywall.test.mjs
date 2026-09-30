@@ -86,10 +86,15 @@ describe("MAI-126: Paywall pos-trial + estado global reativo", () => {
       const hook = read("src/lib/subscription/use-subscription.ts");
       assert.match(hook, /useSubscriptionContext/);
       const provider = read("src/lib/subscription/subscription-provider.tsx");
+      const dal = read("src/lib/subscription/queries.ts");
       assert.match(provider, /createContext/);
-      assert.match(provider, /subscription-status/);
-      assert.match(provider, /postgres_changes/);
-      assert.match(provider, /filter: `user_id=eq\.\$\{userId\}`/);
+      // MAI-143: realtime e filtro vivem na DAL; provider delega sem query inline.
+      assert.ok(!provider.includes('.from("subscriptions")'), "provider não deve ter query inline (usar DAL)");
+      assert.match(provider, /fetchMySubscription/);
+      assert.match(provider, /createSubscriptionChannel/);
+      assert.match(dal, /subscription-status/);
+      assert.match(dal, /postgres_changes/);
+      assert.match(dal, /user_id=eq\./);
       // Instância única no provider (sem useId por badge)
       assert.ok(!provider.includes("useId"), "provider deve ter canal único, sem useId por instância");
     });
