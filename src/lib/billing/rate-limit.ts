@@ -132,6 +132,12 @@ export class UpstashRateLimitStore implements RateLimitStore {
   readonly isDistributed = true;
   private readonly url: string;
   private readonly token: string;
+  /**
+   * MAI-144 — deadline explícito nas chamadas HTTP ao Upstash: um Redis
+   * lento nunca pode travar a rota de billing além deste teto (falha vira
+   * colapso de store tratado acima, fail-closed 503 + Retry-After).
+   */
+  private readonly timeoutMs = 3000;
 
   constructor(url: string, token: string) {
     this.url = url;
@@ -147,6 +153,7 @@ export class UpstashRateLimitStore implements RateLimitStore {
       method: "POST",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
       body: JSON.stringify([RATE_LIMIT_LUA, 1, normKey, String(window)]),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!evalRes.ok) throw new Error(`Upstash eval failed: ${evalRes.status}`);
     const payload = (await evalRes.json()) as { result?: unknown };
@@ -165,6 +172,7 @@ export class UpstashRateLimitStore implements RateLimitStore {
         method: "POST",
         headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
         body: JSON.stringify([normalizeKey(key)]),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
       // Best-effort: falha na liberação nunca quebra a rota.
