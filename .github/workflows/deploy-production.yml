@@ -32,7 +32,8 @@ jobs:
         shell: bash
         env:
           PROD_DB_URL: ${{ secrets.PRODUCTION_DATABASE_URL || secrets.SUPABASE_DB_URL }}
-          SUPABASE_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_TOKEN }}
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN || secrets.SUPABASE_TOKEN }}
           PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
         run: |
           set -Eeuo pipefail
@@ -42,8 +43,9 @@ jobs:
             echo "Applying pending migrations to production Supabase via direct connection..."
             npx --yes supabase@2.117.0 db push --include-all --db-url "${PROD_DB_URL}"
             echo "Migrations applied successfully."
-          elif [ -n "${SUPABASE_TOKEN:-}" ] && [ -n "${PROJECT_ID:-}" ]; then
-            printf '::add-mask::%s\n' "${SUPABASE_TOKEN}" "${PROJECT_ID}"
+          elif [ -n "${SUPABASE_ACCESS_TOKEN:-${SUPABASE_TOKEN:-}}" ] && [ -n "${PROJECT_ID:-}" ]; then
+            export SUPABASE_ACCESS_TOKEN="${SUPABASE_ACCESS_TOKEN:-${SUPABASE_TOKEN}}"
+            printf '::add-mask::%s\n' "${SUPABASE_ACCESS_TOKEN}" "${PROJECT_ID}"
             echo "Linking and applying pending migrations via Supabase CLI project link..."
             npx --yes supabase@2.117.0 link --project-ref "${PROJECT_ID}"
             npx --yes supabase@2.117.0 db push --include-all
