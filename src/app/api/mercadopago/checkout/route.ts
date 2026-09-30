@@ -1,20 +1,174 @@
 import { NextResponse, type NextRequest } from "next/server";
+import {
+  BILLING_LIMITS,
+  billingLimitKey,
+  buildBillingRateLimitedResponse,
+  buildBillingStoresCollapsedResponse,
+  checkBillingCooldownAndMark,
+  checkBillingLimit,
+  getClientIp,
+  hashIpForLog,
+  isBillingRateLimitEnabled,
+  releaseBillingCooldown,
+} from "@/lib/billing/rate-limit";
 import { getApplicationOrigin, getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
-import { captureCheckoutError } from "@/lib/observability";
+import { captureCheckoutError, captureRateLimitHit } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 import { getCanonicalPlanByMonths } from "@/lib/mercadopago/payments";
 
 export const runtime = "nodejs";
 
+const CHECKOUT_ROUTE = "/api/mercadopago/checkout";
+
 export async function POST(request: NextRequest) {
   const response = NextResponse.json({ error: "Nao foi possivel iniciar o checkout" }, { status: 500 });
   let currentUserId: string | undefined;
+
+  // MAI-138: limitador distribuído (ligado em produção / opt-in em dev/teste).
+  const limiterOn = isBillingRateLimitEnabled();
+  const clientIp = limiterOn ? getClientIp(request) : "unknown";
+  const ipHash = limiterOn ? hashIpForLog(clientIp) : "unknown";
+  const logStoreFallback = (storeName: string, errorMessage: string) => {
+    captureRateLimitHit({
+      route: CHECKOUT_ROUTE,
+      limitKind: "store_fallback",
+      limit: 0,
+      windowMs: 0,
+      storeName,
+      distributed: false,
+      storeFallback: true,
+      userId: currentUserId,
+      ipHash,
+      storeError: errorMessage,
+    });
+  };
+  let cooldownMarked = false;
+  let cooldownStoreName: string | undefined;
+  const userCooldownKey = () => billingLimitKey("billing", "checkout", "cooldown", currentUserId);
+
+  // Teto por IP antes da autenticação (barato, sem custo de sessão).
+  if (limiterOn) {
+    const ipDecision = await checkBillingLimit(
+      billingLimitKey("billing", "checkout", "ip", ipHash),
+      BILLING_LIMITS.checkoutIp.limit,
+      BILLING_LIMITS.checkoutIp.windowMs,
+      ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+    );
+    if (!ipDecision.allowed) {
+      // MAI-138 (auditoria externa, bloqueador 1): colapso dos stores
+      // distribuídos => fail-closed 503 + Retry-After, SEM consultar o MP.
+      if (ipDecision.collapsed) {
+        captureRateLimitHit({
+          route: CHECKOUT_ROUTE,
+          limitKind: "stores_collapsed",
+          limit: BILLING_LIMITS.checkoutIp.limit,
+          windowMs: BILLING_LIMITS.checkoutIp.windowMs,
+          retryAfterSeconds: ipDecision.retryAfterSeconds,
+          storeName: ipDecision.storeName,
+          distributed: ipDecision.distributed,
+          storeFallback: ipDecision.fallback,
+          ipHash,
+        });
+        return buildBillingStoresCollapsedResponse(ipDecision.retryAfterSeconds);
+      }
+      captureRateLimitHit({
+        route: CHECKOUT_ROUTE,
+        limitKind: "ip",
+        limit: BILLING_LIMITS.checkoutIp.limit,
+        windowMs: BILLING_LIMITS.checkoutIp.windowMs,
+        retryAfterSeconds: ipDecision.retryAfterSeconds,
+        storeName: ipDecision.storeName,
+        distributed: ipDecision.distributed,
+        storeFallback: ipDecision.fallback,
+        ipHash,
+      });
+      return buildBillingRateLimitedResponse(ipDecision.retryAfterSeconds);
+    }
+  }
 
   try {
     const supabase = createAuthenticatedClient(request, response);
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) return NextResponse.json({ error: "Autenticacao obrigatoria" }, { status: 401 });
     currentUserId = user.id;
+
+    // MAI-138: teto + cooldown por usuário (evita N preferências/consultas ao MP).
+    if (limiterOn) {
+      const userDecision = await checkBillingLimit(
+        billingLimitKey("billing", "checkout", "user", user.id),
+        BILLING_LIMITS.checkoutUser.limit,
+        BILLING_LIMITS.checkoutUser.windowMs,
+        ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+      );
+      if (!userDecision.allowed) {
+        if (userDecision.collapsed) {
+          captureRateLimitHit({
+            route: CHECKOUT_ROUTE,
+            limitKind: "stores_collapsed",
+            limit: BILLING_LIMITS.checkoutUser.limit,
+            windowMs: BILLING_LIMITS.checkoutUser.windowMs,
+            retryAfterSeconds: userDecision.retryAfterSeconds,
+            userId: user.id,
+            storeName: userDecision.storeName,
+            distributed: userDecision.distributed,
+            storeFallback: userDecision.fallback,
+            ipHash,
+          });
+          return buildBillingStoresCollapsedResponse(userDecision.retryAfterSeconds);
+        }
+        captureRateLimitHit({
+          route: CHECKOUT_ROUTE,
+          limitKind: "user",
+          limit: BILLING_LIMITS.checkoutUser.limit,
+          windowMs: BILLING_LIMITS.checkoutUser.windowMs,
+          retryAfterSeconds: userDecision.retryAfterSeconds,
+          userId: user.id,
+          storeName: userDecision.storeName,
+          distributed: userDecision.distributed,
+          storeFallback: userDecision.fallback,
+          ipHash,
+        });
+        return buildBillingRateLimitedResponse(userDecision.retryAfterSeconds);
+      }
+
+      const cooldown = await checkBillingCooldownAndMark(
+        userCooldownKey(),
+        BILLING_LIMITS.checkoutUserCooldownMs,
+        ({ storeName, errorMessage }) => logStoreFallback(storeName, errorMessage),
+      );
+      cooldownMarked = true;
+      cooldownStoreName = cooldown.storeName;
+      if (cooldown.collapsed) {
+        captureRateLimitHit({
+          route: CHECKOUT_ROUTE,
+          limitKind: "stores_collapsed",
+          limit: 1,
+          windowMs: BILLING_LIMITS.checkoutUserCooldownMs,
+          retryAfterSeconds: BILLING_LIMITS.storesCollapsedRetryAfterSeconds,
+          userId: user.id,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return buildBillingStoresCollapsedResponse(BILLING_LIMITS.storesCollapsedRetryAfterSeconds);
+      }
+      if (cooldown.deduped) {
+        captureRateLimitHit({
+          route: CHECKOUT_ROUTE,
+          limitKind: "user_cooldown",
+          limit: 1,
+          windowMs: BILLING_LIMITS.checkoutUserCooldownMs,
+          retryAfterSeconds: Math.max(1, Math.ceil(BILLING_LIMITS.checkoutUserCooldownMs / 1000)),
+          userId: user.id,
+          storeName: cooldown.storeName,
+          distributed: cooldown.distributed,
+          storeFallback: cooldown.fallback,
+          ipHash,
+        });
+        return buildBillingRateLimitedResponse(Math.ceil(BILLING_LIMITS.checkoutUserCooldownMs / 1000));
+      }
+    }
 
     let subscription = null;
     try {
@@ -160,6 +314,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ init_point: initPoint });
   } catch (error) {
+    // Falha retentável: libera o cooldown para o usuário tentar de novo de imediato.
+    if (limiterOn && cooldownMarked && currentUserId) {
+      await releaseBillingCooldown(userCooldownKey(), cooldownStoreName).catch(() => undefined);
+    }
     captureCheckoutError(error, {
       route: "/api/mercadopago/checkout",
       userId: currentUserId,
