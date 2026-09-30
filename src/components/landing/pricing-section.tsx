@@ -31,14 +31,14 @@ export function PricingSection() {
           </div>
 
           <div className="rounded-2xl border border-emerald-400/40 bg-white p-6 text-slate-900 shadow-xl sm:p-8 md:min-w-80">
-            <p className="text-sm font-semibold text-slate-600">Plano mensal</p>
+            <p className="text-sm font-semibold text-slate-600">Plano mensal (compra avulsa pré-paga)</p>
             <div className="mt-1 flex items-baseline gap-2">
               <span className="text-5xl font-extrabold tracking-tight">R$ 12,90</span>
               <span className="text-sm text-slate-500">/mês</span>
             </div>
             <p className="mt-2 text-sm text-slate-600">Cadastro inicial gratuito, sem cartão.</p>
             <p className="mt-1 text-xs text-slate-500">
-              Acesso por período fixo. Sem renovação automática. Sem cobranças recorrentes.
+              Compra avulsa pré-paga por período fixo. Sem renovação automática. Sem cobranças recorrentes.
             </p>
             <Link
               href="/cadastro"

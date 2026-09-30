@@ -23,12 +23,14 @@ const FORBIDDEN_PATTERNS = [
   /dinheiro de volta/i,
   /cancele quando quiser/i,
   /cancelamento imediato/i,
+  /reembolso/i,
 ];
 
 const REQUIRED_MODEL_PHRASES = [
   /sem renova[çc][aã]o autom[áa]tica/i,
   /sem cobran[çc]as recorrentes/i,
   /per[íi]odo fixo/i,
+  /compra (avulsa|pr[ée]-paga)/i,
 ];
 
 function readSources() {
