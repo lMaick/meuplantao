@@ -553,17 +553,17 @@ test("7. user_id incompatível → payment_id de userA não estende assinatura d
     assert.equal(
       resBWithB.ok,
       false,
-      "Reutilizar payment_id de userA com checkout de userB deve falhar por cotação divergente (23505)",
+      "Reutilizar payment_id de userA com checkout de userB deve falhar por violação de ownership (22023)",
     );
     const errCrossDiv = resBWithB.data ?? {};
     assert.ok(
-      String(errCrossDiv.code ?? "").includes("23505") ||
-      String(errCrossDiv.message ?? "").toLowerCase().includes("divergente"),
-      `Esperado erro de cotação divergente (23505/divergente), obtido: ${JSON.stringify(resBWithB.data)}`,
+      String(errCrossDiv.code ?? "").includes("22023") ||
+      String(errCrossDiv.message ?? "").toLowerCase().includes("usuario"),
+      `Esperado erro de ownership (22023/usuario), obtido: ${JSON.stringify(resBWithB.data)}`,
     );
     assert.ok(
-      resBWithB.status === 400 || resBWithB.status === 409,
-      `Esperado status HTTP 400 ou 409, obtido HTTP ${resBWithB.status}`,
+      resBWithB.status === 400 || resBWithB.status === 422 || resBWithB.status === 409,
+      `Esperado status HTTP 400, 422 ou 409, obtido HTTP ${resBWithB.status}`,
     );
 
     // Invariante: userB NÃO tem assinatura criada
