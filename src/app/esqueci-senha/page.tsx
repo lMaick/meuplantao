@@ -5,6 +5,7 @@ import { FormEvent, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { getCanonicalOrigin, isProductionEnvironment } from "@/lib/config/site-url";
 
 function EsqueciSenhaContent() {
   const searchParams = useSearchParams();
@@ -20,7 +21,10 @@ function EsqueciSenhaContent() {
 
     try {
       const supabase = createClient();
-      const redirectTo = `${window.location.origin}/auth/callback?next=/redefinir-senha`;
+      // MAI-139: em produção o redirect de recuperação usa a origem
+      // canônica configurada; fora de produção usa a origem do navegador.
+      const origin = isProductionEnvironment() ? getCanonicalOrigin() : window.location.origin;
+      const redirectTo = `${origin}/auth/callback?next=/redefinir-senha`;
       await supabase.auth.resetPasswordForEmail(email, { redirectTo });
     } catch {
       // Intencionalmente suprimido para impedir a enumeração de contas

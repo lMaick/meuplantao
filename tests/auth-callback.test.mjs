@@ -12,6 +12,13 @@ registerHooks({
       const url = existsSync(new URL(`${base.href}.ts`)) ? `${base.href}.ts` : `${base.href}/index.ts`;
       return nextResolve(url, context);
     }
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
     return nextResolve(specifier, context);
   },
 });
@@ -104,4 +111,41 @@ test("Preview OAuth flow keeps the Preview origin through session refresh and lo
   assert.equal(await logoutAndRedirect(() => globalThis.callbackClient.auth.signOut(), (path) => redirects.push(path)), true);
   assert.deepEqual(events, ["signOut"]);
   assert.deepEqual(redirects, ["/login"]);
+});
+
+test("MAI-139 (auditoria): em produção o callback ignora Host forjado e usa a origem canônica", async () => {
+  const snap = {
+    site: process.env.NEXT_PUBLIC_SITE_URL,
+    app: process.env.NEXT_PUBLIC_APP_URL,
+    prod: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    preview: process.env.VERCEL_URL,
+    vercelEnv: process.env.VERCEL_ENV,
+    nodeEnv: process.env.NODE_ENV,
+  };
+  try {
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    delete process.env.VERCEL_URL;
+    delete process.env.VERCEL_ENV;
+    process.env.NODE_ENV = "production";
+    process.env.NEXT_PUBLIC_SITE_URL = "https://meuplantao.pro";
+    globalThis.callbackClient = { auth: { exchangeCodeForSession: async () => ({ error: null }) } };
+    const ok = await GET(new NextRequest("https://evil-attacker.example/auth/callback?code=ok&next=%2Fdashboard"));
+    assert.equal(ok.headers.get("location"), "https://meuplantao.pro/dashboard");
+    globalThis.callbackClient = { auth: { exchangeCodeForSession: async () => ({ error: new Error("otp_expired") }) } };
+    const expired = await GET(new NextRequest("https://evil-attacker.example/auth/callback?code=bad&next=%2Fredefinir-senha"));
+    assert.equal(expired.headers.get("location"), "https://meuplantao.pro/esqueci-senha?error=link_expired");
+  } finally {
+    for (const [key, value] of Object.entries({
+      NEXT_PUBLIC_SITE_URL: snap.site,
+      NEXT_PUBLIC_APP_URL: snap.app,
+      VERCEL_PROJECT_PRODUCTION_URL: snap.prod,
+      VERCEL_URL: snap.preview,
+      VERCEL_ENV: snap.vercelEnv,
+      NODE_ENV: snap.nodeEnv,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

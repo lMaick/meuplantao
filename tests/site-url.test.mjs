@@ -193,6 +193,44 @@ test("MAI-139: Host Header Injection bloqueado em produção (checkout/auth)", (
   }
 });
 
+test("MAI-139 (auditoria): VERCEL_ENV=preview prioriza VERCEL_URL sobre PRODUCTION_URL", () => {
+  const snap = snapshotEnv();
+  try {
+    clearSiteEnv();
+    process.env.NODE_ENV = "production";
+    delete process.env.VERCEL_ENV;
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = "meuplantao.vercel.app";
+    process.env.VERCEL_URL = "meuplantao-abc123-lmaick.vercel.app";
+    assert.equal(getSiteUrl(), "https://meuplantao.vercel.app");
+    process.env.VERCEL_ENV = "preview";
+    assert.equal(getSiteUrl(), "https://meuplantao-abc123-lmaick.vercel.app");
+  } finally {
+    restoreEnv(snap);
+  }
+});
+
+test("MAI-139 (auditoria): delimitadores vazios de @, ? e # são rejeitados", () => {
+  const snap = snapshotEnv();
+  try {
+    process.env.NODE_ENV = "test";
+    delete process.env.VERCEL_ENV;
+    for (const bad of [
+      "https://meuplantao.pro?",
+      "https://meuplantao.pro#",
+      "https://meuplantao.pro@",
+      "https://meuplantao.pro/?",
+      "https://meuplantao.pro/#",
+    ]) {
+      assert.throws(() => normalizeSiteUrl(bad), /canônica/, `deveria rejeitar: ${bad}`);
+    }
+    clearSiteEnv();
+    process.env.NODE_ENV = "production";
+    process.env.NEXT_PUBLIC_SITE_URL = "https://meuplantao.pro?";
+    assert.throws(() => getSiteUrl(), /canônica/);
+  } finally {
+    restoreEnv(snap);
+  }
+});
 test("MAI-139: dev local permite localhost como fallback sem config", () => {
   const snap = snapshotEnv();
   try {

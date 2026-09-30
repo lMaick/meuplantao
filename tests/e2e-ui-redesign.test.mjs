@@ -12,8 +12,25 @@
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { registerHooks } from "node:module";
 
-import {
+// MAI-139: hook de resolução .ts para imports aninhados do harness
+// (ex.: src/lib/auth/redirect.ts -> ../config/site-url)
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const {
   ErgonomicsOracle,
   DesignSystemOracle,
   FinancialDomainOracle,
@@ -36,7 +53,7 @@ import {
   safeNext,
   authCallbackUrl,
   isInvalidJwtError,
-} from "./helpers/e2e-harness.mjs";
+} = await import("./helpers/e2e-harness.mjs");
 
 /* ========================================================================= */
 /* TIER 1: CATEGORY-PARTITION TESTING (>= 5 per feature x 10 features = 50) */

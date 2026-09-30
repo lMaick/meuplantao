@@ -5,6 +5,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { getCanonicalOrigin, isProductionEnvironment } from "@/lib/config/site-url";
 import { oauthProviderConfig } from "@/lib/auth/redirect";
 
 type Mode = "login" | "signup";
@@ -51,7 +52,10 @@ export function AuthForm({ mode, next = "/dashboard" }: { mode: Mode; next?: str
   async function handleOAuthSignIn(provider: "google" | "github") {
     setError(null); setMessage(null); setOauthLoading(provider);
     try {
-      const { error: oauthError } = await createClient().auth.signInWithOAuth(oauthProviderConfig(provider, window.location.origin, next));
+      // MAI-139: em produção o callback OAuth usa a origem canônica
+      // configurada; fora de produção usa a origem real do navegador.
+      const origin = isProductionEnvironment() ? getCanonicalOrigin() : window.location.origin;
+      const { error: oauthError } = await createClient().auth.signInWithOAuth(oauthProviderConfig(provider, origin, next));
       if (oauthError) setError("Não foi possível iniciar o acesso. Tente novamente.");
     } catch { setError(`Não foi possível iniciar o acesso com ${provider === "google" ? "Google" : "GitHub"}. Tente novamente.`); }
     finally { setOauthLoading(null); }
