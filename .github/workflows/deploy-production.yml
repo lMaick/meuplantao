@@ -40,13 +40,13 @@ jobs:
           if [ -n "${PROD_DB_URL:-}" ]; then
             printf '::add-mask::%s\n' "${PROD_DB_URL}"
             echo "Applying pending migrations to production Supabase via direct connection..."
-            npx --yes supabase@2.117.0 db push --db-url "${PROD_DB_URL}"
+            npx --yes supabase@2.117.0 db push --include-all --db-url "${PROD_DB_URL}"
             echo "Migrations applied successfully."
           elif [ -n "${SUPABASE_TOKEN:-}" ] && [ -n "${PROJECT_ID:-}" ]; then
             printf '::add-mask::%s\n' "${SUPABASE_TOKEN}" "${PROJECT_ID}"
             echo "Linking and applying pending migrations via Supabase CLI project link..."
             npx --yes supabase@2.117.0 link --project-ref "${PROJECT_ID}"
-            npx --yes supabase@2.117.0 db push
+            npx --yes supabase@2.117.0 db push --include-all
             echo "Migrations applied successfully."
           else
             echo "::warning::Neither PRODUCTION_DATABASE_URL nor SUPABASE_ACCESS_TOKEN configured in GitHub Secrets."
