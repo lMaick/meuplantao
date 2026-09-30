@@ -14,10 +14,7 @@ import { captureWebhookError } from "@/lib/observability";
 import { createAdminClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
-
-export { extractPaymentInfo, validateWebhookSignature };
-
-export async function processPaymentWebhook(request: Request, rawBody: string) {
+async function processPaymentWebhook(request: Request, rawBody: string) {
   if (getWebhookSetupState().failClosed) {
     return Response.json({ error: WEBHOOK_NOT_CONFIGURED_PUBLIC_ERROR }, { status: 503 });
   }
