@@ -100,6 +100,7 @@ function useFreshStore() {
   processedPayments.clear();
   globalThis.__mockWebhookSecret = null;
   globalThis.__mockLegacyIpnEnabled = null;
+  globalThis.__mockPaymentUserId = null;
 }
 
 function authenticatedAs(userId) {
@@ -490,8 +491,12 @@ test("8. IPN: corpo oversized (413) e id malformado (200 ignored) sem fetch", as
 test("9. checkout: 2º POST imediato é 429; falha upstream libera retry imediato", async () => {
   useFreshStore();
   authenticatedAs(USER_A);
+  approvedPaymentRpc();
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ init_point: "https://www.mercadopago.com/checkout/v1" }), { status: 201 });
+    new Response(
+      JSON.stringify({ id: "pref-checkout-1", init_point: "https://www.mercadopago.com/checkout/v1" }),
+      { status: 201 },
+    );
 
   const c1 = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
   assert.equal(c1.status, 200);
@@ -507,7 +512,10 @@ test("9. checkout: 2º POST imediato é 429; falha upstream libera retry imediat
   globalThis.fetch = async () => {
     attempt++;
     if (attempt === 1) throw new Error("fetch failed: ECONNRESET");
-    return new Response(JSON.stringify({ init_point: "https://www.mercadopago.com/checkout/retry" }), { status: 201 });
+    return new Response(
+      JSON.stringify({ id: "pref-checkout-retry", init_point: "https://www.mercadopago.com/checkout/retry" }),
+      { status: 201 },
+    );
   };
   const f1 = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
   assert.equal(f1.status, 500);
@@ -551,7 +559,7 @@ test("11. verify: repetição imediata do mesmo pagamento é 429 com Retry-After
   authenticatedAs(USER_A);
   approvedPaymentRpc();
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    new Response(JSON.stringify(validApprovedPayment(USER_A, "verify-cool-1")), { status: 200 });
 
   const url = "http://localhost/api/mercadopago/verify?payment_id=verify-cool-1";
   const verifyReq = () => ({ nextUrl: new URL(url), headers: new Headers(), cookies: { getAll: () => [] } });
@@ -679,7 +687,7 @@ test("16. webhook: rajada concorrente do mesmo pagamento => exatamente 1 fetch; 
     counter.calls.push(String(url));
     // Delay proposital: mantém o 1º request "em voo" enquanto as duplicatas chegam.
     await new Promise((r) => setTimeout(r, 60));
-    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(USER_A, "race-concurrent-1")), { status: 200 });
   };
 
   const body = JSON.stringify({ type: "payment", data: { id: "race-concurrent-1" } });
@@ -721,7 +729,7 @@ test("17. IPN: rajada concorrente do mesmo pagamento => exatamente 1 fetch", asy
   globalThis.fetch = async (url) => {
     counter.calls.push(String(url));
     await new Promise((r) => setTimeout(r, 50));
-    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(USER_A, "race-ipn-1")), { status: 200 });
   };
 
   const makeReq = () =>
@@ -759,7 +767,7 @@ test("18. webhook: falha do dono libera o in-flight; retry legítimo reprocessa"
       await new Promise((r) => setTimeout(r, 30));
       throw new Error("fetch failed: ECONNRESET");
     }
-    return new Response(JSON.stringify({ status: "approved", external_reference: USER_A }), { status: 200 });
+    return new Response(JSON.stringify(validApprovedPayment(USER_A, "race-failrelease-1")), { status: 200 });
   };
 
   const body = JSON.stringify({ type: "payment", data: { id: "race-failrelease-1" } });
