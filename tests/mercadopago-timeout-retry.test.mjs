@@ -281,9 +281,9 @@ test("2d. Erro definitivo (422) do provedor responde 200 ignored SEM retry nem l
 });
 
 // -------------------------------------------------------------
-// 3. Repetição do webhook / idempotência (MAI-144 §3)
+// 3. Repetição do webhook / idempotência (MAI-144 §3 + auditoria)
 // -------------------------------------------------------------
-test("3. Retry do webhook não duplica Pro nem ledger (idempotência comprovada)", async () => {
+test("3. Retry do webhook persiste concessão única no ledger (sem duplicar Pro)", async () => {
   globalThis.__mockWebhookSecret = null;
   globalThis.fetch = async () =>
     new Response(
@@ -298,6 +298,9 @@ test("3. Retry do webhook não duplica Pro nem ledger (idempotência comprovada)
     );
 
   const periodEnd = new Date(Date.now() + 30 * 86400000).toISOString();
+  // Modelo do ledger persistido (subscription_payments): a RPC atômica só
+  // insere uma linha por payment_id; retries enxergam a linha existente.
+  const ledger = [];
   let rpcCalls = 0;
   const base = checkoutLookupAdmin();
   globalThis.adminClient = {
@@ -305,11 +308,30 @@ test("3. Retry do webhook não duplica Pro nem ledger (idempotência comprovada)
     rpc: async (fn, params) => {
       assert.equal(fn, "process_mercadopago_subscription_payment");
       rpcCalls++;
+      const existing = ledger.find((row) => row.payment_id === params.p_payment_id);
+      if (existing) {
+        return {
+          data: {
+            already_processed: true,
+            current_period_end: existing.period_end,
+            validity_days_added: 0,
+            status: "active",
+          },
+          error: null,
+        };
+      }
+      const row = {
+        payment_id: params.p_payment_id,
+        user_id: params.p_user_id,
+        validity_days: params.p_validity_days,
+        period_end: periodEnd,
+      };
+      ledger.push(row);
       return {
         data: {
-          already_processed: rpcCalls > 1,
+          already_processed: false,
           current_period_end: periodEnd,
-          validity_days_added: rpcCalls > 1 ? 0 : 30,
+          validity_days_added: 30,
           status: "active",
         },
         error: null,
@@ -329,6 +351,7 @@ test("3. Retry do webhook não duplica Pro nem ledger (idempotência comprovada)
   const json1 = await res1.json();
   assert.equal(json1.processed, true);
   assert.equal(json1.already_processed, false);
+  assert.equal(ledger.length, 1, "1ª entrega persiste exatamente 1 concessão no ledger");
 
   // Repetição legítima do provedor (retry após timeout/rede).
   const res2 = await webhookPost(makeReq());
@@ -338,4 +361,92 @@ test("3. Retry do webhook não duplica Pro nem ledger (idempotência comprovada)
   assert.equal(json2.already_processed, true, "retry não pode estender vigência de novo");
   assert.equal(json2.current_period_end, periodEnd, "vigência idêntica — sem duplicar Pro");
   assert.equal(rpcCalls, 2);
+  assert.equal(ledger.length, 1, "ledger mantém UMA única linha após o retry (concessão única)");
+  assert.equal(
+    ledger.filter((row) => row.payment_id === "payment-idem-144").length,
+    1,
+    "payment_id aparece uma única vez no ledger",
+  );
+});
+
+test("3b. Webhook 408 transitório responde 502 (nunca 200) e o retry processa sem perda", async () => {
+  globalThis.__mockWebhookSecret = null;
+  let attempt = 0;
+  globalThis.fetch = async () => {
+    attempt++;
+    if (attempt === 1) return new Response(JSON.stringify({ message: "Request Timeout" }), { status: 408 });
+    return new Response(
+      JSON.stringify({
+        status: "approved",
+        external_reference: validUserId,
+        currency_id: "BRL",
+        transaction_amount: 12.9,
+        preference_id: "pref-timeout-1",
+      }),
+      { status: 200 },
+    );
+  };
+
+  const periodEnd = new Date(Date.now() + 30 * 86400000).toISOString();
+  const ledger = [];
+  const base = checkoutLookupAdmin();
+  globalThis.adminClient = {
+    ...base,
+    rpc: async (fn, params) => {
+      const existing = ledger.find((row) => row.payment_id === params.p_payment_id);
+      if (existing) {
+        return {
+          data: { already_processed: true, current_period_end: existing.period_end, validity_days_added: 0, status: "active" },
+          error: null,
+        };
+      }
+      ledger.push({ payment_id: params.p_payment_id, period_end: periodEnd });
+      return {
+        data: { already_processed: false, current_period_end: periodEnd, validity_days_added: 30, status: "active" },
+        error: null,
+      };
+    },
+  };
+
+  const makeReq = () =>
+    new Request("http://localhost/api/webhooks/mercadopago", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { id: "payment-408-retry" }, type: "payment" }),
+    });
+
+  const res408 = await webhookPost(makeReq());
+  assert.equal(res408.status, 502, "408 transitório deve responder 502 para o provedor retentar");
+  assert.equal(ledger.length, 0, "resposta transitória não persiste nada no ledger");
+
+  const resRetry = await webhookPost(makeReq());
+  assert.equal(resRetry.status, 200);
+  const jsonRetry = await resRetry.json();
+  assert.equal(jsonRetry.processed, true, "retry legítimo processa sem perda do pagamento");
+  assert.equal(ledger.length, 1, "pagamento registrado exatamente 1 vez após o retry");
+});
+
+test("4. Checkout diferencia transitório (502/429 retentável) de definitivo (422 claro)", async () => {
+  globalThis.authenticatedClient = {
+    auth: { getUser: async () => ({ data: { user: { id: validUserId, email: "user@example.com" } }, error: null }) },
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+  };
+  globalThis.adminClient = {
+    from: () => ({ insert: async () => ({ error: null }), update: () => ({ eq: async () => ({ error: null }) }) }),
+  };
+  const checkoutReq = () => new Request("http://localhost/api/mercadopago/checkout", { method: "POST" });
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Bad Gateway" }), { status: 503 });
+  const resTransient = await checkoutPost(checkoutReq());
+  assert.equal(resTransient.status, 502, "5xx do provedor => 502 retentável");
+  assert.match((await resTransient.json()).error, /tente novamente/i);
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Too Many Requests" }), { status: 429 });
+  const resRateLimited = await checkoutPost(checkoutReq());
+  assert.equal(resRateLimited.status, 429, "429 do provedor => 429 para o cliente recuar");
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Invalid item" }), { status: 400 });
+  const resDefinitive = await checkoutPost(checkoutReq());
+  assert.equal(resDefinitive.status, 422, "4xx definitivo => 422 claro, sem retry cego");
+  assert.match((await resDefinitive.json()).error, /rejeitou/i);
 });
