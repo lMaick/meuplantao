@@ -85,3 +85,52 @@ test("MAI-139 (auditoria): em produção o callback OAuth usa a origem canônica
     }
   }
 });
+
+test("MAI-139 (auditoria): getClientOrigin() integrado com oauthProviderConfig() preserva domínio de preview no navegador", async () => {
+  const { getClientOrigin } = await import("../src/lib/config/site-url.ts");
+  const originalWindow = globalThis.window;
+  const snap = {
+    site: process.env.NEXT_PUBLIC_SITE_URL,
+    app: process.env.NEXT_PUBLIC_APP_URL,
+    prod: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    preview: process.env.VERCEL_URL,
+    vercelEnv: process.env.VERCEL_ENV,
+    nodeEnv: process.env.NODE_ENV,
+  };
+  try {
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    delete process.env.VERCEL_URL;
+    delete process.env.VERCEL_ENV;
+    process.env.NODE_ENV = "production";
+    process.env.NEXT_PUBLIC_SITE_URL = "https://meuplantao.pro";
+
+    globalThis.window = {
+      location: {
+        origin: "https://meuplantao-git-feat-preview.vercel.app",
+      },
+    };
+
+    const clientOrigin = getClientOrigin();
+    assert.equal(clientOrigin, "https://meuplantao-git-feat-preview.vercel.app");
+
+    const config = oauthProviderConfig("google", clientOrigin, "/dashboard");
+    assert.equal(
+      config.options.redirectTo,
+      "https://meuplantao-git-feat-preview.vercel.app/auth/callback?next=%2Fdashboard",
+    );
+  } finally {
+    globalThis.window = originalWindow;
+    for (const [key, value] of Object.entries({
+      NEXT_PUBLIC_SITE_URL: snap.site,
+      NEXT_PUBLIC_APP_URL: snap.app,
+      VERCEL_PROJECT_PRODUCTION_URL: snap.prod,
+      VERCEL_URL: snap.preview,
+      VERCEL_ENV: snap.vercelEnv,
+      NODE_ENV: snap.nodeEnv,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

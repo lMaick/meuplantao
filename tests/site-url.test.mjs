@@ -307,4 +307,3 @@ test("MAI-139: getClientOrigin preserva preview no navegador e usa canonical no 
     restoreEnv(snap);
   }
 });
-

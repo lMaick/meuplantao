@@ -1,6 +1,11 @@
 export const DEFAULT_SITE_URL = "https://meuplantao.pro";
 
+export function isPreviewEnvironment(): boolean {
+  return process.env.VERCEL_ENV?.trim() === "preview";
+}
+
 export function isProductionEnvironment(): boolean {
+  if (isPreviewEnvironment()) return false;
   return (
     process.env.VERCEL_ENV?.trim() === "production" ||
     process.env.NODE_ENV?.trim() === "production"
@@ -70,7 +75,7 @@ function readVercelFallback(): string | undefined {
   const previewHost = process.env.VERCEL_URL?.trim();
   // MAI-139 (auditoria): em VERCEL_ENV=preview, VERCEL_URL tem precedência
   // sobre PRODUCTION_URL; nos demais ambientes a produção tem precedência.
-  const isPreview = process.env.VERCEL_ENV?.trim() === "preview";
+  const isPreview = isPreviewEnvironment();
   const first = isPreview ? previewHost : prodHost;
   const second = isPreview ? prodHost : previewHost;
   if (first) return prefixHttpsIfMissing(first);
@@ -93,13 +98,21 @@ function isBuildPhase(): boolean {
 
 /**
  * Resolução hierárquica da URL canônica:
- * a) NEXT_PUBLIC_SITE_URL (preferencial)
- * b) NEXT_PUBLIC_APP_URL (retrocompatível; warn se divergir de SITE_URL)
- * c) VERCEL_PROJECT_PRODUCTION_URL / VERCEL_URL (prefixando https://)
- * d) em produção: fail-closed se não houver configuração crítica
- * e) fallback padrão https://meuplantao.pro em dev/testes ou build estático offline
+ * a) VERCEL_URL em Vercel Preview (precedência máxima em previews de PR)
+ * b) NEXT_PUBLIC_SITE_URL (preferencial em produção/dev)
+ * c) NEXT_PUBLIC_APP_URL (retrocompatível; warn se divergir de SITE_URL)
+ * d) em produção: fail-closed estrito se não houver configuração manual
+ * e) fallbacks para fora de produção / build phase offline (Vercel ou padrão https://meuplantao.pro)
  */
 export function getSiteUrl(options?: { requireConfig?: boolean }): string {
+  // Em ambiente Vercel Preview, o preview URL é prioritário sobre SITE_URL herdada de produção
+  if (isPreviewEnvironment()) {
+    const previewHost = process.env.VERCEL_URL?.trim();
+    if (previewHost) {
+      return normalizeSiteUrl(prefixHttpsIfMissing(previewHost));
+    }
+  }
+
   const { site, app } = readManualSiteUrl();
 
   if (site) {
