@@ -54,6 +54,7 @@ const {
   getTimeoutForOperation,
 } = await import("../src/lib/mercadopago/http.ts");
 const { POST: webhookPost } = await import("../src/app/api/webhooks/mercadopago/route.ts");
+const { GET: ipnGet } = await import("../src/app/api/webhooks/mercadopago/ipn/route.ts");
 const { GET: verifyGet } = await import("../src/app/api/mercadopago/verify/route.ts");
 const { POST: checkoutPost } = await import("../src/app/api/mercadopago/checkout/route.ts");
 const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts");
@@ -439,14 +440,42 @@ test("4. Checkout diferencia transitório (502/429 retentável) de definitivo (4
   globalThis.fetch = async () => new Response(JSON.stringify({ message: "Bad Gateway" }), { status: 503 });
   const resTransient = await checkoutPost(checkoutReq());
   assert.equal(resTransient.status, 502, "5xx do provedor => 502 retentável");
-  assert.match((await resTransient.json()).error, /tente novamente/i);
+  const jsonTransient = await resTransient.json();
+  assert.match(jsonTransient.error, /tente novamente/i);
+  assert.equal(jsonTransient.retryable, true, "payload transitório sinaliza retryable:true");
 
   globalThis.fetch = async () => new Response(JSON.stringify({ message: "Too Many Requests" }), { status: 429 });
   const resRateLimited = await checkoutPost(checkoutReq());
   assert.equal(resRateLimited.status, 429, "429 do provedor => 429 para o cliente recuar");
+  assert.equal((await resRateLimited.json()).retryable, true);
 
   globalThis.fetch = async () => new Response(JSON.stringify({ message: "Invalid item" }), { status: 400 });
   const resDefinitive = await checkoutPost(checkoutReq());
   assert.equal(resDefinitive.status, 422, "4xx definitivo => 422 claro, sem retry cego");
-  assert.match((await resDefinitive.json()).error, /rejeitou/i);
+  const jsonDefinitive = await resDefinitive.json();
+  assert.match(jsonDefinitive.error, /rejeitou/i);
+  assert.equal(jsonDefinitive.retryable, false, "payload definitivo sinaliza retryable:false");
+});
+
+test("4b. IPN 408/425 transitório responde 502 (nunca 200) e preserva o retry", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Request Timeout" }), { status: 408 });
+  let rpcCalls = 0;
+  globalThis.adminClient = {
+    rpc: async () => {
+      rpcCalls++;
+      return { data: null, error: null };
+    },
+  };
+  const res408 = await ipnGet(
+    new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-408-direct&topic=payment", { method: "GET" }),
+  );
+  assert.equal(res408.status, 502, "IPN 408 transitório deve responder 502 para o provedor retentar");
+  assert.equal(rpcCalls, 0, "resposta transitória não toca o ledger");
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Too Early" }), { status: 425 });
+  const res425 = await ipnGet(
+    new Request("http://localhost/api/webhooks/mercadopago/ipn?id=ipn-425-direct&topic=payment", { method: "GET" }),
+  );
+  assert.equal(res425.status, 502, "IPN 425 transitório deve responder 502 para o provedor retentar");
+  assert.equal(rpcCalls, 0);
 });
