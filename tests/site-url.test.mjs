@@ -159,6 +159,7 @@ test("MAI-139: rejeição de URLs maliciosas/inválidas", () => {
       "javascript:alert(1)",
       "data:text/html,<h1>hi</h1>",
       "https://user:pass@meuplantao.pro",
+      "https://@example.com",
       "https://meuplantao.pro/caminho?x=1",
       "https://meuplantao.pro/#frag",
       "https://meuplantao.pro/search?q=1",
