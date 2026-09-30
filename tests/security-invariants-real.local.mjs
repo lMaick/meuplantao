@@ -75,6 +75,9 @@ drop table if exists public.payments cascade;
 drop table if exists public.obligations cascade;
 drop table if exists public.shifts cascade;
 drop table if exists public.subscription_payments cascade;
+drop table if exists public.subscription_payments_quarantine cascade;
+drop table if exists public.subscription_payment_events cascade;
+drop table if exists public.subscription_checkouts cascade;
 create table public.shifts (
   id uuid primary key default gen_random_uuid(),
   user_id uuid,
@@ -90,6 +93,36 @@ create table public.subscription_payments (
   user_id uuid,
   mercadopago_payment_id text
 );
+create table public.subscription_checkouts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid,
+  plan_id text,
+  months integer,
+  validity_days integer,
+  amount numeric(10, 2),
+  status text not null default 'pending',
+  completed_payment_id text,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '3 days')
+);
+create table public.subscription_payments_quarantine (
+  id uuid primary key default gen_random_uuid(),
+  mercadopago_payment_id text not null,
+  user_id uuid,
+  checkout_id uuid,
+  reason text not null,
+  sanitized_payload jsonb not null default '{}'::jsonb,
+  status text not null default 'quarantined',
+  created_at timestamptz not null default now()
+);
+create table public.subscription_payment_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid,
+  mercadopago_payment_id text not null,
+  from_status text,
+  to_status text not null,
+  created_at timestamptz not null default now()
+);
 create table public.payments (
   id uuid primary key default gen_random_uuid(),
   user_id uuid,
@@ -104,6 +137,9 @@ create table public.obligations (
 );
 alter table public.shifts enable row level security;
 alter table public.subscription_payments enable row level security;
+alter table public.subscription_checkouts enable row level security;
+alter table public.subscription_payments_quarantine enable row level security;
+alter table public.subscription_payment_events enable row level security;
 alter table public.payments enable row level security;
 alter table public.obligations enable row level security;
 drop policy if exists shifts_select_own on public.shifts;
@@ -112,6 +148,10 @@ drop policy if exists shifts_delete_own on public.shifts;
 create policy shifts_delete_own on public.shifts for delete to authenticated using ((select auth.uid()) = user_id);
 drop policy if exists subscription_payments_select_own on public.subscription_payments;
 create policy subscription_payments_select_own on public.subscription_payments for select to authenticated using ((select auth.uid()) = user_id);
+drop policy if exists subscription_checkouts_select_own on public.subscription_checkouts;
+create policy subscription_checkouts_select_own on public.subscription_checkouts for select to authenticated using ((select auth.uid()) = user_id);
+drop policy if exists subscription_payment_events_select_own on public.subscription_payment_events;
+create policy subscription_payment_events_select_own on public.subscription_payment_events for select to authenticated using ((select auth.uid()) = user_id);
 drop policy if exists payments_select_own on public.payments;
 create policy payments_select_own on public.payments for select to authenticated using ((select auth.uid()) = user_id);
 drop policy if exists payments_insert_own on public.payments;
@@ -125,6 +165,14 @@ grant select, delete on public.shifts to authenticated;
 revoke all on public.subscription_payments from anon, authenticated, public;
 grant select on public.subscription_payments to authenticated;
 grant all on public.subscription_payments to service_role;
+revoke all on public.subscription_checkouts from anon, authenticated, public;
+grant select on public.subscription_checkouts to authenticated;
+grant all on public.subscription_checkouts to service_role;
+revoke all on public.subscription_payments_quarantine from anon, authenticated, public;
+grant all on public.subscription_payments_quarantine to service_role;
+revoke all on public.subscription_payment_events from anon, authenticated, public;
+grant select on public.subscription_payment_events to authenticated;
+grant all on public.subscription_payment_events to service_role;
 revoke all on public.payments from anon, authenticated, public;
 grant select, insert, update on public.payments to authenticated;
 revoke all on public.obligations from anon, authenticated, public;
@@ -147,6 +195,9 @@ drop table if exists public.payments cascade;
 drop table if exists public.obligations cascade;
 drop table if exists public.shifts cascade;
 drop table if exists public.subscription_payments cascade;
+drop table if exists public.subscription_payments_quarantine cascade;
+drop table if exists public.subscription_payment_events cascade;
+drop table if exists public.subscription_checkouts cascade;
 drop schema if exists auth cascade;
 drop role if exists authenticated;
 drop role if exists anon;

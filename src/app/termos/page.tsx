@@ -69,7 +69,16 @@ export default function TermosPage() {
         </p>
       </LegalSection>
 
-      <LegalSection title="5. Atualizações dos termos e suporte">
+      <LegalSection title="5. Plano Pro: compra pré-paga sem renovação automática">
+        <p>
+          O plano Pro é contratado como compra avulsa pré-paga de um período fixo de acesso. Acesso
+          por período fixo. Sem renovação automática. Sem cobranças recorrentes no cartão: ao final
+          da vigência, o acesso Pro apenas expira e nenhum valor adicional é cobrado sem uma nova
+          compra iniciada por você.
+        </p>
+      </LegalSection>
+
+      <LegalSection title="6. Atualizações dos termos e suporte">
         <p>
           Estes termos podem ser atualizados periodicamente para acompanhar novas funcionalidades ou
           ajustes regulatórios. A versão mais recente sempre estará publicada nesta página.

@@ -30,6 +30,11 @@ const faqs: FaqItem[] = [
       "Não é obrigatório! O MeuPlantão é um web app moderno (PWA) de alta velocidade. Basta abrir no navegador do seu smartphone e selecionar 'Adicionar à tela de início' para usá-lo com ícone direto no celular, ocupando quase zero memória.",
   },
   {
+    question: "Como funciona a cobrança do plano Pro?",
+    answer:
+      "O plano Pro é uma compra avulsa pré-paga do período de acesso: você paga apenas pelo período selecionado. Acesso por período fixo. Sem renovação automática. Sem cobranças recorrentes no cartão.",
+  },
+  {
     question: "Meus dados financeiros e de plantões estão seguros?",
     answer:
       "Absolutamente. A arquitetura conta com banco de dados Postgres de nível bancário e políticas estritas de Row Level Security (RLS). Ninguém além de você pode visualizar ou alterar seus registros financeiros.",

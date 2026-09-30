@@ -315,12 +315,17 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
           <div className="flex items-start gap-2.5">
             <CheckCircle2 className="size-4.5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
             <span className="text-xs sm:text-sm text-foreground">
-              <strong>Sem fidelidade:</strong> cancele a qualquer momento com 1 clique
+              <strong>Compra pré-paga:</strong> acesso por período fixo, sem renovação automática
             </span>
           </div>
         </div>
 
         <PlanPeriodSelector value={selectedMonths} onChange={setSelectedMonths} disabled={isProcessing || isSyncing} />
+
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          Compra avulsa pré-paga: você paga apenas pelo período selecionado. Sem renovação automática e
+          sem cobranças recorrentes.
+        </p>
 
         {/* Action Button & Feedback */}
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap">
@@ -398,9 +403,9 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
       <div className="mt-5 flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <ShieldCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
-          Garantia de 7 dias ou seu dinheiro de volta
+          Acesso por período fixo. Sem renovação automática.
         </span>
-        <span>Cancelamento imediato sem burocracia</span>
+        <span>Sem cobranças recorrentes no cartão</span>
       </div>
     </Card>
   );

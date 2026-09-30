@@ -153,7 +153,7 @@ test("security-invariants: payments sem RLS, com DELETE ou UPDATE irrestrito fal
   );
 });
 
-test("security-invariants: UPDATE financeiro direto em obligations.valor_devido falha o gate", () => {
+test("security-invariants: UPDATE financeiro direto em obligations.valor_devido falha o gate", async () => {
   const financialDrift = drift(buildCompliantCatalogFixture(), (c) => {
     c.columnGrants.push({
       tablename: "obligations",
@@ -165,6 +165,22 @@ test("security-invariants: UPDATE financeiro direto em obligations.valor_devido 
   const res = evaluateSecurityInvariants(financialDrift);
   assert.strictEqual(res.ok, false);
   assert.ok(res.failures.some((f) => f.id === "obligations.no_financial_update"));
+});
+
+test("security-invariants MAI-147: quarentena exposta a authenticated ou RLS off no billing falha o gate", async () => {
+  const quarantineLeak = drift(buildCompliantCatalogFixture(), (c) => {
+    c.tableGrants.push({ tablename: "subscription_payments_quarantine", grantee: "authenticated", privilege: "SELECT" });
+  });
+  const leakRes = evaluateSecurityInvariants(quarantineLeak);
+  assert.strictEqual(leakRes.ok, false);
+  assert.ok(leakRes.failures.some((f) => f.id === "subscription_payments_quarantine.restricted"));
+
+  const rlsOff = drift(buildCompliantCatalogFixture(), (c) => {
+    c.tables.find((t) => t.tablename === "subscription_checkouts").rls_enabled = false;
+  });
+  const rlsRes = evaluateSecurityInvariants(rlsOff);
+  assert.strictEqual(rlsRes.ok, false);
+  assert.ok(rlsRes.failures.some((f) => f.id === "subscription_checkouts.rls_enabled"));
 });
 
 function makeSecurityQueryFn(catalog) {
@@ -248,7 +264,8 @@ test("security-invariants: production gate strict falha quando invariante diverg
   const validRows = [
     { proname: "save_shift_with_obligation", pronargs: 11, argtypes: "uuid, uuid, date, time without time zone, time without time zone, numeric, text, date, uuid, uuid, text" },
     { proname: "register_payment", pronargs: 3, argtypes: "uuid, numeric, date" },
-    { proname: "process_mercadopago_subscription_payment", pronargs: 6, argtypes: "text, uuid, integer, integer, numeric, text" },
+    { proname: "process_mercadopago_subscription_payment", pronargs: 7, argtypes: "text, uuid, integer, integer, numeric, text, uuid" },
+    { proname: "reconcile_mercadopago_reversal", pronargs: 6, argtypes: "text, uuid, text, integer, integer, numeric" },
   ];
   class MockRpcClient {
     async connect() {}

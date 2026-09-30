@@ -12,21 +12,22 @@ import {
   releaseBillingCooldown,
 } from "@/lib/billing/rate-limit";
 import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
-import { getValidityDays, processMercadoPagoPayment } from "@/lib/mercadopago/payments";
+import {
+  completeSubscriptionCheckout,
+  getValidityDays,
+  isQuoteConsumedError,
+  processMercadoPagoPayment,
+  quarantinePayment,
+  validatePaymentBeforeGrantingPro,
+  type MercadoPagoPaymentPayload,
+} from "@/lib/mercadopago/payments";
+import { isDisputeStatus, isReversalStatus, reconcileMercadoPagoReversal } from "@/lib/mercadopago/reversals";
 import { captureError, captureRateLimitHit } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
 const VERIFY_ROUTE = "/api/mercadopago/verify";
-
-interface MercadoPagoPayment {
-  id?: string | number;
-  status?: string;
-  external_reference?: string;
-  transaction_amount?: number;
-  metadata?: { user_id?: string; userId?: string; months?: number };
-}
 
 function getPaymentId(request: NextRequest): string | null {
   const paymentId = request.nextUrl.searchParams.get("payment_id")?.trim();
@@ -179,13 +180,78 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Nao foi possivel consultar o pagamento no Mercado Pago" }, { status: 502 });
     }
 
-    const payment = (await paymentResponse.json()) as MercadoPagoPayment;
+    const payment = (await paymentResponse.json()) as MercadoPagoPaymentPayload;
 
     if (!paymentBelongsToUser(payment, user.id)) {
       return NextResponse.json({ error: "Pagamento nao pertence a esta conta" }, { status: 403 });
     }
 
     if (payment.status !== "approved") {
+      const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
+      const validityDays = getValidityDays(months);
+
+      // Reversao confirmada no provedor: reconcilia antes de responder.
+      if (isReversalStatus(payment.status)) {
+        try {
+          const admin = createAdminClient();
+          const result = await reconcileMercadoPagoReversal(admin, {
+            paymentId,
+            userId: user.id,
+            reversalStatus: payment.status ?? "refunded",
+            months,
+            validityDays,
+            amount: payment.transaction_amount ?? undefined,
+          });
+          const now = new Date();
+          const active = Boolean(result.current_period_end && new Date(result.current_period_end) > now);
+          return NextResponse.json({
+            verified: true,
+            payment_found: true,
+            payment_processed_now: false,
+            already_processed: result.already_reversed,
+            subscription_active: active,
+            subscription_status: active ? "active" : "expired",
+            current_period_end: result.current_period_end,
+            payment_status: payment.status ?? "unknown",
+            activated: false,
+            reversed: true,
+            status: payment.status ?? "unknown",
+          });
+        } catch {
+          // Fallback gracioso abaixo em caso de falha da RPC.
+        }
+      }
+
+      if (isDisputeStatus(payment.status)) {
+        let currentSub = null;
+        try {
+          const admin = createAdminClient();
+          const { data } = await admin
+            .from("subscriptions")
+            .select("status, current_period_end")
+            .eq("user_id", user.id)
+            .maybeSingle();
+          currentSub = data;
+        } catch {
+          // Fallback gracioso
+        }
+        const now = new Date();
+        const isSubActive = Boolean(currentSub?.current_period_end && new Date(currentSub.current_period_end) > now);
+        return NextResponse.json({
+          verified: true,
+          payment_found: true,
+          payment_processed_now: false,
+          already_processed: false,
+          subscription_active: isSubActive,
+          subscription_status: isSubActive ? "active" : (currentSub?.status || "expired"),
+          current_period_end: currentSub?.current_period_end || null,
+          payment_status: payment.status ?? "unknown",
+          activated: false,
+          needs_review: true,
+          status: payment.status ?? "unknown",
+        });
+      }
+
       let currentSub = null;
       try {
         const admin = createAdminClient();
@@ -217,18 +283,89 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const months = Number(payment.metadata?.months || payment.external_reference?.split("#")[1] || 1);
-    const validityDays = getValidityDays(months);
-
     const admin = createAdminClient();
-    const result = await processMercadoPagoPayment(admin, {
-      paymentId,
-      userId: user.id,
-      months,
-      validityDays,
-      amount: payment.transaction_amount,
-      status: payment.status ?? "approved",
-    });
+    const valResult = await validatePaymentBeforeGrantingPro(admin, payment, user.id);
+
+    if (!valResult.valid) {
+      if (valResult.forbidden) {
+        return NextResponse.json({ error: "Pagamento nao pertence a esta conta" }, { status: 403 });
+      }
+
+      if (valResult.quarantine) {
+        await quarantinePayment(admin, {
+          paymentId,
+          userId: user.id,
+          reason: valResult.reason,
+          amount: payment.transaction_amount,
+          currency: payment.currency_id,
+          months: payment.metadata?.months,
+          rawPayload: payment as Record<string, unknown>,
+        });
+        captureError(new Error(`Pagamento em quarentena no verify: ${valResult.reason}`), {
+          route: "/api/mercadopago/verify",
+          userId: user.id,
+          paymentId,
+          httpStatus: 422,
+          extra: { quarantine_reason: valResult.reason, details: valResult.details },
+        });
+        return NextResponse.json(
+          {
+            verified: false,
+            quarantined: true,
+            error: "Pagamento com inconsistência de valor ou moeda. Enviado para quarentena e análise.",
+            reason: valResult.reason,
+            status: "quarantined",
+          },
+          { status: 422 },
+        );
+      }
+
+      return NextResponse.json(
+        { verified: false, error: "Pagamento não aprovado para concessão de Pro." },
+        { status: 400 },
+      );
+    }
+
+    let result;
+    try {
+      result = await processMercadoPagoPayment(admin, {
+        paymentId,
+        userId: user.id,
+        months: valResult.months,
+        validityDays: valResult.validityDays,
+        amount: valResult.amount,
+        status: payment.status ?? "approved",
+        checkoutId: valResult.checkoutId,
+      });
+    } catch (rpcError) {
+      if (isQuoteConsumedError(rpcError)) {
+        await quarantinePayment(admin, {
+          paymentId,
+          userId: user.id,
+          reason: "checkout_already_completed",
+          amount: payment.transaction_amount,
+          currency: payment.currency_id,
+          months: payment.metadata?.months,
+          checkoutId: valResult.checkoutId,
+          rawPayload: payment as Record<string, unknown>,
+        });
+        return NextResponse.json(
+          {
+            verified: false,
+            quarantined: true,
+            error: "Cotação já consumida por outro pagamento. Enviado para revisão.",
+            reason: "checkout_already_completed",
+            status: "quarantined",
+          },
+          { status: 422 },
+        );
+      }
+      throw rpcError;
+    }
+
+    if (valResult.checkoutId) {
+      await completeSubscriptionCheckout(admin, valResult.checkoutId, paymentId);
+    }
 
     const now = new Date();
     const hasFutureEnd = Boolean(result.current_period_end && new Date(result.current_period_end) > now);
