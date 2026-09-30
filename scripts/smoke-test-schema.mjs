@@ -52,10 +52,17 @@ export const CRITICAL_RPCS = [
   },
   {
     name: "process_mercadopago_subscription_payment",
-    description: "Mercado Pago subscription payment webhook processing & idempotency",
+    description: "Mercado Pago subscription payment webhook processing & idempotency (MAI-147: com claim atomico de cotacao via p_checkout_id obrigatorio fail-closed)",
+    requiresServiceRole: true,
+    expectedArgsCount: 7,
+    expectedArgTypes: ["text", "uuid", "integer", "integer", "numeric", "text", "uuid"],
+  },
+  {
+    name: "reconcile_mercadopago_reversal",
+    description: "Mercado Pago refund/chargeback reconciliation without deleting ledger (MAI-136)",
     requiresServiceRole: true,
     expectedArgsCount: 6,
-    expectedArgTypes: ["text", "uuid", "integer", "integer", "numeric", "text"],
+    expectedArgTypes: ["text", "uuid", "text", "integer", "integer", "numeric"],
   },
 ];
 

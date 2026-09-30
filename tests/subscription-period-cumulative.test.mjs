@@ -9,6 +9,7 @@ const __testDirname = path.dirname(__testFilename);
 const trialModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "subscription", "trial.ts")).href;
 const configModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const paymentsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const reversalsModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const webhookModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const observabilityModuleUrl = pathToFileURL(path.join(__testDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -37,6 +38,12 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") {
       return {
         url: paymentsModuleUrl,
+        shortCircuit: true,
+      };
+    }
+    if (specifier === "@/lib/mercadopago/reversals") {
+      return {
+        url: reversalsModuleUrl,
         shortCircuit: true,
       };
     }
@@ -142,8 +149,8 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
       new Response(
         JSON.stringify({
           results: [
-            { id: "2001", status: "approved", external_reference: testUserId, date_created: "2026-09-19T10:00:00.000Z", transaction_amount: 12.9 },
-            { id: "2002", status: "approved", external_reference: testUserId, date_created: "2026-09-19T11:00:00.000Z", transaction_amount: 12.9 },
+            { id: "2001", status: "approved", external_reference: testUserId, date_created: "2026-09-19T10:00:00.000Z", transaction_amount: 12.9, currency_id: "BRL", preference_id: "pref-cumul-2001" },
+            { id: "2002", status: "approved", external_reference: testUserId, date_created: "2026-09-19T11:00:00.000Z", transaction_amount: 12.9, currency_id: "BRL", preference_id: "pref-cumul-2002" },
           ],
         }),
         { status: 200 },
@@ -166,16 +173,54 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
           error: null,
         };
       },
-      from: () => ({
-        select: () => ({
-          eq: () => ({
+      from: (table) => {
+        if (table === "subscription_checkouts") {
+          const createQuery = () => ({
+            eq: () => createQuery(),
+            is: () => createQuery(),
+            order: () => createQuery(),
+            limit: () => createQuery(),
             maybeSingle: async () => ({
-              data: currentPeriodEnd ? { current_period_end: currentPeriodEnd, status: "active" } : null,
+              data: {
+                id: "chk_mock_cumul",
+                user_id: testUserId,
+                plan_id: "pro_monthly",
+                months: 1,
+                validity_days: 30,
+                amount: 12.9,
+                amount_cents: 1290,
+                price_cents: 1290,
+                currency: "BRL",
+                completed_payment_id: null,
+                expires_at: new Date(Date.now() + 86400000).toISOString(),
+              },
               error: null,
             }),
+          });
+          return {
+            select: () => createQuery(),
+            update: () => ({
+              eq: () => ({
+                is: () => ({
+                  select: () => ({
+                    maybeSingle: async () => ({ data: { id: "chk_mock_cumul" }, error: null }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: currentPeriodEnd ? { current_period_end: currentPeriodEnd, status: "active" } : null,
+                error: null,
+              }),
+            }),
           }),
-        }),
-      }),
+        };
+      },
     };
 
     const response = await syncRoute(new Request("http://localhost/api/mercadopago/sync", { method: "POST" }));
@@ -200,7 +245,14 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
     globalThis.fetch = async () => {
       calls += 1;
       return new Response(
-        JSON.stringify({ status: "approved", external_reference: testUserId, date_created: "2026-09-19T11:00:00.000Z", transaction_amount: 12.9 }),
+        JSON.stringify({
+          status: "approved",
+          external_reference: testUserId,
+          date_created: "2026-09-19T11:00:00.000Z",
+          transaction_amount: 12.9,
+          currency_id: "BRL",
+          preference_id: "pref-cumul-wh",
+        }),
         { status: 200 },
       );
     };
@@ -215,6 +267,42 @@ describe("MAI-126: Vigencia cumulativa automatica (PIX 30d por pagamento)", () =
             status: "active",
           },
           error: null,
+        };
+      },
+      from: () => {
+        const createQuery = () => ({
+          eq: () => createQuery(),
+          is: () => createQuery(),
+          order: () => createQuery(),
+          limit: () => createQuery(),
+          maybeSingle: async () => ({
+            data: {
+              id: "chk_webhook_mock",
+              user_id: testUserId,
+              plan_id: "pro_monthly",
+              months: 1,
+              validity_days: 30,
+              amount: 12.9,
+              amount_cents: 1290,
+              price_cents: 1290,
+              currency: "BRL",
+              completed_payment_id: null,
+              expires_at: new Date(Date.now() + 86400000).toISOString(),
+            },
+            error: null,
+          }),
+        });
+        return {
+          select: () => createQuery(),
+          update: () => ({
+            eq: () => ({
+              is: () => ({
+                select: () => ({
+                  maybeSingle: async () => ({ data: { id: "chk_webhook_mock" }, error: null }),
+                }),
+              }),
+            }),
+          }),
         };
       },
     };

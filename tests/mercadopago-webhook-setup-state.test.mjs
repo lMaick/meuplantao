@@ -12,6 +12,7 @@ const realConfig = await import(pathToFileURL(path.join(__setupDir, "..", "src",
 
 const __setupTrialUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "subscription", "trial.ts")).href;
 const __setupPaymentsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "payments.ts")).href;
+const __setupReversalsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __setupWebhookUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
 const __setupObservabilityUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "observability", "index.ts")).href;
 
@@ -21,6 +22,7 @@ registerHooks({
     if (specifier === "@/lib/observability") return { url: __setupObservabilityUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: __setupTrialUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/payments") return { url: __setupPaymentsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/reversals") return { url: __setupReversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: __setupWebhookUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
@@ -82,10 +84,20 @@ function paymentRequest(paymentId, headers = {}) {
 }
 
 function mockApprovedPayment() {
+  const checkoutId = "00000000-0000-4000-8000-000000000999";
   globalThis.fetch = async (url) => {
     assert.match(url, /^https:\/\/api\.mercadopago\.test\/v1\/payments\//);
     return new Response(
-      JSON.stringify({ status: "approved", external_reference: validUserId, transaction_amount: 12.9 }),
+      JSON.stringify({
+        status: "approved",
+        external_reference: `${validUserId}#pro_monthly#${checkoutId}`,
+        transaction_amount: 12.9,
+        currency_id: "BRL",
+        metadata: {
+          user_id: validUserId,
+          checkout_id: checkoutId,
+        },
+      }),
       { status: 200 },
     );
   };
@@ -105,6 +117,47 @@ function mockApprovedPayment() {
         error: null,
       };
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: {
+                id: checkoutId,
+                user_id: validUserId,
+                plan_id: "pro_monthly",
+                price_cents: 1290,
+                currency: "BRL",
+                completed_payment_id: null,
+                expires_at: new Date(Date.now() + 86400000).toISOString(),
+              },
+              error: null,
+            }),
+          }),
+          maybeSingle: async () => ({
+            data: {
+              id: checkoutId,
+              user_id: validUserId,
+              plan_id: "pro_monthly",
+              price_cents: 1290,
+              currency: "BRL",
+              completed_payment_id: null,
+              expires_at: new Date(Date.now() + 86400000).toISOString(),
+            },
+            error: null,
+          }),
+        }),
+      }),
+      update: () => ({
+        eq: () => ({
+          is: () => ({
+            select: () => ({
+              maybeSingle: async () => ({ data: { id: checkoutId }, error: null }),
+            }),
+          }),
+        }),
+      }),
+    }),
   };
   return { getRpcCalls: () => rpcCalls, futureEnd };
 }
