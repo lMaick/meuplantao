@@ -61,21 +61,27 @@ const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts
 
 const validUserId = "33333333-3333-4333-8333-333333333333";
 
-/** Simula provedor lento: nunca resolve; rejeita ao abortar (como fetch real). */
+/**
+ * Simula provedor lento: rejeita ATIVAMENTE via DOMException no abort,
+ * destravando o event loop imediatamente (CI Node 22) em vez de deixar
+ * promise pendurada sem settlement.
+ */
 function mockSlowProvider() {
   globalThis.fetch = (_url, opts) =>
     new Promise((_resolve, reject) => {
       const signal = opts?.signal;
       const abortErr = () => {
-        const err = new Error("The operation was aborted");
-        err.name = "TimeoutError";
-        reject(err);
+        reject(new DOMException("The operation was aborted", "AbortError"));
       };
-      if (signal?.aborted) {
+      if (!signal) {
         abortErr();
         return;
       }
-      signal?.addEventListener("abort", abortErr, { once: true });
+      if (signal.aborted) {
+        abortErr();
+        return;
+      }
+      signal.addEventListener("abort", abortErr, { once: true });
     });
 }
 
