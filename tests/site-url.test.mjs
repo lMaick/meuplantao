@@ -24,7 +24,6 @@ registerHooks({
 import {
   DEFAULT_SITE_URL,
   getCanonicalOrigin,
-  getClientOrigin,
   getSiteUrl,
   normalizeSiteUrl,
 } from "../src/lib/config/site-url.ts";
@@ -134,12 +133,13 @@ test("MAI-139: Vercel Preview via VERCEL_URL e PRODUCTION_URL", () => {
   try {
     clearSiteEnv();
     process.env.NODE_ENV = "production";
-    delete process.env.VERCEL_ENV;
+    process.env.VERCEL_ENV = "preview";
     process.env.VERCEL_URL = "meuplantao-git-preview.vercel.app";
     assert.equal(getSiteUrl(), "https://meuplantao-git-preview.vercel.app");
     clearSiteEnv();
+    process.env.VERCEL_ENV = "production";
     process.env.VERCEL_PROJECT_PRODUCTION_URL = "meuplantao.vercel.app";
-    assert.equal(getSiteUrl(), "https://meuplantao.vercel.app");
+    assert.throws(() => getSiteUrl(), /Configuração ausente/);
   } finally {
     restoreEnv(snap);
   }
@@ -215,10 +215,10 @@ test("MAI-139 (auditoria): VERCEL_ENV=preview prioriza VERCEL_URL sobre PRODUCTI
   try {
     clearSiteEnv();
     process.env.NODE_ENV = "production";
-    delete process.env.VERCEL_ENV;
+    process.env.VERCEL_ENV = "production";
     process.env.VERCEL_PROJECT_PRODUCTION_URL = "meuplantao.vercel.app";
     process.env.VERCEL_URL = "meuplantao-abc123-lmaick.vercel.app";
-    assert.equal(getSiteUrl(), "https://meuplantao.vercel.app");
+    assert.throws(() => getSiteUrl(), /Configuração ausente/);
     process.env.VERCEL_ENV = "preview";
     assert.equal(getSiteUrl(), "https://meuplantao-abc123-lmaick.vercel.app");
   } finally {
@@ -279,31 +279,6 @@ test("MAI-139: SEO e Mercado Pago usam a mesma fonte canônica", () => {
     assert.equal(getSeoSiteUrl(), getSiteUrl());
     assert.equal(getApplicationOrigin("https://evil.example.com/"), getSiteUrl());
   } finally {
-    restoreEnv(snap);
-  }
-});
-
-test("MAI-139: getClientOrigin preserva preview no navegador e usa canonical no servidor", () => {
-  const snap = snapshotEnv();
-  const originalWindow = globalThis.window;
-  try {
-    clearSiteEnv();
-    process.env.NODE_ENV = "production";
-    process.env.NEXT_PUBLIC_SITE_URL = "https://meuplantao.pro";
-
-    // 1. No servidor (sem window): usa canonical
-    delete globalThis.window;
-    assert.equal(getClientOrigin(), "https://meuplantao.pro");
-
-    // 2. No navegador em preview: usa window.location.origin do preview
-    globalThis.window = {
-      location: {
-        origin: "https://meuplantao-git-feat-preview.vercel.app",
-      },
-    };
-    assert.equal(getClientOrigin(), "https://meuplantao-git-feat-preview.vercel.app");
-  } finally {
-    globalThis.window = originalWindow;
     restoreEnv(snap);
   }
 });

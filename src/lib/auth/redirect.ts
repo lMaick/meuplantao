@@ -1,5 +1,3 @@
-import { getCanonicalOrigin, isPreviewEnvironment, isProductionEnvironment } from "../config/site-url";
-
 /** Keep authentication redirects on this application and avoid auth loops. */
 export function safeNext(value?: string | string[]): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\\\s]/.test(value)) return "/dashboard";
@@ -9,41 +7,25 @@ export function safeNext(value?: string | string[]): string {
 }
 
 /**
- * MAI-139: resolução segura de origem para callbacks de autenticação:
- * - No browser (`typeof window !== "undefined"`): usa a origem do navegador
- *   (garantindo suporte a Vercel Previews, dev e produção sem cross-origin redirect).
- * - Em preview Vercel no servidor (`VERCEL_ENV=preview`): usa a URL confiável do preview.
- * - Em produção no servidor: SEMPRE usa a origem canônica configurada (anti Host Header Injection).
- * - Fora de produção (dev local e testes): respeita a origem fornecida.
+ * Validate the origin resolved by a Server Component and passed as a prop.
+ * Never read window.location here: production aliases must keep the configured
+ * canonical origin, while Preview origins are resolved from server env first.
  */
-function resolveAuthOrigin(origin: string): string {
-  if (typeof window !== "undefined" && window.location?.origin) {
-    try {
-      const candidate = origin || window.location.origin;
-      const parsed = new URL(candidate);
-      if (["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password && parsed.pathname === "/" && !parsed.search && !parsed.hash) {
-        return parsed.origin;
-      }
-    } catch {
-      // fallback se origin for malformada
-    }
+export function getClientOrigin(serverResolvedOrigin: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(serverResolvedOrigin);
+  } catch {
+    throw new Error("Origem inválida para callback de autenticação");
   }
-
-  if (isPreviewEnvironment()) {
-    return getCanonicalOrigin();
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("Origem inválida para callback de autenticação");
   }
-
-  if (isProductionEnvironment()) {
-    return getCanonicalOrigin(origin);
-  }
-
-  return origin;
+  return parsed.origin;
 }
 
 export function authCallbackUrl(origin: string, next: string): string {
-  const parsed = new URL(resolveAuthOrigin(origin));
-  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("Origem inválida para callback de autenticação");
-  const url = new URL("/auth/callback", parsed);
+  const url = new URL("/auth/callback", getClientOrigin(origin));
   url.searchParams.set("next", safeNext(next));
   return url.toString();
 }
