@@ -17,6 +17,7 @@ import {
   MercadoPagoTimeoutError,
   fetchMercadoPago,
   getTimeoutForOperation,
+  isTransientMercadoPagoStatus,
   sanitizedMercadoPagoLogContext,
 } from "@/lib/mercadopago/http";
 import {
@@ -386,6 +387,27 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
       return Response.json(
         { received: true, ignored: true, error: "Pagamento inexistente no Mercado Pago" },
         { status: 200 },
+      );
+    }
+
+    // MAI-144 (auditoria): transitório restante (408/425) => 502 retentável,
+    // com locks liberados para o retry legítimo do provedor — nunca 200.
+    if (!paymentResponse.ok && isTransientMercadoPagoStatus(paymentResponse.status)) {
+      await releaseCooldown();
+      captureWebhookError(
+        new Error(`Mercado Pago upstream transient ${paymentResponse.status}`),
+        {
+          paymentId,
+          httpStatus: 502,
+          extra: {
+            retryable: true,
+            upstream_status: paymentResponse.status,
+          },
+        }
+      );
+      return Response.json(
+        { error: "Falha temporaria na API do Mercado Pago", status: paymentResponse.status },
+        { status: 502 },
       );
     }
 

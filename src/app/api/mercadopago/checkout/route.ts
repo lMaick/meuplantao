@@ -16,6 +16,7 @@ import {
   fetchMercadoPago,
   getTimeoutForOperation,
   isTransientMercadoPagoFailure,
+  isTransientMercadoPagoStatus,
   sanitizedMercadoPagoLogContext,
 } from "@/lib/mercadopago/http";
 import { captureCheckoutError, captureRateLimitHit } from "@/lib/observability";
@@ -301,7 +302,51 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!mercadoPagoResponse.ok) throw new Error("Mercado Pago rejeitou a preferencia");
+    // MAI-144 (auditoria): distingue resposta transitória do provedor
+    // (408/429/5xx => 502/429 retentável, cooldown liberado) de erro
+    // definitivo (4xx => 422 claro, sem retry cego). Nunca concede Pro aqui.
+    if (!mercadoPagoResponse.ok) {
+      if (limiterOn && cooldownMarked && currentUserId) {
+        await releaseBillingCooldown(userCooldownKey(), cooldownStoreName).catch(() => undefined);
+      }
+      const upstreamStatus = mercadoPagoResponse.status;
+      if (isTransientMercadoPagoStatus(upstreamStatus)) {
+        captureCheckoutError(new Error(`Mercado Pago preference upstream transient ${upstreamStatus}`), {
+          route: "/api/mercadopago/checkout",
+          userId: currentUserId,
+          extra: {
+            stage: "mercadopago_preference_create",
+            checkoutId,
+            retryable: true,
+            upstream_status: upstreamStatus,
+          },
+        });
+        if (upstreamStatus === 429) {
+          return NextResponse.json(
+            { error: "Mercado Pago com muitas requisições. Tente novamente em instantes." },
+            { status: 429 },
+          );
+        }
+        return NextResponse.json(
+          { error: "Mercado Pago indisponível no momento. Tente novamente." },
+          { status: 502 },
+        );
+      }
+      captureCheckoutError(new Error(`Mercado Pago preference rejected ${upstreamStatus}`), {
+        route: "/api/mercadopago/checkout",
+        userId: currentUserId,
+        extra: {
+          stage: "mercadopago_preference_create",
+          checkoutId,
+          retryable: false,
+          upstream_status: upstreamStatus,
+        },
+      });
+      return NextResponse.json(
+        { error: "Mercado Pago rejeitou a preferência. Verifique os dados e tente novamente." },
+        { status: 422 },
+      );
+    }
     const preference = await mercadoPagoResponse.json() as { id?: string; init_point?: string; sandbox_init_point?: string };
     const initPoint = preference.init_point || preference.sandbox_init_point;
     if (!initPoint) throw new Error("Mercado Pago nao retornou URL de checkout");
