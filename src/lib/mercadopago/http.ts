@@ -100,7 +100,13 @@ export function isTimeoutError(error: unknown): boolean {
 }
 
 export function isTransientMercadoPagoFailure(error: unknown): boolean {
-  if (error instanceof MercadoPagoTimeoutError || error instanceof MercadoPagoNetworkError) return true;
+  if (
+    error instanceof MercadoPagoTimeoutError ||
+    error instanceof MercadoPagoNetworkError ||
+    error instanceof SupabaseRpcTimeoutError
+  ) {
+    return true;
+  }
   if (isTimeoutError(error)) return true;
   if (error && typeof error === "object") {
     const record = error as Record<string, unknown>;
@@ -234,4 +240,69 @@ export function sanitizedMercadoPagoLogContext(params: {
     ...(params.upstreamStatus !== undefined ? { upstream_status: params.upstreamStatus } : {}),
     ...(params.failureKind ? { failure_kind: params.failureKind } : {}),
   };
+}
+
+// ─── Deadlines para RPCs do Supabase (MAI-144 ciclo 5) ───────────────────────
+// Nenhuma chamada externa crítica ao banco/RPC fica sem deadline explícito.
+// O timeout NÃO cancela o trabalho já em voo no Postgres; a segurança vem da
+// idempotência da própria RPC (claim único por payment_id / bucket): o retry
+// re-invoca com os mesmos parâmetros e recebe `already_processed`.
+
+export const SUPABASE_RPC_TIMEOUTS = {
+  /** RPC financeira crítica do ledger (concessão de vigência / reversão). */
+  financialRpcMs: 15_000,
+  /** RPCs do rate limiter (não financeiras; falha vira fail-closed a montante). */
+  rateLimitRpcMs: 5_000,
+} as const;
+
+export type SupabaseRpcKind = "financial" | "rateLimit";
+
+function getSupabaseRpcEnvOverride(): number | null {
+  const raw = process.env.SUPABASE_RPC_TIMEOUT_MS?.trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.min(Math.max(Math.floor(parsed), 1), 60_000);
+}
+
+export function getSupabaseRpcTimeout(kind: SupabaseRpcKind): number {
+  const override = getSupabaseRpcEnvOverride();
+  if (override !== null) return override;
+  return kind === "financial" ? SUPABASE_RPC_TIMEOUTS.financialRpcMs : SUPABASE_RPC_TIMEOUTS.rateLimitRpcMs;
+}
+
+export class SupabaseRpcTimeoutError extends Error {
+  readonly rpcName: string;
+  readonly timeoutMs: number;
+  constructor(rpcName: string, timeoutMs: number) {
+    super(`Supabase RPC ${rpcName} excedeu o deadline (${timeoutMs}ms)`);
+    this.name = "SupabaseRpcTimeoutError";
+    this.rpcName = rpcName;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Envolve uma chamada RPC do Supabase com deadline explícito.
+ * Estoura `SupabaseRpcTimeoutError` (transitório, retentável) se o banco não
+ * responder dentro do teto. O timer é sempre limpo no settlement.
+ * Aceita o thenable do client Supabase (`PostgrestFilterBuilder`), que não é
+ * um `Promise` estrito — `Promise.resolve` normaliza antes da corrida.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function withSupabaseRpcTimeout(task: PromiseLike<any>, rpcName: string, timeoutMs?: number): Promise<any> {
+  const deadline = timeoutMs ?? getSupabaseRpcTimeout("financial");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new SupabaseRpcTimeoutError(rpcName, deadline));
+    }, deadline);
+    const maybeUnref = timer as unknown as { unref?: unknown };
+    if (typeof maybeUnref.unref === "function") {
+      maybeUnref.unref();
+    }
+  });
+  return Promise.race([Promise.resolve(task), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
