@@ -62,19 +62,23 @@ const { setLogSinkForTesting } = await import("../src/lib/observability/index.ts
 const validUserId = "33333333-3333-4333-8333-333333333333";
 
 /**
- * Simula provedor lento: rejeita ATIVAMENTE via DOMException no abort,
- * destravando o event loop imediatamente (CI Node 22) em vez de deixar
- * promise pendurada sem settlement.
+ * Simula provedor lento com handle ativo no event loop (exigência do CI
+ * Node 22): um `setTimeout` real registra atividade e é cancelado via
+ * `clearTimeout` assim que o abort do deadline dispara; a promise rejeita
+ * ATIVAMENTE com DOMException, sem pendurar o runner.
  */
 function mockSlowProvider() {
   globalThis.fetch = (_url, opts) =>
     new Promise((_resolve, reject) => {
       const signal = opts?.signal;
+      const latency = setTimeout(() => {
+        reject(new DOMException("Mock slow provider excedeu a latência simulada", "AbortError"));
+      }, 2000);
       const abortErr = () => {
+        clearTimeout(latency);
         reject(new DOMException("The operation was aborted", "AbortError"));
       };
       if (!signal) {
-        abortErr();
         return;
       }
       if (signal.aborted) {
