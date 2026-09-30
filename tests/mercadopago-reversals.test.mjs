@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
@@ -18,6 +19,11 @@ registerHooks({
       return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
     }
     if (specifier === "@/lib/observability") return { url: observabilityUrl, shortCircuit: true };
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && context.parentURL && !/\.(?:ts|tsx|js|mjs|json)$/.test(specifier)) {
+      const resolved = new URL(specifier, context.parentURL);
+      const typescriptModule = new URL(`${resolved.href}.ts`);
+      if (existsSync(typescriptModule)) return nextResolve(typescriptModule.href, context);
+    }
     return nextResolve(specifier, context);
   },
 });
