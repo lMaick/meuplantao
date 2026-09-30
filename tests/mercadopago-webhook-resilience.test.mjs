@@ -45,7 +45,8 @@ registerHooks({
   },
 });
 
-const { GET: webhookGet, POST: webhookPost, validateWebhookSignature } = await import("../src/app/api/webhooks/mercadopago/route.ts");
+const { GET: webhookGet, POST: webhookPost } = await import("../src/app/api/webhooks/mercadopago/route.ts");
+const { validateWebhookSignature } = await import("../src/lib/mercadopago/webhook.ts");
 const { GET: ipnGet, POST: ipnPost } = await import("../src/app/api/webhooks/mercadopago/ipn/route.ts");
 const { setLogSinkForTesting, webhookTracker } = await import("../src/lib/observability/index.ts");
 

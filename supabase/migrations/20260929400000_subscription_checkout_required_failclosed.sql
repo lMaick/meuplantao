@@ -133,9 +133,17 @@ begin
       from public.subscription_payments
      where mercadopago_payment_id = v_pid;
 
-    if v_existing_checkout_id is distinct from p_checkout_id then
+    if v_existing_checkout_id is not null and v_existing_checkout_id <> p_checkout_id then
       raise exception using errcode = '23505',
         message = 'Cotacao divergente para pagamento ja processado';
+    end if;
+
+    -- Se o registro existente nao tinha checkout_id (ex.: stub de reversao fora de ordem ou legado),
+    -- vincula a cotacao que chegou agora para fechar o ciclo.
+    if v_existing_checkout_id is null then
+      update public.subscription_payments
+         set checkout_id = p_checkout_id
+       where mercadopago_payment_id = v_pid;
     end if;
 
     -- Garante a marcacao da cotacao pelo pagamento que a consumiu (idempotente).

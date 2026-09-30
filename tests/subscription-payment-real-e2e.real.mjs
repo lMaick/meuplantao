@@ -317,9 +317,12 @@ test("2. mesmo payment_id duas vezes → segunda chamada retorna already_process
     const errDiv = resDiv.data ?? {};
     assert.ok(
       String(errDiv.code ?? "").includes("23505") ||
-      String(errDiv.message ?? "").toLowerCase().includes("divergente") ||
+      String(errDiv.message ?? "").toLowerCase().includes("divergente"),
+      `Esperado erro de cotação divergente (23505/divergente), obtido: ${JSON.stringify(resDiv.data)}`,
+    );
+    assert.ok(
       resDiv.status === 400 || resDiv.status === 409,
-      `Esperado erro de cotação divergente 23505, obtido HTTP ${resDiv.status} ${JSON.stringify(resDiv.data)}`,
+      `Esperado status HTTP 400 ou 409, obtido HTTP ${resDiv.status}`,
     );
 
     // Invariante PostgreSQL: UNIQUE constraint → ainda só 1 linha
@@ -465,9 +468,12 @@ test("5. mesmo payment_id concorrente → apenas uma extensão aplicada (UNIQUE 
     const conflictErr = conflicts[0].data ?? {};
     assert.ok(
       String(conflictErr.code ?? "").includes("23505") ||
-      String(conflictErr.message ?? "").toLowerCase().includes("consumida") ||
+      String(conflictErr.message ?? "").toLowerCase().includes("consumida"),
+      `Concorrência de cotação deve retornar 23505/consumida, obtido: ${JSON.stringify(conflicts[0].data)}`,
+    );
+    assert.ok(
       conflicts[0].status === 400 || conflicts[0].status === 409,
-      `Concorrência de cotação deve retornar 23505, obtido HTTP ${conflicts[0].status}: ${JSON.stringify(conflicts[0].data)}`,
+      `Esperado status HTTP 400 ou 409 na concorrência de cotação, obtido HTTP ${conflicts[0].status}`,
     );
   } finally {
     await cleanupUser(userId);
@@ -548,6 +554,16 @@ test("7. user_id incompatível → payment_id de userA não estende assinatura d
       resBWithB.ok,
       false,
       "Reutilizar payment_id de userA com checkout de userB deve falhar por cotação divergente (23505)",
+    );
+    const errCrossDiv = resBWithB.data ?? {};
+    assert.ok(
+      String(errCrossDiv.code ?? "").includes("23505") ||
+      String(errCrossDiv.message ?? "").toLowerCase().includes("divergente"),
+      `Esperado erro de cotação divergente (23505/divergente), obtido: ${JSON.stringify(resBWithB.data)}`,
+    );
+    assert.ok(
+      resBWithB.status === 400 || resBWithB.status === 409,
+      `Esperado status HTTP 400 ou 409, obtido HTTP ${resBWithB.status}`,
     );
 
     // Invariante: userB NÃO tem assinatura criada
