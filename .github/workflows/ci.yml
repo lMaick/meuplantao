@@ -26,6 +26,8 @@ jobs:
       - run: npm run lint
       - run: npx tsc --noEmit
       - run: npm run build
+        env:
+          NEXT_PUBLIC_SITE_URL: https://meuplantao.pro
 
   dispatcher-python:
     runs-on: windows-latest

@@ -71,16 +71,8 @@ function readManualSiteUrl(): { site?: string; app?: string } {
 }
 
 function readVercelFallback(): string | undefined {
-  const prodHost = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
-  const previewHost = process.env.VERCEL_URL?.trim();
-  // MAI-139 (auditoria): em VERCEL_ENV=preview, VERCEL_URL tem precedência
-  // sobre PRODUCTION_URL; nos demais ambientes a produção tem precedência.
-  const isPreview = isPreviewEnvironment();
-  const first = isPreview ? previewHost : prodHost;
-  const second = isPreview ? prodHost : previewHost;
-  if (first) return prefixHttpsIfMissing(first);
-  if (second) return prefixHttpsIfMissing(second);
-  return undefined;
+  const deploymentHost = process.env.VERCEL_URL?.trim();
+  return deploymentHost ? prefixHttpsIfMissing(deploymentHost) : undefined;
 }
 
 function hasManualConfig(): boolean {
@@ -88,29 +80,20 @@ function hasManualConfig(): boolean {
   return Boolean(site || app);
 }
 
-function isBuildPhase(): boolean {
-  return (
-    process.env.NEXT_PHASE === "phase-production-build" ||
-    process.env.npm_lifecycle_event === "build" ||
-    Boolean(process.env.NEXT_BUILD)
-  );
-}
-
 /**
- * Resolução hierárquica da URL canônica:
- * a) VERCEL_URL em Vercel Preview (precedência máxima em previews de PR)
- * b) NEXT_PUBLIC_SITE_URL (preferencial em produção/dev)
- * c) NEXT_PUBLIC_APP_URL (retrocompatível; warn se divergir de SITE_URL)
- * d) em produção: fail-closed estrito se não houver configuração manual
- * e) fallbacks para fora de produção / build phase offline (Vercel ou padrão https://meuplantao.pro)
+ * Resolve the canonical public origin.
+ * - Vercel Preview uses its deployment-specific VERCEL_URL.
+ * - Production requires an explicit canonical URL (NEXT_PUBLIC_SITE_URL or the
+ *   legacy NEXT_PUBLIC_APP_URL); Vercel's production hostname is not canonical config.
+ * - Development may use VERCEL_URL or the documented default.
  */
 export function getSiteUrl(options?: { requireConfig?: boolean }): string {
-  // Em ambiente Vercel Preview, o preview URL é prioritário sobre SITE_URL herdada de produção
   if (isPreviewEnvironment()) {
     const previewHost = process.env.VERCEL_URL?.trim();
-    if (previewHost) {
-      return normalizeSiteUrl(prefixHttpsIfMissing(previewHost));
+    if (!previewHost) {
+      throw new Error('Missing required configuration: VERCEL_URL for Preview deployment');
     }
+    return normalizeSiteUrl(prefixHttpsIfMissing(previewHost));
   }
 
   const { site, app } = readManualSiteUrl();
@@ -122,12 +105,12 @@ export function getSiteUrl(options?: { requireConfig?: boolean }): string {
         const normalizedApp = normalizeSiteUrl(app);
         if (normalizedApp !== normalizedSite) {
           console.warn(
-            "[MAI-139] NEXT_PUBLIC_SITE_URL e NEXT_PUBLIC_APP_URL divergem; usando NEXT_PUBLIC_SITE_URL como canônica.",
+            '[MAI-139] NEXT_PUBLIC_SITE_URL e NEXT_PUBLIC_APP_URL divergem; usando NEXT_PUBLIC_SITE_URL como canônica.',
           );
         }
       } catch {
         console.warn(
-          "[MAI-139] NEXT_PUBLIC_APP_URL inválida; usando NEXT_PUBLIC_SITE_URL como canônica.",
+          '[MAI-139] NEXT_PUBLIC_APP_URL inválida; usando NEXT_PUBLIC_SITE_URL como canônica.',
         );
       }
     }
@@ -136,44 +119,17 @@ export function getSiteUrl(options?: { requireConfig?: boolean }): string {
 
   if (app) return normalizeSiteUrl(app);
 
-  const vercel = readVercelFallback();
-  if (vercel) return normalizeSiteUrl(vercel);
-
-  // MAI-139: Fail-closed em produção se não houver nenhuma configuração de URL crítica.
-  // Permite fallback apenas fora de produção ou durante compilação offline de assets (build phase).
-  const mustRequire = options?.requireConfig ?? (isProductionEnvironment() && !isBuildPhase());
+  const mustRequire = options?.requireConfig === true || isProductionEnvironment();
   if (mustRequire) {
     throw new Error(
-      "Configuração ausente: URL pública do MeuPlantão não configurada em ambiente de produção (defina NEXT_PUBLIC_SITE_URL)",
+      'Configuração ausente: URL pública do MeuPlantão não configurada em ambiente de produção (defina NEXT_PUBLIC_SITE_URL)',
     );
   }
 
+  const vercel = readVercelFallback();
+  if (vercel) return normalizeSiteUrl(vercel);
   return DEFAULT_SITE_URL;
 }
-
-/**
- * Origem segura para Client Components no navegador.
- * No browser (`typeof window !== "undefined"`), preserva a origem real
- * da navegação (`window.location.origin`), garantindo suporte perfeito
- * a previews da Vercel (onde variáveis de ambiente sem NEXT_PUBLIC_
- * não são expostas ao cliente e NODE_ENV é "production").
- * No SSR / servidor, delega para `getCanonicalOrigin()`.
- */
-export function getClientOrigin(): string {
-  if (typeof window !== "undefined" && window.location?.origin) {
-    try {
-      const origin = window.location.origin.trim().replace(/\/+$/, "");
-      const parsed = new URL(origin);
-      if (["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password) {
-        return parsed.origin;
-      }
-    } catch {
-      // fallback para getCanonicalOrigin se window.location for inválido
-    }
-  }
-  return getCanonicalOrigin();
-}
-
 /**
  * Origem canônica segura para SEO, Mercado Pago e auth.
  * - Em produção: SEMPRE retorna a origem configurada; NUNCA deriva de
