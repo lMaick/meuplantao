@@ -10,6 +10,7 @@ const configUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "co
 const paymentsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "payments.ts")).href;
 const reversalsUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "reversals.ts")).href;
 const webhookUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "webhook.ts")).href;
+const httpUrl = pathToFileURL(path.join(ROOT, "src", "lib", "mercadopago", "http.ts")).href;
 const trialUrl = pathToFileURL(path.join(ROOT, "src", "lib", "subscription", "trial.ts")).href;
 const typesUrl = pathToFileURL(path.join(ROOT, "src", "lib", "subscription", "types.ts")).href;
 const observabilityUrl = pathToFileURL(path.join(ROOT, "src", "lib", "observability", "index.ts")).href;
@@ -26,6 +27,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: paymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/reversals") return { url: reversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: webhookUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: httpUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/trial") return { url: trialUrl, shortCircuit: true };
     if (specifier === "@/lib/subscription/types") return { url: typesUrl, shortCircuit: true };
     if (specifier === "@/lib/supabase/server" || specifier === "@/lib/stripe/supabase") {

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { captureFinancialRpcError } from "@/lib/observability";
+import { getSupabaseRpcTimeout, withSupabaseRpcTimeout } from "@/lib/mercadopago/http";
 
 /** Estados definitivos de reversao que revogam vigencia (MP: refunded/charged_back). */
 export const REVERSAL_STATUSES = new Set(["refunded", "charged_back"]);
@@ -66,14 +67,20 @@ export async function reconcileMercadoPagoReversal(
     throw new Error("Status de reversao invalido (esperado refunded ou charged_back)");
   }
 
-  const { data, error } = await admin.rpc("reconcile_mercadopago_reversal", {
-    p_payment_id: paymentId,
-    p_user_id: userId,
-    p_reversal_status: reversalStatus,
-    p_months: months,
-    p_validity_days: validityDays,
-    p_amount: amount,
-  });
+  // MAI-144 ciclo 5: deadline explícito na RPC de reversão (crítica: recompõe
+  // vigência sem apagar ledger; retry seguro pela idempotência por payment_id).
+  const { data, error } = await withSupabaseRpcTimeout(
+    admin.rpc("reconcile_mercadopago_reversal", {
+      p_payment_id: paymentId,
+      p_user_id: userId,
+      p_reversal_status: reversalStatus,
+      p_months: months,
+      p_validity_days: validityDays,
+      p_amount: amount,
+    }),
+    "reconcile_mercadopago_reversal",
+    getSupabaseRpcTimeout("financial"),
+  );
 
   if (error) {
     captureFinancialRpcError(error, {

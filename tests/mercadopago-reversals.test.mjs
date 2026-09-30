@@ -12,6 +12,12 @@ const reversalsUrl = pathToFileURL(
 const observabilityUrl = pathToFileURL(
   path.join(path.dirname(thisFile), "..", "src", "lib", "observability", "index.ts"),
 ).href;
+const httpUrl = pathToFileURL(
+  path.join(path.dirname(thisFile), "..", "src", "lib", "mercadopago", "http.ts"),
+).href;
+const configUrl = pathToFileURL(
+  path.join(path.dirname(thisFile), "..", "src", "lib", "mercadopago", "config.ts"),
+).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -19,6 +25,8 @@ registerHooks({
       return { url: "data:text/javascript,export const init = () => {}; export const captureException = () => {};", shortCircuit: true };
     }
     if (specifier === "@/lib/observability") return { url: observabilityUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: httpUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/config") return { url: configUrl, shortCircuit: true };
     if ((specifier.startsWith("./") || specifier.startsWith("../")) && context.parentURL && !/\.(?:ts|tsx|js|mjs|json)$/.test(specifier)) {
       const resolved = new URL(specifier, context.parentURL);
       const typescriptModule = new URL(`${resolved.href}.ts`);
