@@ -794,7 +794,7 @@ test("18. webhook: falha do dono libera o in-flight; retry legítimo reprocessa"
 // ---------------------------------------------------------------------------
 
 // Admin Supabase simulado com semântica fiel às RPCs da migration
-// `supabase/migrations/20260929000000_billing_rate_limits.sql`:
+// `supabase/migrations/20260930000000_billing_rate_limits.sql`:
 // hit = incremento atômico com janela; release = DELETE (unlock total).
 function makeSimulatedSupabaseAdmin() {
   const rows = new Map();
@@ -827,7 +827,7 @@ function makeSimulatedSupabaseAdmin() {
 test("19. supabase: release após contenção concorrente desbloqueia totalmente o bucket", async () => {
   // 19a. Guarda da migration: a RPC de release declara DELETE (unlock total)
   // e não mais o decremento `hit_count - 1`.
-  const migrationPath = path.join(__rlDir, "..", "supabase", "migrations", "20260929000000_billing_rate_limits.sql");
+  const migrationPath = path.join(__rlDir, "..", "supabase", "migrations", "20260930000000_billing_rate_limits.sql");
   const migrationSql = fs.readFileSync(migrationPath, "utf8");
   const releaseStart = migrationSql.indexOf("billing_rate_limit_release(");
   assert.ok(releaseStart >= 0, "migration deve declarar billing_rate_limit_release");
