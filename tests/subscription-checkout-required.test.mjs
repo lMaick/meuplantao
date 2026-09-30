@@ -20,6 +20,11 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: paymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") return { url: configUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/http") return { url: httpUrl, shortCircuit: true };
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && context.parentURL && !/\.(?:ts|tsx|js|mjs|json)$/.test(specifier)) {
+      const resolved = new URL(specifier, context.parentURL);
+      const typescriptModule = new URL(`${resolved.href}.ts`);
+      if (fs.existsSync(typescriptModule)) return nextResolve(typescriptModule.href, context);
+    }
     return nextResolve(specifier, context);
   },
 });
