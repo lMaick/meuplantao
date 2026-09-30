@@ -679,6 +679,43 @@ test("15. upstash: hit usa EVAL atômico em chamada única, com TTL garantido", 
 });
 
 // ---------------------------------------------------------------------------
+// 15b. MAI-144: Upstash lento estoura o deadline sem travar a rota
+// ---------------------------------------------------------------------------
+
+test("15b. upstash: hit com Redis lento rejeita no deadline (AbortSignal.timeout)", async () => {
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = (_url, opts) =>
+    new Promise((_resolve, reject) => {
+      const signal = opts?.signal;
+      const latency = setTimeout(() => {
+        reject(new DOMException("Mock upstash excedeu a latência simulada", "AbortError"));
+      }, 2000);
+      const abortErr = () => {
+        clearTimeout(latency);
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      };
+      if (!signal) return;
+      if (signal.aborted) {
+        abortErr();
+        return;
+      }
+      signal.addEventListener("abort", abortErr, { once: true });
+    });
+  try {
+    const store = new UpstashRateLimitStore("https://mock.upstash.io", "tok", 50);
+    const started = Date.now();
+    await assert.rejects(() => store.hit("billing:test:slow", 60_000), (err) => {
+      assert.match(err.name, /AbortError|TimeoutError/);
+      return true;
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 5000, `deadline do Upstash deve estourar rápido (levou ${elapsed}ms)`);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 16. Bloqueador 2: rajada CONCORRENTE (Promise.all) do mesmo payment ID no
 //     webhook gera exatamente 1 consulta externa (in-flight lock distribuído)
 // ---------------------------------------------------------------------------

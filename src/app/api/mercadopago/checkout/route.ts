@@ -345,7 +345,11 @@ export async function POST(request: NextRequest) {
       // MAI-144 (auditoria ciclo 2): `retryable: false` explícito no payload
       // para o cliente não repetir uma rejeição definitiva.
       return NextResponse.json(
-        { error: "Mercado Pago rejeitou a preferência. Verifique os dados e tente novamente.", retryable: false },
+        {
+          error: "Mercado Pago rejeitou a preferência. Verifique os dados e tente novamente.",
+          retryable: false,
+          status: "checkout_failed",
+        },
         { status: 422 },
       );
     }

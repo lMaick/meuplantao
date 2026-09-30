@@ -138,11 +138,12 @@ export class UpstashRateLimitStore implements RateLimitStore {
    * lento nunca pode travar a rota de billing além deste teto (falha vira
    * colapso de store tratado acima, fail-closed 503 + Retry-After).
    */
-  private readonly timeoutMs = 3000;
+  private readonly timeoutMs: number = 3000;
 
-  constructor(url: string, token: string) {
+  constructor(url: string, token: string, timeoutMs = 3000) {
     this.url = url;
     this.token = token;
+    this.timeoutMs = timeoutMs;
   }
 
   async hit(key: string, windowMs: number): Promise<RateLimitHit> {
