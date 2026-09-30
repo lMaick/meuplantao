@@ -15,6 +15,7 @@ const __setupTrialUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", 
 const __setupPaymentsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "payments.ts")).href;
 const __setupReversalsUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
 const __setupWebhookUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "webhook.ts")).href;
+const __setupHttpUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "mercadopago", "http.ts")).href;
 const __setupObservabilityUrl = pathToFileURL(path.join(__setupDir, "..", "src", "lib", "observability", "index.ts")).href;
 
 registerHooks({
@@ -26,6 +27,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: __setupPaymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/reversals") return { url: __setupReversalsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: __setupWebhookUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: __setupHttpUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
         url: "data:text/javascript,export const getMercadoPagoAccessToken = () => 'mp-test-token'; export const getMercadoPagoWebhookSecret = () => globalThis.__mockWebhookSecret ?? null; export const getMercadoPagoApiUrl = () => 'https://api.mercadopago.test'; export const getApplicationOrigin = () => 'https://app.example.com'; export const isProductionEnvironment = () => process.env.VERCEL_ENV?.trim() === 'production' || process.env.NODE_ENV?.trim() === 'production'; export const isMissingWebhookSecretAllowed = () => { if (isProductionEnvironment()) return false; const raw = process.env.MERCADO_PAGO_ALLOW_MISSING_WEBHOOK_SECRET?.trim().toLowerCase(); return raw !== 'false' && raw !== '0' && raw !== 'no'; }; export const getWebhookSetupState = () => { if (globalThis.__mockWebhookSecret) return { configured: true, failClosed: false }; return { configured: false, failClosed: !isMissingWebhookSecretAllowed() }; }",

@@ -11,7 +11,14 @@ import {
   isBillingRateLimitEnabled,
   releaseBillingCooldown,
 } from "@/lib/billing/rate-limit";
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
+import { paymentBelongsToUser } from "@/lib/mercadopago/config";
+import {
+  fetchMercadoPago,
+  getTimeoutForOperation,
+  isDefinitiveMercadoPagoStatus,
+  isTransientMercadoPagoFailure,
+  sanitizedMercadoPagoLogContext,
+} from "@/lib/mercadopago/http";
 import {
   completeSubscriptionCheckout,
   getValidityDays,
@@ -163,20 +170,57 @@ export async function GET(request: NextRequest) {
       return Promise.resolve();
     };
 
-    const paymentResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/${encodeURIComponent(paymentId)}`, {
-      headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
-    });
+    // MAI-144: GET idempotente com deadline explícito. Timeout/queda de rede
+    // => 504/502 retentável, SEM conceder Pro e SEM tocar o ledger.
+    const verifyTimeoutMs = getTimeoutForOperation("payments.get");
+    let paymentResponse: Response;
+    try {
+      paymentResponse = await fetchMercadoPago(`/v1/payments/${encodeURIComponent(paymentId)}`, {
+        operation: "payments.get",
+        timeoutMs: verifyTimeoutMs,
+        method: "GET",
+      });
+    } catch (mpError) {
+      await releaseCooldown();
+      const transient = isTransientMercadoPagoFailure(mpError);
+      captureError(mpError, {
+        route: "/api/mercadopago/verify",
+        userId: user.id,
+        paymentId,
+        httpStatus: transient ? 504 : 502,
+        extra: {
+          retryable: transient,
+          ...sanitizedMercadoPagoLogContext({
+            operation: "payments.get",
+            timeoutMs: verifyTimeoutMs,
+            paymentId,
+            failureKind: "mercadopago_timeout",
+          }),
+        },
+      });
+      return NextResponse.json(
+        { error: "Tempo esgotado ao consultar o pagamento no Mercado Pago. Tente novamente." },
+        { status: transient ? 504 : 502 },
+      );
+    }
+    // MAI-144: erro definitivo do provedor (400/401/403/404/422) => resposta
+    // final, sem retry; transitório (408/429/5xx) => 502/429 retentável.
     if (!paymentResponse.ok) {
       await releaseCooldown();
+      const definitive = isDefinitiveMercadoPagoStatus(paymentResponse.status);
       captureError(new Error(`Mercado Pago verify query failed with status ${paymentResponse.status}`), {
         route: "/api/mercadopago/verify",
         userId: user.id,
         paymentId,
-        httpStatus: 502,
+        httpStatus: definitive && paymentResponse.status === 404 ? 404 : 502,
         extra: {
           upstream_status: paymentResponse.status,
+          retryable: !definitive,
         },
       });
+      if (definitive && paymentResponse.status === 404) {
+        return NextResponse.json({ error: "Pagamento nao encontrado no Mercado Pago" }, { status: 404 });
+      }
       return NextResponse.json({ error: "Nao foi possivel consultar o pagamento no Mercado Pago" }, { status: 502 });
     }
 

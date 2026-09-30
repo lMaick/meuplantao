@@ -24,6 +24,7 @@ const __rlWebhookUrl = fileUrl("src/lib/mercadopago/webhook.ts");
 const __rlObservabilityUrl = fileUrl("src/lib/observability/index.ts");
 const __rlRateLimitUrl = fileUrl("src/lib/billing/rate-limit.ts");
 const __rlReversalsUrl = fileUrl("src/lib/mercadopago/reversals.ts");
+const __rlHttpUrl = fileUrl("src/lib/mercadopago/http.ts");
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -33,6 +34,7 @@ registerHooks({
     if (specifier === "@/lib/mercadopago/payments") return { url: __rlPaymentsUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/webhook") return { url: __rlWebhookUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/reversals") return { url: __rlReversalsUrl, shortCircuit: true };
+    if (specifier === "@/lib/mercadopago/http") return { url: __rlHttpUrl, shortCircuit: true };
     if (specifier === "@/lib/billing/rate-limit") return { url: __rlRateLimitUrl, shortCircuit: true };
     if (specifier === "@/lib/mercadopago/config") {
       return {
@@ -518,7 +520,9 @@ test("9. checkout: 2º POST imediato é 429; falha upstream libera retry imediat
     );
   };
   const f1 = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
-  assert.equal(f1.status, 500);
+  // MAI-144: falha de rede/timeout no POST responde 504 retentável (sem retry
+  // automático de POST não idempotente) e libera o cooldown.
+  assert.equal(f1.status, 504);
   const f2 = await checkoutPost(new Request("http://localhost/api/mercadopago/checkout", { method: "POST" }));
   assert.equal(f2.status, 200);
   assert.deepEqual(await f2.json(), { init_point: "https://www.mercadopago.com/checkout/retry" });

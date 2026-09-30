@@ -11,7 +11,13 @@ import {
   isBillingRateLimitEnabled,
   releaseBillingCooldown,
 } from "@/lib/billing/rate-limit";
-import { getMercadoPagoAccessToken, getMercadoPagoApiUrl, paymentBelongsToUser } from "@/lib/mercadopago/config";
+import { paymentBelongsToUser } from "@/lib/mercadopago/config";
+import {
+  fetchMercadoPago,
+  getTimeoutForOperation,
+  isTransientMercadoPagoFailure,
+  sanitizedMercadoPagoLogContext,
+} from "@/lib/mercadopago/http";
 import {
   completeSubscriptionCheckout,
   getValidityDays,
@@ -168,10 +174,37 @@ export async function POST(request: NextRequest) {
       return Promise.resolve();
     };
 
-    const searchUrl = `${getMercadoPagoApiUrl()}/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=50`;
-    const paymentResponse = await fetch(searchUrl, {
-      headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
-    });
+    // MAI-144: buscas GET idempotentes com deadline explícito. Timeout/queda
+    // => 504/502 retentável, SEM conceder Pro e SEM tocar o ledger.
+    const syncTimeoutMs = getTimeoutForOperation("payments.search");
+    let paymentResponse: Response;
+    try {
+      paymentResponse = await fetchMercadoPago(
+        `/v1/payments/search?external_reference=${encodeURIComponent(user.id)}&sort=date_created&criteria=desc&limit=50`,
+        { operation: "payments.search", timeoutMs: syncTimeoutMs, method: "GET" },
+      );
+    } catch (mpError) {
+      await releaseCooldown();
+      const transient = isTransientMercadoPagoFailure(mpError);
+      captureSyncError(mpError, {
+        route: "/api/mercadopago/sync",
+        userId: user.id,
+        httpStatus: transient ? 504 : 502,
+        extra: {
+          retryable: transient,
+          search_stage: "user_payments_search",
+          ...sanitizedMercadoPagoLogContext({
+            operation: "payments.search",
+            timeoutMs: syncTimeoutMs,
+            failureKind: "mercadopago_timeout",
+          }),
+        },
+      });
+      return NextResponse.json(
+        { error: "Tempo esgotado ao consultar pagamentos no Mercado Pago. Tente novamente." },
+        { status: transient ? 504 : 502 },
+      );
+    }
 
     if (!paymentResponse.ok) {
       await releaseCooldown();
@@ -200,9 +233,34 @@ export async function POST(request: NextRequest) {
     let userPayments = (searchData.results || []).filter(matchesUser);
 
     if (userPayments.length === 0) {
-      const packageSearchResponse = await fetch(`${getMercadoPagoApiUrl()}/v1/payments/search?sort=date_created&criteria=desc&limit=50`, {
-        headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}` },
-      });
+      let packageSearchResponse: Response;
+      try {
+        packageSearchResponse = await fetchMercadoPago(
+          `/v1/payments/search?sort=date_created&criteria=desc&limit=50`,
+          { operation: "payments.search", timeoutMs: syncTimeoutMs, method: "GET" },
+        );
+      } catch (mpError) {
+        await releaseCooldown();
+        const transient = isTransientMercadoPagoFailure(mpError);
+        captureSyncError(mpError, {
+          route: "/api/mercadopago/sync",
+          userId: user.id,
+          httpStatus: transient ? 504 : 502,
+          extra: {
+            retryable: transient,
+            search_stage: "fallback_payments_search",
+            ...sanitizedMercadoPagoLogContext({
+              operation: "payments.search",
+              timeoutMs: syncTimeoutMs,
+              failureKind: "mercadopago_timeout",
+            }),
+          },
+        });
+        return NextResponse.json(
+          { error: "Tempo esgotado ao consultar pagamentos no Mercado Pago. Tente novamente." },
+          { status: transient ? 504 : 502 },
+        );
+      }
       if (!packageSearchResponse.ok) {
         await releaseCooldown();
         captureSyncError(new Error(`Mercado Pago fallback search failed with status ${packageSearchResponse.status}`), {

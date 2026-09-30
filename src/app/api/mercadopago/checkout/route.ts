@@ -11,7 +11,13 @@ import {
   isBillingRateLimitEnabled,
   releaseBillingCooldown,
 } from "@/lib/billing/rate-limit";
-import { getApplicationOrigin, getMercadoPagoAccessToken, getMercadoPagoApiUrl } from "@/lib/mercadopago/config";
+import { getApplicationOrigin } from "@/lib/mercadopago/config";
+import {
+  fetchMercadoPago,
+  getTimeoutForOperation,
+  isTransientMercadoPagoFailure,
+  sanitizedMercadoPagoLogContext,
+} from "@/lib/mercadopago/http";
 import { captureCheckoutError, captureRateLimitHit } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
 import { getCanonicalPlanByMonths } from "@/lib/mercadopago/payments";
@@ -228,40 +234,72 @@ export async function POST(request: NextRequest) {
 
     const origin = getApplicationOrigin(request.url);
     const isHttps = origin.startsWith("https://");
-    const mercadoPagoResponse = await fetch(`${getMercadoPagoApiUrl()}/checkout/preferences`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${getMercadoPagoAccessToken()}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        items: [{
-          id: plan.id,
-          title: `MeuPlantão Pro — ${plan.label}`,
-          description: `${isRenewal ? "Renovação" : "Assinatura"} do MeuPlantão Pro por ${plan.validityDays} dias`,
-          quantity: 1,
-          currency_id: plan.currency,
-          unit_price: plan.price,
-        }],
-        external_reference: `${user.id}#${plan.months}#${checkoutId}`,
-        metadata: {
-          user_id: user.id,
-          checkout_id: checkoutId,
-          plan_id: plan.id,
-          months: plan.months,
-          currency: plan.currency,
-          price: plan.price,
-          price_cents: plan.priceCents,
-          catalog_version: plan.catalogVersion,
-          is_renewal: isRenewal,
+    // MAI-144: deadline explícito em POST não idempotente — NUNCA retry
+    // automático; timeout libera cooldown e retorna 504 retentável, sem Pro/ledger.
+    const checkoutTimeoutMs = getTimeoutForOperation("checkout.create");
+    let mercadoPagoResponse: Response;
+    try {
+      mercadoPagoResponse = await fetchMercadoPago(`/checkout/preferences`, {
+        operation: "checkout.create",
+        timeoutMs: checkoutTimeoutMs,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{
+            id: plan.id,
+            title: `MeuPlantão Pro — ${plan.label}`,
+            description: `${isRenewal ? "Renovação" : "Assinatura"} do MeuPlantão Pro por ${plan.validityDays} dias`,
+            quantity: 1,
+            currency_id: plan.currency,
+            unit_price: plan.price,
+          }],
+          external_reference: `${user.id}#${plan.months}#${checkoutId}`,
+          metadata: {
+            user_id: user.id,
+            checkout_id: checkoutId,
+            plan_id: plan.id,
+            months: plan.months,
+            currency: plan.currency,
+            price: plan.price,
+            price_cents: plan.priceCents,
+            catalog_version: plan.catalogVersion,
+            is_renewal: isRenewal,
+          },
+          payer: user.email ? { email: user.email } : undefined,
+          back_urls: {
+            success: `${origin}/configuracoes?payment=success`,
+            pending: `${origin}/configuracoes?payment=pending`,
+            failure: `${origin}/configuracoes?payment=failure`,
+          },
+          auto_return: isHttps ? "approved" : undefined,
+          notification_url: isHttps ? `${origin}/api/webhooks/mercadopago` : undefined,
+        }),
+      });
+    } catch (mpError) {
+      // Falha retentável: libera o cooldown para o usuário tentar de novo de imediato.
+      if (limiterOn && cooldownMarked && currentUserId) {
+        await releaseBillingCooldown(userCooldownKey(), cooldownStoreName).catch(() => undefined);
+      }
+      const transient = isTransientMercadoPagoFailure(mpError);
+      captureCheckoutError(mpError, {
+        route: "/api/mercadopago/checkout",
+        userId: currentUserId,
+        extra: {
+          stage: "mercadopago_preference_create",
+          checkoutId,
+          retryable: transient,
+          ...sanitizedMercadoPagoLogContext({
+            operation: "checkout.create",
+            timeoutMs: checkoutTimeoutMs,
+            failureKind: "mercadopago_timeout",
+          }),
         },
-        payer: user.email ? { email: user.email } : undefined,
-        back_urls: {
-          success: `${origin}/configuracoes?payment=success`,
-          pending: `${origin}/configuracoes?payment=pending`,
-          failure: `${origin}/configuracoes?payment=failure`,
-        },
-        auto_return: isHttps ? "approved" : undefined,
-        notification_url: isHttps ? `${origin}/api/webhooks/mercadopago` : undefined,
-      }),
-    });
+      });
+      return NextResponse.json(
+        { error: "Tempo esgotado ao contatar o Mercado Pago. Tente novamente." },
+        { status: transient ? 504 : 502 },
+      );
+    }
 
     if (!mercadoPagoResponse.ok) throw new Error("Mercado Pago rejeitou a preferencia");
     const preference = await mercadoPagoResponse.json() as { id?: string; init_point?: string; sandbox_init_point?: string };
