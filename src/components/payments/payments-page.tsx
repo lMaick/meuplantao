@@ -253,6 +253,11 @@ export default function PaymentsPage() {
       return;
     }
 
+    if (modalDate > bahiaTodayIso()) {
+      setModalError("Data de recebimento não pode ser futura.");
+      return;
+    }
+
     setModalSaving(true);
     try {
       await createPayment({
@@ -279,6 +284,16 @@ export default function PaymentsPage() {
     event.preventDefault();
     setInlineError("");
     const value = Number(inlineAmount);
+
+    if (!inlineDate) {
+      setInlineError("Informe a data do pagamento.");
+      return;
+    }
+
+    if (inlineDate > bahiaTodayIso()) {
+      setInlineError("Data de recebimento não pode ser futura.");
+      return;
+    }
 
     if (!selectedInline || !Number.isFinite(value) || value <= 0 || value > inlineRemaining) {
       setInlineError("Informe um valor positivo, até o saldo restante da obrigação.");
@@ -492,6 +507,7 @@ export default function PaymentsPage() {
             <Input
               type="date"
               value={inlineDate}
+              max={bahiaTodayIso()}
               onChange={(e) => setInlineDate(e.target.value)}
               className="h-11 min-h-[44px] text-base md:text-sm font-normal"
             />
@@ -842,6 +858,7 @@ export default function PaymentsPage() {
                   type="date"
                   required
                   value={modalDate}
+                  max={bahiaTodayIso()}
                   onChange={(e) => setModalDate(e.target.value)}
                   className="h-11 min-h-[44px] text-base md:text-sm"
                 />
