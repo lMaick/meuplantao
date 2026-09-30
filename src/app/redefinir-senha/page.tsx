@@ -6,9 +6,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 
-import { hasRecoveryAmr, verifyRecoveryClaims } from "@/lib/auth/recovery";
-
-export { hasRecoveryAmr };
+import { verifyRecoveryClaims } from "@/lib/auth/recovery";
 
 export default function RedefinirSenhaPage() {
   const router = useRouter();
