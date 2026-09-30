@@ -11,6 +11,7 @@ const __syncTrialUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib"
 const __syncConfigUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "config.ts")).href;
 const __syncPaymentsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "payments.ts")).href;
 const __syncReversalsUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "reversals.ts")).href;
+const __syncHttpUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "mercadopago", "http.ts")).href;
 const __syncObservabilityUrl = pathToFileURL(path.join(__syncDirname, "..", "src", "lib", "observability", "index.ts")).href;
 
 process.env.MERCADO_PAGO_ACCESS_TOKEN = "mp-token";
@@ -28,6 +29,9 @@ registerHooks({
     }
     if (specifier === "@/lib/mercadopago/reversals") {
       return { url: __syncReversalsUrl, shortCircuit: true };
+    }
+    if (specifier === "@/lib/mercadopago/http") {
+      return { url: __syncHttpUrl, shortCircuit: true };
     }
     if (specifier === "@/lib/mercadopago/config") {
       return {
@@ -426,7 +430,7 @@ test("sync fallback search !ok: nao retorna falsamente 'nenhum pagamento' e resp
   setLogSinkForTesting(null);
 });
 
-test("sync generic exception: responde 500 e registra captureSyncError com default http_status 500", async () => {
+test("sync fetch exception: responde 504 retentável e registra captureSyncError (MAI-144)", async () => {
   globalThis.authenticatedClient = {
     auth: { getUser: async () => ({ data: { user: { id: testUserId } }, error: null }) },
   };
@@ -439,13 +443,13 @@ test("sync generic exception: responde 500 e registra captureSyncError com defau
   };
 
   const response = await syncRoute(createMockRequest());
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 504);
   const json = await response.json();
-  assert.match(json.error, /Nao foi possivel sincronizar/i);
+  assert.match(json.error, /Tempo esgotado|Tente novamente/i);
 
   assert.equal(capturedLogs.length, 1);
   assert.equal(capturedLogs[0].route, "/api/mercadopago/sync");
-  assert.equal(capturedLogs[0].http_status, 500);
+  assert.equal(capturedLogs[0].http_status, 504);
   assert.equal(capturedLogs[0].alert_rule, "sync_5xx");
   assert.equal(capturedLogs[0].level, "error");
   setLogSinkForTesting(null);
