@@ -21,7 +21,7 @@ registerHooks({
   },
 });
 
-import { DEFAULT_SITE_URL, getSiteUrl } from "../src/lib/seo/site-url.ts";
+import { DEFAULT_SITE_URL, getSiteUrl } from "../src/lib/config/site-url.ts";
 
 test("getSiteUrl normaliza URLs determinísticas com ou sem trailing slash", () => {
   const originalEnv = process.env.NEXT_PUBLIC_APP_URL;
