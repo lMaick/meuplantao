@@ -297,10 +297,9 @@ export function withSupabaseRpcTimeout(task: PromiseLike<any>, rpcName: string, 
     timer = setTimeout(() => {
       reject(new SupabaseRpcTimeoutError(rpcName, deadline));
     }, deadline);
-    const maybeUnref = timer as unknown as { unref?: unknown };
-    if (typeof maybeUnref.unref === "function") {
-      maybeUnref.unref();
-    }
+    // MAI-144: NUNCA aplicar .unref() aqui — o timer deve manter o event
+    // loop ativo até disparar ou ser limpo no finally (Node 22 encerra o
+    // loop prematuramente se o timer for desvinculado e a RPC pendurar).
   });
   return Promise.race([Promise.resolve(task), timeout]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
