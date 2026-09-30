@@ -17,6 +17,13 @@ registerHooks({
       const url = existsSync(new URL(`${base.href}.ts`)) ? `${base.href}.ts` : `${base.href}/index.ts`;
       return nextResolve(url, context);
     }
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
     return nextResolve(specifier, context);
   },
 });

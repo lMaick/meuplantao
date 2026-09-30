@@ -21,6 +21,8 @@ function prefixHttpsIfMissing(raw: string): string {
 /**
  * Normaliza e valida uma origem candidata a URL canônica.
  * - trim + remoção de trailing slashes múltiplos
+ * - rejeita delimitadores vazios de credenciais, query e fragmento
+ *   (ex.: "https://x.pro@", "https://x.pro?", "https://x.pro#")
  * - rejeita protocolo diferente de http/https (ex.: javascript:, data:)
  * - em produção exige https
  * - rejeita credenciais embutidas, paths além de "/", query e fragmento
@@ -29,6 +31,7 @@ function prefixHttpsIfMissing(raw: string): string {
 export function normalizeSiteUrl(raw: string): string {
   const trimmed = (raw ?? "").trim().replace(/\/+$/, "");
   if (!trimmed) throw new Error("URL canônica vazia");
+  if (/[@?#]$/.test(trimmed)) throw new Error("URL canônica inválida");
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
@@ -61,9 +64,14 @@ function readManualSiteUrl(): { site?: string; app?: string } {
 
 function readVercelFallback(): string | undefined {
   const prodHost = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
-  if (prodHost) return prefixHttpsIfMissing(prodHost);
   const previewHost = process.env.VERCEL_URL?.trim();
-  if (previewHost) return prefixHttpsIfMissing(previewHost);
+  // MAI-139 (auditoria): em VERCEL_ENV=preview, VERCEL_URL tem precedência
+  // sobre PRODUCTION_URL; nos demais ambientes a produção tem precedência.
+  const isPreview = process.env.VERCEL_ENV?.trim() === "preview";
+  const first = isPreview ? previewHost : prodHost;
+  const second = isPreview ? prodHost : previewHost;
+  if (first) return prefixHttpsIfMissing(first);
+  if (second) return prefixHttpsIfMissing(second);
   return undefined;
 }
 

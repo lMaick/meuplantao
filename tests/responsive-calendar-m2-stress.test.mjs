@@ -16,13 +16,28 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { createRequire } from "node:module";
+import { createRequire, registerHooks } from "node:module";
 import ts from "typescript";
 
 const ROOT = process.cwd();
 const require = createRequire(import.meta.url);
 
-import { ErgonomicsOracle } from "./helpers/e2e-harness.mjs";
+// MAI-139: hook de resolução .ts para imports aninhados do harness
+// (ex.: src/lib/auth/redirect.ts -> ../config/site-url)
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if ((specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js") && !specifier.endsWith(".mjs") && !specifier.endsWith(".json")) {
+      const parentUrl = context.parentURL ? new URL(context.parentURL) : new URL(import.meta.url);
+      const resolved = new URL(specifier, parentUrl);
+      if (fs.existsSync(new URL(`${resolved.href}.ts`))) {
+        return nextResolve(`${resolved.href}.ts`, context);
+      }
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const { ErgonomicsOracle } = await import("./helpers/e2e-harness.mjs");
 
 // Helper to evaluate TSX modules in a sandboxed VM
 function loadTsxModule(filePath) {
