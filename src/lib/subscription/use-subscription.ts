@@ -9,6 +9,8 @@ import { useSubscriptionContext } from "./subscription-provider";
 import {
   createSubscriptionChannel,
   fetchMySubscription,
+  isSessionExpiredError,
+  isSubscriptionAuthFailure,
   removeSubscriptionChannel,
 } from "./queries";
 
@@ -53,9 +55,17 @@ export function useSubscription(): SubscriptionState {
       );
     } catch (err) {
       const normalized = err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura");
-      if (normalized.message !== "Usuário não autenticado.") setError(normalized);
-      else setUserId(null);
-      setTrial(calculateTrial(new Date().toISOString(), null));
+      // MAI-143: mesma regra do provider — falha de autenticação (ausente ou JWT
+      // expirado) limpa userId para remover o canal Realtime antigo e nunca
+      // preserva Pro stale; trial volta a anônimo fail-closed.
+      if (isSubscriptionAuthFailure(normalized)) {
+        setUserId(null);
+        setTrial(calculateTrial(new Date().toISOString(), null));
+        setError(isSessionExpiredError(normalized) ? normalized : null);
+      } else {
+        setError(normalized);
+        setTrial(calculateTrial(new Date().toISOString(), null));
+      }
     } finally {
       setIsLoading(false);
     }
