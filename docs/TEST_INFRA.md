@@ -1,5 +1,10 @@
 # Test Infrastructure & Specification Guide (TEST_INFRA.md)
 
+> **Snapshot note (2026-10-01, MAI-142):** commands, lint scope, test
+> categories and CI jobs below reflect `package.json` scripts +
+> `.github/workflows/ci.yml` as of this date. `package.json`/workflows are
+> the source of truth — historic counts must not be treated as current.
+
 ## 1. Overview & Architectural Principles
 
 The testing infrastructure of **MeuPlantão** provides fast, deterministic, zero-dependency automated verification designed specifically for medical on-call scheduling and receivables tracking.
@@ -17,24 +22,32 @@ The test architecture is founded on the following non-negotiable principles:
 
 | Command | Purpose | Target / Files | Execution Time |
 | :--- | :--- | :--- | :--- |
-| `npm test` | Complete offline test suite (Unit + 4-Tier E2E) | `tests/*.test.mjs` | ~3.2s |
-| `node --experimental-strip-types --test tests/e2e-ui-redesign.test.mjs` | Focused 4-Tier UI/UX E2E redesign suite | `tests/e2e-ui-redesign.test.mjs` | ~0.8s |
-| `npm run lint` | ESLint Flat Config verification | `src/`, `tests/` | ~3.5s |
-| `npx tsc --noEmit` | Strict TypeScript type checking | `src/` | ~2.5s |
-| `npm run build` | Next.js production build compilation | App Router routes | ~8.0s |
-| `npm run test:real` | Live Supabase/PostgreSQL RLS & concurrency test | `tests/financial-real-e2e.real.mjs` | Requires Docker daemon |
+| `npm test` | Complete offline test suite (no external services) | `tests/*.test.mjs` | ~25s |
+| `node --experimental-strip-types --test tests/e2e-ui-redesign.test.mjs` | Focused 4-Tier UI/UX E2E redesign suite | `tests/e2e-ui-redesign.test.mjs` | ~1s |
+| `npm run lint` | ESLint Flat Config verification (`eslint src/`; `tests/` is ignored in `eslint.config.mjs`) | `src/` | ~5s |
+| `npx tsc --noEmit` | Strict TypeScript type checking | repo | ~10s |
+| `npm run build` | Next.js production build compilation (CI sets `NEXT_PUBLIC_SITE_URL=https://meuplantao.pro`) | App Router routes | ~40s |
+| `npm run test:real` | Real financial E2E vs isolated local Supabase via CLI (opt-in, never production) | `tests/financial-real-e2e.real.mjs` | Requires Supabase CLI / Docker |
+| `npm run test:subscription-real` / `npm run test:subscription-reversal-real` | Real subscription payment + reversal E2E vs isolated local Supabase via CLI (opt-in, never production) | `tests/subscription-payment-real-e2e.real.mjs`, `tests/subscription-reversal-real-e2e.real.mjs` | Requires Supabase CLI / Docker |
+| `npm run test:security-real` | Real RLS/grants invariants vs isolated local PostgreSQL 16 via `pg` direct — NOT Supabase local (fail-closed local-only guard; skips without DB unless `SECURITY_REAL_REQUIRE_DB=1`) | `tests/security-invariants-real.local.mjs` | Requires local Postgres (CI provides `postgres:16` service) |
+| `npm run db:smoke` / `npm run db:verify` | Schema + critical RPC signature validation via `DATABASE_URL`; `db:verify` is also the `prebuild` gate — bypassed for local/CI-quality builds, strict fail-closed in production (`VERCEL_ENV=production` or `CHECK_SCHEMA_COMPATIBILITY=1`) | `scripts/smoke-test-schema.mjs`, `scripts/verify-production-schema.mjs` | Requires DB URL when not bypassed |
 
 ### 2.2 Continuous Integration Pipeline (`.github/workflows/ci.yml`)
-CI runs on every push and PR under Node 22 (`ubuntu-latest`):
-1. `npm ci`
-2. `npm test` (Enforces 100% pass rate across all 216 tests)
-3. `npm run lint` (0 errors tolerance)
-4. `npx tsc --noEmit` (Strict typing)
-5. `npm run build` (Production artifact generation)
+CI runs on every push and PR to `main` under Node 22:
+1. `quality` (`ubuntu-latest`): `npm ci` → `npm test` (offline suite must be 100% green; snapshot 2026-10-01: 753 tests — 752 pass, 0 fail, 1 skipped; counts grow, never hard-code them as a gate) → `npm run lint` (0 errors tolerance) → `npx tsc --noEmit` (strict typing) → `npm run build` (production artifact generation, with `NEXT_PUBLIC_SITE_URL=https://meuplantao.pro`).
+2. `dispatcher-python` (`windows-latest`): `python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v`.
+3. `security-invariants-e2e`: isolated local `postgres:16` service + `npm run test:security-real` (fail-closed via `SECURITY_REAL_REQUIRE_DB=1`; local-only guard, never remote).
+4. `real-e2e`: isolated local Supabase via CLI (disposable) + migration validators (`tests/financial-migration-upgrade-real.sh`, `tests/subscription-entitlement-real.sh`, `tests/shifts-direct-write-prohibition-real.sh`) + `npm run db:smoke` + `npm run test:real`.
+5. `subscription-payment-real-e2e`: isolated local Supabase via CLI (disposable) + `npm run test:subscription-real` + `npm run test:subscription-reversal-real`.
+
+Migrations reach production on merge to `main` via `deploy-production.yml`; the `prebuild` schema gate (`scripts/verify-production-schema.mjs`) is bypassed locally/in CI-quality and diagnostic in preview, but strict fail-closed in production. Full policy: `docs/DEVOPS_MIGRATIONS.md`.
 
 ---
 
 ## 3. Directory Layout & Test Artifacts
+
+> Partial historical listing — see `tests/` for the full set (offline
+> `*.test.mjs`, real `*.real.mjs` / `*.real.sh`, plus `REAL-E2E.md`).
 
 ```
 tests/
