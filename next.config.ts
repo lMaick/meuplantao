@@ -1,5 +1,5 @@
 import type { NextConfig } from "next";
-import { buildCspReportOnlyValue, CSP_REPORT_ONLY_HEADER } from "./src/lib/security/csp";
+import { getCspHeaders } from "./src/lib/security/csp";
 
 const privateNoIndexPaths = [
   "/alertas",
@@ -47,10 +47,11 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-          // Report-Only: observar violações no console sem bloquear. A promoção
-          // para `Content-Security-Policy` efetiva ocorre em follow-up após
-          // período de observação (ver docs/operations/csp-report-only.md).
-          { key: CSP_REPORT_ONLY_HEADER, value: buildCspReportOnlyValue() },
+          // MAI-145: Report-Only sempre (telemetria via /api/csp-report) +
+          // política efetiva somente sob `CSP_ENFORCE=true` (avaliado no build;
+          // rollback = remover a flag e redeploy). Ver
+          // docs/operations/csp-enforcement.md.
+          ...getCspHeaders(),
         ],
       },
       ...privateNoIndexPaths.map((path) => ({

@@ -51,6 +51,10 @@ export async function updateSession(request: NextRequest) {
   const isPublicMercadoPagoWebhook =
     pathname === "/api/webhooks/mercadopago" ||
     pathname === "/api/webhooks/mercadopago/ipn";
+  // MAI-145: relatórios de violação CSP partem do browser sem sessão (ex.:
+  // violações no /login); o endpoint tem proteção própria (rate limit,
+  // validação, sem PII) e nunca exige autenticação — como os webhooks acima.
+  const isPublicCspReport = pathname === "/api/csp-report";
 
   const isPublicAllowed =
     isLandingPage ||
@@ -58,7 +62,8 @@ export async function updateSession(request: NextRequest) {
     isPublicLegalOrSupport ||
     isPasswordResetPage ||
     isPublicAuthCallback ||
-    isPublicMercadoPagoWebhook;
+    isPublicMercadoPagoWebhook ||
+    isPublicCspReport;
 
   if (!user && !isPublicAllowed) {
     const url = request.nextUrl.clone();
