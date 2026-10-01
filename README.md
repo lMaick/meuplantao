@@ -5,9 +5,11 @@ Controle de plantões para profissionais autônomos da saúde (médicos, enferme
 Registre onde trabalhou, plantões agendados/realizados, quanto deve receber, pagamentos totais e parciais, saldo restante e alertas de atraso. Mobile-first, seguro por usuário.
 
 ## Stack
-- Next.js (App Router) + TypeScript
+- Next.js (App Router) + TypeScript estrito
 - Tailwind CSS + shadcn/ui
 - Supabase (Postgres + Auth + RLS)
+- Sentry (`@sentry/nextjs`, opt-in via DSN) + logs estruturados sanitizados em `src/lib/observability/`
+- Assinatura/billing Mercado Pago server-side (`src/lib/mercadopago/`, `src/lib/subscription/`, `src/lib/billing/`; sem SDK no browser)
 
 ## Rodando local
 ```bash
@@ -23,13 +25,13 @@ Veja `PRODUCT.md` para a visão de produto, `AGENTS.md` para as regras e contrat
 Todo desenvolvimento neste repositório (humano ou por agentes de IA de qualquer modelo) segue obrigatoriamente três pilares contratuais:
 
 1. **Ciclo de Tarefas, Issues e Deploys:**
-   - **Issues no GitHub Obrigatórias:** Crie uma Issue para toda tarefa (Correção/Bugfix, Melhoria/Enhancement ou Nova Função/Feature) antes do início do código.
-   - **Branches por Tarefa:** Todo trabalho é feito em branch dedicada baseada na Issue (`feat/issue-X`, `fix/issue-X`).
-   - **Deploys via PR:** Todo deploy em produção é gerenciado exclusivamente via Pull Request direcionado para `main`.
-   - **Vínculo Issue ↔ PR:** A descrição do PR deve obrigatoriamente mencionar e encerrar a Issue (`Fixes #X`, `Closes #X`, `Resolves #X`).
-   - **Revisão Humana:** Agentes nunca realizam merge em `main` nem deploys diretos.
+    - **Issues no Linear Obrigatórias:** Crie uma issue no Linear (`MAI-XXX`, fonte canônica) para toda tarefa (Correção/Bugfix, Melhoria/Enhancement ou Nova Função/Feature) antes do início do código.
+    - **Branches por Tarefa:** Todo trabalho é feito em branch dedicada a partir de `main` (`feat/mai-XXX-...`, `fix/mai-XXX-...`).
+    - **Deploys via PR:** Todo deploy em produção é gerenciado exclusivamente via Pull Request direcionado para `main` (`gh pr create --base main`).
+    - **Vínculo Issue ↔ PR:** A descrição do PR menciona obrigatoriamente a issue do Linear (`MAI-XXX` + link do card; mais `Fixes #X` quando houver Issue espelho no GitHub).
+    - **Revisão Humana:** Agentes nunca realizam merge em `main` nem deploys diretos — aprovação e merge cabem ao dono (Maick).
 
-2. **Padrão de Interface & Motion Principles (`kylezantos/design-motion-principles`):**
+2. **Padrão de Interface & Motion Principles (`design-motion-principles`, via submodule `.agents/skills-hub`):**
    - **Skeleton Screens Obrigatórios:** Toda tela, card, tabela ou painel métrico deve exibir skeleton proporcional no carregamento (zero tela em branco ou layout shift).
    - **Lazy Loading Universal:** Rotas secundárias, modais complexos, gráficos pesados e imagens (`React.lazy`, `next/dynamic`, `loading="lazy"`).
    - **Smooth Animation em Todos os Elementos:**
@@ -39,10 +41,10 @@ Todo desenvolvimento neste repositório (humano ou por agentes de IA de qualquer
      - *Progresso:* Interpolação suave em barras e valores numéricos sem saltos secos.
    - **Ergonomia e Acessibilidade:** Touch targets mínimos de 44x44px, contraste mínimo 4.5:1 (WCAG AA) e suporte estrito a `prefers-reduced-motion: reduce`.
 
-3. **Observabilidade, Qualidade de Código & Pirâmide de Testes:**
-   - **Observabilidade:** Sentry (erros client e server), Datadog / NewRelic / OpenTelemetry (APM, distributed tracing, métricas de runtime) e logs estruturados.
-   - **Qualidade & Lint:** Arch-contract (respeito estrito à fronteira de camadas com DAL em `src/lib/<modulo>/`), Biome, Commitlint (Conventional Commits), Knip e Stryker.
-   - **Testes:** Pirâmide completa com testes unitários/integração (regras financeiras e RPCs atômicos), Playwright (E2E mobile/desktop) e Codecov no CI.
+3. **Observabilidade, Qualidade de Código & Pirâmide de Testes (estado atual):**
+    - **Observabilidade:** Sentry SDK (`@sentry/nextjs`, envio só com DSN) + logs estruturados sanitizados (`src/lib/observability/`). Sem APM dedicado instalado (Datadog/NewRelic/OpenTelemetry como serviço são proposta, não requisito).
+    - **Qualidade & Lint:** Arch-contract (DAL estrita em `src/lib/<modulo>/` — ex. assinatura migrada para `src/lib/subscription/queries.ts` em MAI-143/PR #145), ESLint (`eslint-config-next`), TypeScript estrito e Commits Convencionais manuais. Biome, Commitlint automatizado, Knip e Stryker NÃO estão instalados — não exigir nem bloquear PR por eles.
+    - **Testes:** `npm test` (suíte offline `node:test` — regras financeiras, RPCs atômicos, CSP/HSTS, SEO, billing) + testes reais opt-in contra Supabase local descartável (`test:real`, `test:subscription-real`, `test:subscription-reversal-real`, `test:security-real`, `db:smoke`/`db:verify`; jobs `real-e2e` no CI). Playwright com browser e Codecov NÃO estão instalados — não exigir.
 
 ### Configuração do Supabase
 
@@ -99,10 +101,15 @@ na raiz atendem às rotas públicas e protegidas; erros no layout têm uma tela
 global independente de fontes e estilos externos. Os carregamentos e erros
 tratados dentro dos componentes continuam usando suas próprias mensagens.
 
-Como não há conteúdo público para busca, `robots.ts` bloqueia rastreamento e
-as respostas usam `X-Robots-Tag: noindex, nofollow`, além dos metadados equivalentes.
-Não há sitemap nem URL canônica inventada. Apenas `/robots.txt` foi excluído do
-matcher de autenticação; isso não muda a proteção das páginas ou dos dados.
+O SEO é **seletivo**: a landing (`/`), `/privacidade` e `/termos` são
+indexáveis (`src/app/page.tsx` com `index: true` + `canonical`, `sitemap.ts` e
+`robots.ts` com `allow` restrito a essas rotas). Todo o resto é `noindex` por
+padrão (`robots: { index: false }` em `src/app/layout.tsx` + header
+`X-Robots-Tag: noindex, nofollow` para rotas privadas em `next.config.ts`).
+A URL canônica vem de `getSiteUrl()` (`src/lib/config/site-url.ts`,
+`NEXT_PUBLIC_SITE_URL` obrigatória em produção). Apenas `/robots.txt` foi
+excluído do matcher de autenticação; isso não muda a proteção das páginas ou
+dos dados.
 
 Os headers desativam detecção de MIME, enquadramento por outras origens e acesso
 a câmera, microfone e localização, e limitam o referenciador entre origens.
@@ -111,6 +118,21 @@ sob `CSP_ENFORCE=true`) e o HSTS (`Strict-Transport-Security: max-age=86400`)
 é emitido pelo middleware somente no host de produção via HTTPS
 (`meuplantao.pro`/`www.meuplantao.pro`), preservando HTTP local, previews e
 scripts do Next.js. Detalhes em `docs/operations/hsts.md`.
+
+### Assinatura e billing (Mercado Pago)
+
+O browser nunca chama a API do Mercado Pago diretamente: o checkout passa por
+proxy same-origin (`/api/mercadopago/*`, coberto por `connect-src 'self'` na
+CSP) e redireciona via `init_point` top-level; o retorno do checkout volta ao
+same-origin. Webhook (`/api/webhooks/mercadopago`), sync e verify rodam
+server-side em `src/lib/mercadopago/` (timeouts/retries em `http.ts`, catálogo
+canônico de planos em `payments.ts`), com estado em `src/lib/subscription/`
+(DAL em `queries.ts`, tabelas `subscriptions`/`subscription_checkouts`) e rate
+limit/cooldown em `src/lib/billing/rate-limit.ts`. A RPC crítica
+`process_mercadopago_subscription_payment` (idempotente, fail-closed) é coberta
+pelo schema gate do `prebuild`. Detalhes operacionais em
+`docs/operations/mercadopago-webhook.md` e
+`docs/operations/mercadopago-reversals.md`.
 
 ### Verificações locais
 
@@ -123,6 +145,10 @@ npm run db:smoke   # smoke test de schema e RPCs críticas
 ```
 
 Os testes de configuração não usam credenciais reais nem acessam o banco.
+Os testes reais (`test:real`, `test:subscription-real`,
+`test:subscription-reversal-real`, `test:security-real`) são opt-in e sobem um
+Supabase local descartável — nunca produção (ver `tests/REAL-E2E.md` e
+`docs/TEST_INFRA.md`).
 
 ### Migrations e Schema de Produção (DevOps)
 
