@@ -35,11 +35,11 @@ function withEnv(overrides, fn) {
   }
 }
 
-test("header usa o nome Report-Only (nunca a política efetiva nesta etapa)", () => {
+test("header usa o nome Report-Only (efetiva só sob flag MAI-145)", () => {
   assert.equal(CSP_REPORT_ONLY_HEADER, "Content-Security-Policy-Report-Only");
   const source = readFileSync(new URL("../next.config.ts", import.meta.url), "utf8");
-  assert.match(source, /CSP_REPORT_ONLY_HEADER/, "next.config deve emitir via constante de fonte única");
-  assert.match(source, /buildCspReportOnlyValue/, "next.config deve construir a política via helper");
+  assert.match(source, /CSP_REPORT_ONLY_HEADER|getCspHeaders/, "next.config deve emitir via constante de fonte única");
+  assert.match(source, /buildCspReportOnlyValue|buildCspValue|getCspHeaders/, "next.config deve construir a política via helper");
   assert.ok(source.includes("src/lib/security/csp"), "fonte única: src/lib/security/csp");
   // Garante que não há emissão acidental da política efetiva (o nome Report-Only
   // contém o substring, então exige aspas + correspondência exata).
