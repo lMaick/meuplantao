@@ -39,10 +39,13 @@ buildCspReportOnlyValue()`), acrescido apenas de
   instância — suficiente para telemetria.
 - **Privacidade (nunca logar PII):** registrados SOMENTE `violated-directive`,
   `effective-directive`, origem do `blocked-uri` (`https://host`, `self:`,
-  `data:`, `blob:`), pathname de `document-uri`/`source-file`, linha/coluna e
-  snippet truncado da política. Query strings, fragmentos, cookies,
+  `data:`, `blob:`), pathname de `document-uri`/`source-file` e linha/coluna.
+  `original-policy` NUNCA é coletado (auditoria MAI-145: pode carregar nonces
+  ou URLs com parâmetros sensíveis). Query strings, fragmentos, cookies,
   `Authorization` e padrões `token|secret|password|api_key|session` são
   removidos ou mascarados como `[REDACTED]`. IP e User-Agent não são logados.
+- **Limite em bytes reais:** corpo até 8 KB medidos em UTF-8
+  (`Buffer.byteLength`), não contagem de caracteres.
 - **Log:** `console.warn` estruturado `{event:"csp_violation", ...}` (coletável
   pelo APM/observabilidade existente).
 - **Middleware:** `/api/csp-report` está no allowlist público de
@@ -74,7 +77,10 @@ buildCspReportOnlyValue()`), acrescido apenas de
 ## 4. Monitoramento
 
 - Consultar logs por `event:"csp_violation"`; agrupar por
-  `violatedDirective + blockedHost`.
+  `violatedDirective + blockedHost + documentPath`.
+- Com Report-Only e efetiva idênticas, a mesma violação pode chegar DUPLICADA
+  (um report por header) — deduplicar pela tupla acima + janela de tempo antes
+  de contar; o rate limit (10 req/min/IP) absorve rajadas.
 - Alerta em spike (> N violações/hora ou qualquer `script-src` com host
   externo novo) → investigar antes de adicionar origem (nunca wildcard `*`).
 - Origens legítimas novas entram em `src/lib/security/csp.ts` com
