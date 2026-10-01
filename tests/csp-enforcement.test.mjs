@@ -14,8 +14,11 @@ import {
 } from "../src/lib/security/csp.ts";
 import {
   checkCspReportRateLimit,
+  CSP_REPORT_MAX_BYTES,
   CSP_REPORT_MAX_PER_WINDOW,
+  getCspReportBodyByteLength,
   isAllowedCspContentType,
+  isCspReportBodyTooLarge,
   resetCspReportRateLimitForTests,
   safeBlockedHost,
   safeDocumentPath,
@@ -92,7 +95,7 @@ test("sanitizeCspReport aceita formato legado e remove query/fragment", () => {
       "source-file": "https://meuplantao.pro/_next/static/chunk.js?h=1",
       "line-number": 10,
       "column-number": 5,
-      "original-policy": "default-src 'self'; connect-src 'self'",
+      "original-policy": "script-src 'self' 'nonce-SECRET456'; connect-src https://x.example.com/?token=SECRET789",
     },
   });
   assert.equal(res.ok, true);
@@ -103,6 +106,31 @@ test("sanitizeCspReport aceita formato legado e remove query/fragment", () => {
   assert.equal(res.report.lineNumber, 10);
   assert.ok(!JSON.stringify(res.report).includes("token=abc"), "query nunca registrada");
   assert.ok(!JSON.stringify(res.report).includes("session=xyz"), "query nunca registrada");
+});
+
+test("sanitizeCspReport descarta original-policy (nonce/URL sensivel nunca logados)", () => {
+  const res = sanitizeCspReport({
+    "violated-directive": "script-src",
+    "effective-directive": "script-src",
+    "blocked-uri": "https://evil.example.com/x",
+    "document-uri": "https://meuplantao.pro/login",
+    "original-policy": "script-src 'self' 'nonce-SECRET456'; connect-src https://x.example.com/?token=SECRET789",
+  });
+  assert.equal(res.ok, true);
+  assert.ok(!("originalPolicySnippet" in res.report), "campo nao deve existir no relatorio sanitizado");
+  const dumped = JSON.stringify(res.report);
+  assert.ok(!dumped.includes("SECRET456"), "nonce de original-policy nunca registrado");
+  assert.ok(!dumped.includes("SECRET789"), "token de original-policy nunca registrado");
+  assert.ok(!dumped.includes("original-policy"), "chave original-policy nunca registrada");
+});
+
+test("limite de corpo usa bytes reais UTF-8 (nao contagem de caracteres)", () => {
+  assert.equal(isCspReportBodyTooLarge("x".repeat(100)), false);
+  assert.equal(isCspReportBodyTooLarge("x".repeat(CSP_REPORT_MAX_BYTES + 1)), true);
+  const multibyte = "é".repeat(5000);
+  assert.ok(multibyte.length < CSP_REPORT_MAX_BYTES, "pre-condicao: 5000 caracteres");
+  assert.equal(getCspReportBodyByteLength(multibyte), 10000);
+  assert.equal(isCspReportBodyTooLarge(multibyte), true, "10000 bytes excedem o limite de 8192");
 });
 
 test("sanitizeCspReport mascara valores sensíveis e rejeita sem diretiva", () => {

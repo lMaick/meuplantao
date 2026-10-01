@@ -3,6 +3,7 @@ import {
   checkCspReportRateLimit,
   CSP_REPORT_MAX_BYTES,
   isAllowedCspContentType,
+  isCspReportBodyTooLarge,
   normalizeCspReportIp,
   sanitizeCspReport,
 } from "@/lib/security/csp-report";
@@ -41,7 +42,7 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "invalid-report" }, { status: 400 });
   }
-  if (!raw || raw.length > CSP_REPORT_MAX_BYTES) {
+  if (!raw || isCspReportBodyTooLarge(raw)) {
     return NextResponse.json({ error: raw ? "payload-too-large" : "invalid-report" }, { status: raw ? 413 : 400 });
   }
 

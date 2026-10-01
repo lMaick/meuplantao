@@ -12,6 +12,9 @@
  * - Sanitização: apenas campos allowlist são registrados; query strings,
  *   fragmentos, cookies, Authorization e tokens nunca são persistidos/logados.
  *   URLs completas são reduzidas a origem (`https://host`) ou pathname.
+ *   `original-policy` NUNCA é coletado (auditoria MAI-145: pode carregar
+ *   nonces ou URLs com parâmetros sensíveis; irrelevante para agrupar
+ *   violações por diretiva/host).
  */
 
 export const CSP_REPORT_MAX_BYTES = 8192;
@@ -32,7 +35,25 @@ export interface SanitizedCspReport {
   sourcePath?: string;
   lineNumber?: number;
   columnNumber?: number;
-  originalPolicySnippet?: string;
+}
+
+/**
+ * Tamanho real em bytes (UTF-8) do corpo — `String.length` conta caracteres
+ * e subestima payloads multibyte. Compara contra `CSP_REPORT_MAX_BYTES`.
+ */
+export function getCspReportBodyByteLength(raw: string): number {
+  try {
+    if (typeof Buffer !== "undefined" && typeof Buffer.byteLength === "function") {
+      return Buffer.byteLength(raw, "utf8");
+    }
+  } catch {
+    // Fallback conservador abaixo.
+  }
+  return raw.length;
+}
+
+export function isCspReportBodyTooLarge(raw: string): boolean {
+  return getCspReportBodyByteLength(raw) > CSP_REPORT_MAX_BYTES;
 }
 
 export type SanitizeResult =
@@ -166,8 +187,7 @@ export function sanitizeCspReport(input: unknown): SanitizeResult {
   const lineNumber = toFiniteInt(payload["line-number"] ?? payload["lineNumber"]);
   const columnNumber = toFiniteInt(payload["column-number"] ?? payload["columnNumber"]);
 
-  const rawPolicy = pickString(payload, "original-policy", "originalPolicy");
-  const originalPolicySnippet = rawPolicy ? truncate(rawPolicy, 500) : undefined;
+  // `original-policy` é descartado intencionalmente (ver comentário do módulo).
 
   return {
     ok: true,
@@ -179,7 +199,6 @@ export function sanitizeCspReport(input: unknown): SanitizeResult {
       ...(sourcePath ? { sourcePath } : {}),
       ...(lineNumber !== undefined ? { lineNumber } : {}),
       ...(columnNumber !== undefined ? { columnNumber } : {}),
-      ...(originalPolicySnippet ? { originalPolicySnippet } : {}),
     },
   };
 }
