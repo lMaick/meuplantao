@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/client";
 import { throwOnError } from "@/lib/dal";
+import { SESSION_EXPIRED_MESSAGE } from "@/lib/auth/jwt-recovery";
 
 /**
  * DAL de assinatura (MAI-143).
@@ -28,6 +29,28 @@ export interface MySubscription {
 export const SUBSCRIPTION_SELECT = "status, current_period_end" as const;
 export const SUBSCRIPTION_TABLE = "subscriptions" as const;
 
+/** Erro lançado quando não há sessão (sem usuário). Distinto de JWT expirado. */
+export const UNAUTHENTICATED_MESSAGE = "Usuário não autenticado." as const;
+
+/**
+ * Retorna true para falhas de autenticação que invalidam o estado anterior:
+ * sessão ausente (`UNAUTHENTICATED_MESSAGE`) ou JWT expirado/inválido
+ * (`SESSION_EXPIRED_MESSAGE` via `throwOnError`).
+ *
+ * O provider/hook DEVE limpar `userId`, `createdAt` e qualquer `trial` Pro
+ * anterior quando este helper retorna true — nunca preservar `prev` (MAI-143).
+ */
+export function isSubscriptionAuthFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message === UNAUTHENTICATED_MESSAGE || message === SESSION_EXPIRED_MESSAGE;
+}
+
+/** Retorna true apenas para JWT expirado/inválido (erro visível; pede re-login). */
+export function isSessionExpiredError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message === SESSION_EXPIRED_MESSAGE;
+}
+
 type SupabaseBrowserClient = ReturnType<typeof createClient>;
 
 function resolveClient(client?: SupabaseBrowserClient): SupabaseBrowserClient {
@@ -45,7 +68,7 @@ export async function getSubscriptionSession(
   const supabase = resolveClient(client);
   const { data, error } = await supabase.auth.getUser();
   await throwOnError(error);
-  if (!data.user) throw new Error("Usuário não autenticado.");
+  if (!data.user) throw new Error(UNAUTHENTICATED_MESSAGE);
   return { userId: data.user.id, createdAt: data.user.created_at ?? null };
 }
 

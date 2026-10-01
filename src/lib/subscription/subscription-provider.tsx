@@ -7,6 +7,8 @@ import { calculateTrial } from "./trial";
 import {
   createSubscriptionChannel,
   fetchMySubscription,
+  isSessionExpiredError,
+  isSubscriptionAuthFailure,
   removeSubscriptionChannel,
 } from "./queries";
 import type { TrialInfo } from "./types";
@@ -33,7 +35,6 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
-  const [createdAt, setCreatedAt] = useState<string | null>(null);
 
   const fetchSubscription = useCallback(async () => {
     setIsLoading(true);
@@ -42,7 +43,6 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       const { userId: currentUserId, createdAt: userCreatedAt, subscription } =
         await fetchMySubscription();
       setUserId(currentUserId);
-      setCreatedAt(userCreatedAt);
       setTrial(
         calculateTrial(
           userCreatedAt,
@@ -53,17 +53,23 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       );
     } catch (err) {
       const normalized = err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura");
-      const isUnauthenticated = normalized.message === "Usuário não autenticado.";
-      // Sessão ausente: trial anônimo sem expor erro. Demais falhas (rede/RLS/sessão
-      // expirada) preservam o erro para o paywall/sync degradarem com feedback.
-      if (!isUnauthenticated) setError(normalized);
-      setUserId((prev) => (isUnauthenticated ? null : prev));
-      if (isUnauthenticated) setCreatedAt(null);
-      setTrial((prev) => prev ?? calculateTrial(createdAt ?? new Date().toISOString(), null));
+      // MAI-143 (auditoria): perda/expiração de sessão invalida o estado anterior.
+      // Nunca preservar `prev` Pro aqui — limpar userId/trial para que o
+      // Pro do usuário anterior não sobreviva e o canal Realtime antigo seja removido.
+      // Sessão ausente: trial anônimo silencioso. JWT expirado: trial anônimo + erro
+      // visível (pede re-login). Rede/RLS: preserva para retry sem flicker no paywall.
+      if (isSubscriptionAuthFailure(normalized)) {
+        setUserId(null);
+        setTrial(calculateTrial(new Date().toISOString(), null));
+        setError(isSessionExpiredError(normalized) ? normalized : null);
+      } else {
+        setError(normalized);
+        setTrial((prev) => prev ?? calculateTrial(new Date().toISOString(), null));
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [createdAt]);
+  }, []);
 
   useEffect(() => {
     void fetchSubscription();
