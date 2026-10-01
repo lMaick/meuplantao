@@ -23,7 +23,7 @@ Fixes #
 - [ ] **Qualidade de Código:** Arch-contract respeitado (DAL isolado em `src/lib/<modulo>/`, sem queries soltas em componentes), ESLint + `tsc` estrito limpos (sem Biome/Knip/Stryker instalados — não exigir).
 - [ ] **Conventional Commits:** Commits seguem o padrão manual (`feat:`, `fix:`, `docs:`, etc. com `(MAI-XXX)`; sem hook de Commitlint instalado).
 - [ ] **Testes Unitários & Integração:** `npm test` executado e 100% verde (+ `db:smoke`/`db:verify` quando houver mudança de schema/RPC).
-- [ ] **Testes Reais opt-in:** fluxos com Supabase local descartável quando aplicável (`test:real`, `test:subscription-real`, `test:security-real`); nunca produção. Sem Playwright com browser nem Codecov instalados — não exigir.
+- [ ] **Testes Reais opt-in (nunca produção):** Supabase local descartável quando aplicável (`test:real`, `test:subscription-real`) e/ou Postgres 16 local (`test:security-real` — não usa Supabase local). Sem Playwright com browser nem Codecov instalados — não exigir.
 - [ ] **Build & Types:** `npx tsc --noEmit` e `npm run build` passando sem erros.
 
 ---
