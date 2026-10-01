@@ -1,5 +1,10 @@
 # Test Suite Readiness Report (TEST_READY.md)
 
+> **Documento histórico (pré-MAI-142):** relatório de marco da entrega do
+> redesign UI/UX — contagens (216 testes, 14 suítes), tempos e comandos aqui
+> NÃO refletem o estado atual. Para a infraestrutura de testes vigente, usar
+> `docs/TEST_INFRA.md` + scripts de `package.json` + `.github/workflows/ci.yml`.
+
 ## 1. Readiness Summary
 
 The opaque-box E2E testing suite for the **MeuPlantão** UI/UX production redesign has been fully designed, implemented, verified, and published.
