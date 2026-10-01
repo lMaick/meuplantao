@@ -6,11 +6,13 @@ import { createClient } from "@/lib/supabase/client";
 import { calculateTrial } from "./trial";
 import type { TrialInfo } from "./types";
 import { useSubscriptionContext } from "./subscription-provider";
-
-interface SubscriptionRow {
-  status: string | null;
-  current_period_end: string | null;
-}
+import {
+  createSubscriptionChannel,
+  fetchMySubscription,
+  isSessionExpiredError,
+  isSubscriptionAuthFailure,
+  removeSubscriptionChannel,
+} from "./queries";
 
 export interface SubscriptionState {
   trial: TrialInfo | null;
@@ -20,10 +22,12 @@ export interface SubscriptionState {
 }
 
 /**
- * Hook de assinatura (MAI-126): quando montado dentro do SubscriptionProvider
+ * Hook de assinatura (MAI-126, DAL MAI-143): quando montado dentro do SubscriptionProvider
  * (AppShell), retorna o estado global reativo compartilhado — sidebar, header
  * e card atualizam no mesmo milissegundo. Fora do provider, mantém busca
  * própria + Realtime dedicado (compatibilidade com páginas isoladas/testes).
+ *
+ * Leitura via DAL (`./queries`) — nenhuma query Supabase inline (AGENTS.md).
  */
 export function useSubscription(): SubscriptionState {
   const shared = useSubscriptionContext();
@@ -37,75 +41,56 @@ export function useSubscription(): SubscriptionState {
   // e lança "cannot add 'postgres_changes' callbacks ... after 'subscribe()'").
   // useId() é puro (lint-safe) e estável por instância.
   const rawInstanceId = useId().replace(/:/g, "-");
-  const channelName = userId ? `subscription-status:${userId}:${rawInstanceId}` : null;
+  const hasShared = shared !== null;
 
   const fetchSubscription = useCallback(async () => {
     setIsLoading(true);
 
     try {
       setError(null);
-      const supabase = createClient();
-      const { data, error: userError } = await supabase.auth.getUser();
-
-      if (userError || !data.user) {
+      const { userId: currentUserId, createdAt, subscription } = await fetchMySubscription();
+      setUserId(currentUserId);
+      setTrial(
+        calculateTrial(createdAt, subscription?.status, new Date(), subscription?.current_period_end),
+      );
+    } catch (err) {
+      const normalized = err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura");
+      // MAI-143: mesma regra do provider — falha de autenticação (ausente ou JWT
+      // expirado) limpa userId para remover o canal Realtime antigo e nunca
+      // preserva Pro stale; trial volta a anônimo fail-closed.
+      if (isSubscriptionAuthFailure(normalized)) {
         setUserId(null);
         setTrial(calculateTrial(new Date().toISOString(), null));
-        if (userError) setError(userError);
-        return;
+        setError(isSessionExpiredError(normalized) ? normalized : null);
+      } else {
+        setError(normalized);
+        setTrial(calculateTrial(new Date().toISOString(), null));
       }
-
-      const { data: subscription, error: subscriptionError } = await supabase
-        .from("subscriptions")
-        .select("status, current_period_end")
-        .eq("user_id", data.user.id)
-        .maybeSingle() as { data: SubscriptionRow | null; error: Error | null };
-
-      if (subscriptionError) throw subscriptionError;
-
-      setUserId(data.user.id);
-      setTrial(calculateTrial(data.user.created_at, subscription?.status, new Date(), subscription?.current_period_end));
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura"));
-      setTrial(calculateTrial(new Date().toISOString(), null));
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (shared) return;
+    if (hasShared) return;
     void fetchSubscription();
-  }, [fetchSubscription, shared]);
+  }, [fetchSubscription, hasShared]);
 
   useEffect(() => {
-    if (shared || !userId || !channelName) return;
+    if (hasShared || !userId) return;
 
     const supabase = createClient();
 
     try {
-      const channel = supabase
-        .channel(channelName)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "subscriptions",
-            filter: `user_id=eq.${userId}`,
-          },
-          () => void fetchSubscription(),
-        )
-        .subscribe();
+      const channel = createSubscriptionChannel(
+        supabase,
+        userId,
+        () => void fetchSubscription(),
+        rawInstanceId,
+      );
 
       return () => {
-        try {
-          void supabase.removeChannel(channel);
-        } catch (cleanupError) {
-          console.warn(
-            "[useSubscription] Falha ao remover canal Realtime (degradação graciosa):",
-            cleanupError,
-          );
-        }
+        void removeSubscriptionChannel(supabase, channel, console, "[useSubscription]");
       };
     } catch (realtimeError) {
       // Degradação graciosa: falha no Realtime nunca deve derrubar a
@@ -116,7 +101,7 @@ export function useSubscription(): SubscriptionState {
       );
       return;
     }
-  }, [channelName, fetchSubscription, userId, shared]);
+  }, [rawInstanceId, fetchSubscription, userId, hasShared]);
 
   if (shared) return shared;
 
