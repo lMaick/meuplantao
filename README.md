@@ -106,8 +106,11 @@ matcher de autenticação; isso não muda a proteção das páginas ou dos dados
 
 Os headers desativam detecção de MIME, enquadramento por outras origens e acesso
 a câmera, microfone e localização, e limitam o referenciador entre origens.
-Não há CSP restritiva, HSTS ou isolamento entre origens nesta configuração,
-preservando HTTP local, scripts do Next.js e conexões/autenticação do Supabase.
+A CSP é emitida via `src/lib/security/csp.ts` (Report-Only sempre + efetiva
+sob `CSP_ENFORCE=true`) e o HSTS (`Strict-Transport-Security: max-age=86400`)
+é emitido pelo middleware somente no host de produção via HTTPS
+(`meuplantao.pro`/`www.meuplantao.pro`), preservando HTTP local, previews e
+scripts do Next.js. Detalhes em `docs/operations/hsts.md`.
 
 ### Verificações locais
 
