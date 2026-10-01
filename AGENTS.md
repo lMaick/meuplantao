@@ -70,9 +70,11 @@ comando/dependência/CI correspondente):
    - **Commits Convencionais manuais (`feat:`, `fix:`, `docs:`, `refactor:`, `perf:`, `test:`, `chore:` com `(MAI-XXX)`):** convenção exigida em revisão; sem hook/bot de Commitlint instalado (sem `commitlint.config.*`).
    - **Propostas (NÃO instaladas, NÃO exigir nem bloquear PR):** Biome, Commitlint automatizado, Knip, Stryker/mutation testing.
 3. **Pirâmide de Testes (estado atual — `docs/TEST_INFRA.md`):**
-   - **Testes Unitários & Integração (`npm test` → `node --test tests/*.test.mjs`):** validação matemática e idempotente das regras de negócio financeiro e RPCs atômicos (`save_shift_with_obligation`, `register_payment`, `process_mercadopago_subscription_payment`), CSP/HSTS, SEO seletivo, billing/rate-limit e invariantes de segurança.
-   - **Testes Reais opt-in (Supabase local descartável, nunca produção):** `npm run test:real`, `npm run test:subscription-real`, `npm run test:subscription-reversal-real`, `npm run test:security-real` (+ `tests/*.real.sh`), `npm run db:smoke` e `npm run db:verify`. O CI executa esses jobs em Supabase local isolado (`ci.yml`: `real-e2e`, `subscription-payment-real-e2e`, `security-invariants-e2e`).
-   - **Migrations & Schema Gate:** `supabase/migrations/` versionadas + `docs/DEVOPS_MIGRATIONS.md`; `prebuild` (`scripts/verify-production-schema.mjs`) é barreira fail-closed das 3 RPCs críticas; `deploy-production.yml` aplica migrations no merge em `main`.
+   - **Testes Unitários & Integração offline (`npm test` → `node --test tests/*.test.mjs`):** sem serviços externos; validação matemática e idempotente das regras de negócio financeiro e RPCs atômicos (`save_shift_with_obligation`, `register_payment`, `process_mercadopago_subscription_payment`), CSP/HSTS, SEO seletivo, billing/rate-limit e invariantes de segurança.
+   - **Testes Reais opt-in, nunca produção, em duas categorias:**
+     - **Supabase local isolado e descartável (via Supabase CLI):** `npm run test:real`, `npm run test:subscription-real`, `npm run test:subscription-reversal-real` (+ validadores `tests/*.real.sh` e `npm run db:smoke` com `DATABASE_URL` local). CI: jobs `real-e2e` e `subscription-payment-real-e2e`.
+     - **PostgreSQL 16 local isolado (container `postgres:16`, guard fail-closed só-local):** `npm run test:security-real` (`tests/security-invariants-real.local.mjs`, via `pg` direto — NÃO usa Supabase local). CI: job `security-invariants-e2e`.
+   - **Migrations & Schema Gate:** `supabase/migrations/` versionadas + `docs/DEVOPS_MIGRATIONS.md`; `prebuild` (`scripts/verify-production-schema.mjs`, `npm run db:verify`) é bypass em build local/CI-quality e diagnóstico em preview, mas barreira fail-closed ESTRITA em produção (`VERCEL_ENV=production` ou `CHECK_SCHEMA_COMPATIBILITY=1`) — o gate participa do release de produção. `deploy-production.yml` aplica migrations no merge em `main`.
    - **Propostas (NÃO instaladas, NÃO exigir):** Playwright E2E com browser, Codecov com gate de cobertura (sem step no CI).
 
 ---
@@ -93,7 +95,7 @@ Todo worker (agente de IA de qualquer modelo) atuando em worktrees do Orca DEVE 
 - Acesso a dados em `src/lib/<modulo>/` como funções tipadas (DAL).
 - Supabase client central em `src/lib/supabase/`.
 - Assinatura/billing Mercado Pago server-side em `src/lib/mercadopago/` (sem SDK no browser; proxy same-origin `/api/mercadopago/*`, webhook `/api/webhooks/mercadopago`), estado em `src/lib/subscription/` + tabelas `subscriptions`/`subscription_checkouts`, rate limit em `src/lib/billing/rate-limit.ts`. Detalhes: `docs/operations/mercadopago-*.md`.
-- SEO seletivo: landing (`/`), `/privacidade` e `/termos` indexáveis (`src/app/page.tsx`, `sitemap.ts`, `robots.ts` com `allow` restrito); todo o resto `noindex` (default em `src/app/layout.tsx` + `X-Robots-Tag` em `next.config.ts`).
+- SEO seletivo: landing (`/`), `/privacidade` e `/termos` são as páginas públicas indexáveis e presentes no sitemap (`src/app/page.tsx` com `index: true` + `canonical`, `sitemap.ts`); `robots.ts` permite crawling geral (`Allow: /` + as 3 rotas) e bloqueia explicitamente `/api/` e `/auth/`; todo o resto é `noindex` (`robots: { index: false }` default em `src/app/layout.tsx` + `X-Robots-Tag: noindex, nofollow` para rotas privadas em `next.config.ts`).
 - CSP via fonte única `src/lib/security/csp.ts`: `Content-Security-Policy-Report-Only` sempre (telemetria em `/api/csp-report`) + `Content-Security-Policy` efetiva somente sob `CSP_ENFORCE=true`. HSTS só no host de produção via HTTPS (`src/lib/security/hsts.ts` + middleware).
 - CI 100% verde antes de abrir PR (`npm test`, `npm run lint`, `npx tsc --noEmit`, `npm run build`; jobs reais opt-in + `npm run db:smoke` quando houver mudança de schema/RPC).
 

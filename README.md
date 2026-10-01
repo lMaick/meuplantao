@@ -43,8 +43,8 @@ Todo desenvolvimento neste repositório (humano ou por agentes de IA de qualquer
 
 3. **Observabilidade, Qualidade de Código & Pirâmide de Testes (estado atual):**
     - **Observabilidade:** Sentry SDK (`@sentry/nextjs`, envio só com DSN) + logs estruturados sanitizados (`src/lib/observability/`). Sem APM dedicado instalado (Datadog/NewRelic/OpenTelemetry como serviço são proposta, não requisito).
-    - **Qualidade & Lint:** Arch-contract (DAL estrita em `src/lib/<modulo>/` — ex. assinatura migrada para `src/lib/subscription/queries.ts` em MAI-143/PR #145), ESLint (`eslint-config-next`), TypeScript estrito e Commits Convencionais manuais. Biome, Commitlint automatizado, Knip e Stryker NÃO estão instalados — não exigir nem bloquear PR por eles.
-    - **Testes:** `npm test` (suíte offline `node:test` — regras financeiras, RPCs atômicos, CSP/HSTS, SEO, billing) + testes reais opt-in contra Supabase local descartável (`test:real`, `test:subscription-real`, `test:subscription-reversal-real`, `test:security-real`, `db:smoke`/`db:verify`; jobs `real-e2e` no CI). Playwright com browser e Codecov NÃO estão instalados — não exigir.
+    - **Qualidade & Lint:** Arch-contract (DAL estrita em `src/lib/<modulo>/` — ex. assinatura migrada para `src/lib/subscription/queries.ts` em MAI-143/PR #145), ESLint (`eslint-config-next`, `npm run lint` em `src/`), TypeScript estrito e Commits Convencionais manuais. Biome, Commitlint automatizado, Knip e Stryker NÃO estão instalados — não exigir nem bloquear PR por eles.
+    - **Testes:** `npm test` offline (sem serviços externos — regras financeiras, RPCs atômicos, CSP/HSTS, SEO, billing) + testes reais opt-in, nunca produção, em duas categorias: Supabase local isolado e descartável (`test:real`, `test:subscription-real`, `test:subscription-reversal-real`, validadores `tests/*.real.sh`, `db:smoke` com `DATABASE_URL` local) e PostgreSQL 16 local isolado (`test:security-real`, via `pg` direto com guard fail-closed só-local — NÃO usa Supabase local). O schema gate (`prebuild`/`db:verify`) é bypass localmente, mas barreira fail-closed estrita em produção. Playwright com browser e Codecov NÃO estão instalados — não exigir.
 
 ### Configuração do Supabase
 
@@ -101,11 +101,10 @@ na raiz atendem às rotas públicas e protegidas; erros no layout têm uma tela
 global independente de fontes e estilos externos. Os carregamentos e erros
 tratados dentro dos componentes continuam usando suas próprias mensagens.
 
-O SEO é **seletivo**: a landing (`/`), `/privacidade` e `/termos` são
-indexáveis (`src/app/page.tsx` com `index: true` + `canonical`, `sitemap.ts` e
-`robots.ts` com `allow` restrito a essas rotas). Todo o resto é `noindex` por
-padrão (`robots: { index: false }` em `src/app/layout.tsx` + header
-`X-Robots-Tag: noindex, nofollow` para rotas privadas em `next.config.ts`).
+O SEO é **seletivo** e atua em três camadas distintas:
+- **Páginas públicas indexáveis e presentes no sitemap:** a landing (`/`), `/privacidade` e `/termos` (`src/app/page.tsx` e páginas com `index: true` + `canonical`, listadas em `sitemap.ts`).
+- **`robots.ts` (regras de crawling):** permite crawling geral (`Allow: /`, mais as 3 rotas listadas) e bloqueia explicitamente `/api/` e `/auth/`.
+- **Demais páginas privadas:** protegidas contra indexação por `noindex` padrão (`robots: { index: false }` em `src/app/layout.tsx`) + header `X-Robots-Tag: noindex, nofollow` para rotas privadas (`next.config.ts`).
 A URL canônica vem de `getSiteUrl()` (`src/lib/config/site-url.ts`,
 `NEXT_PUBLIC_SITE_URL` obrigatória em produção). Apenas `/robots.txt` foi
 excluído do matcher de autenticação; isso não muda a proteção das páginas ou
@@ -145,10 +144,14 @@ npm run db:smoke   # smoke test de schema e RPCs críticas
 ```
 
 Os testes de configuração não usam credenciais reais nem acessam o banco.
-Os testes reais (`test:real`, `test:subscription-real`,
-`test:subscription-reversal-real`, `test:security-real`) são opt-in e sobem um
-Supabase local descartável — nunca produção (ver `tests/REAL-E2E.md` e
-`docs/TEST_INFRA.md`).
+Os testes reais são opt-in e nunca tocam produção, em duas categorias:
+Supabase local isolado e descartável via Supabase CLI (`test:real`,
+`test:subscription-real`, `test:subscription-reversal-real`) e PostgreSQL 16
+local isolado via `pg` direto com guard fail-closed só-local
+(`test:security-real` — não usa Supabase local). O schema gate
+(`prebuild`/`db:verify`) é bypass em build local/CI-quality, mas barreira
+fail-closed estrita em produção. Ver `tests/REAL-E2E.md` e
+`docs/TEST_INFRA.md`.
 
 ### Migrations e Schema de Produção (DevOps)
 
