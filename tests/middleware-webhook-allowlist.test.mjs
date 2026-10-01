@@ -65,6 +65,24 @@ test("Sem sessão: POST /api/webhooks/mercadopago/ipn chega ao handler (não red
   assert.equal(response.headers.get("location"), null, "NÃO deve redirecionar para /login");
 });
 
+test("Sem sessão: POST /api/csp-report chega ao handler (não redireciona)", async () => {
+  globalThis.__mockUser = null;
+  const req = createReq("http://localhost/api/csp-report", "POST");
+  const response = await updateSession(req);
+
+  assert.equal(response.status, 200, "Deve retornar status 200/next para o handler");
+  assert.equal(response.headers.get("location"), null, "NÃO deve redirecionar para /login");
+});
+
+test("Sem sessão: GET /api/csp-report chega ao handler (não redireciona)", async () => {
+  globalThis.__mockUser = null;
+  const req = createReq("http://localhost/api/csp-report", "GET");
+  const response = await updateSession(req);
+
+  assert.equal(response.status, 200, "Deve retornar status 200/next para o handler");
+  assert.equal(response.headers.get("location"), null, "NÃO deve redirecionar para /login");
+});
+
 test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenticação", async () => {
   globalThis.__mockUser = null;
 

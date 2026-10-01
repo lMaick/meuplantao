@@ -32,7 +32,12 @@ Headers existentes preservados integralmente: `X-Content-Type-Options`,
    `src/lib/security/csp.ts` com justificativa + teste em
    `tests/csp-headers.test.mjs`.
 
-## Promoção segura para CSP efetiva (follow-up, NÃO nesta issue)
+## Promoção segura para CSP efetiva (implementada na MAI-145)
+
+> Ver o plano vigente em `docs/operations/csp-enforcement.md` (flag
+> `CSP_ENFORCE=true`, endpoint `/api/csp-report`, rollback sem code change).
+> O roteiro original abaixo fica como histórico da MAI-133.
+
 
 1. Evidência de 7+ dias sem violações legítimas nos consoles/logs.
 2. No follow-up: trocar `CSP_REPORT_ONLY_HEADER` por `Content-Security-Policy`
