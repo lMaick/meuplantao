@@ -89,7 +89,7 @@ export function RoiCalculator() {
               </div>
 
               <div className="rounded-xl bg-slate-50 p-4 border border-slate-200 text-xs text-slate-600 leading-relaxed">
-                <span className="font-semibold text-slate-800">Nota:</span> Em pesquisas com profissionais de saúde autônomos, até 5% dos repasses sofrem atrasos indeterminados ou divergências não contestadas por falta de controle histórico.
+                <span className="font-semibold text-slate-800">Simule um cenário:</span> considere 5% de divergências ou atrasos nos repasses para dimensionar o impacto de valores não acompanhados de perto. Números ilustrativos — ajuste os controles ao seu caso.
               </div>
             </div>
 
@@ -114,14 +114,14 @@ export function RoiCalculator() {
                   <div className="flex items-center gap-2">
                     <Sparkles className="size-4 text-amber-400" />
                     <span className="text-xs font-semibold text-slate-200">
-                      Risco de repasses esquecidos ou atrasados:
+                      Cenário simulado (5%) — divergências ou atrasos:
                     </span>
                   </div>
                   <p className="font-mono text-xl sm:text-2xl font-bold text-amber-400 mt-1">
                     até R$ {perdaEstimadaAnual.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} / ano
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    O MeuPlantão garante que nenhum dia trabalhado seja esquecido no repasse da escala.
+                    O MeuPlantão ajuda a identificar pendentes, reunindo plantões, valores previstos e saldos em um só lugar.
                   </p>
                 </div>
               </div>

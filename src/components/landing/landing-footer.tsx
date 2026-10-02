@@ -13,7 +13,7 @@ export function LandingFooter() {
             Pronto para colocar ordem nos seus repasses?
           </h2>
           <p className="mx-auto mt-4 max-w-2xl text-base sm:text-lg text-emerald-100/90 leading-relaxed">
-            Junte-se a profissionais de saúde que não perdem mais tempo calculando escalas em planilhas ou sofrendo com repasses esquecidos.
+            Junte-se a profissionais de saúde que organizam escalas e repasses sem depender de planilhas confusas.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
