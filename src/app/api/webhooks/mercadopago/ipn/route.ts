@@ -206,20 +206,11 @@ async function handleLegacyIpn(request: Request, rawBody: string) {
   };
 
   if (limiterOn) {
-    // MAI-138 (auditoria externa, bloqueador 2): duplicata pós-persistência
-    // responde 200 SEM fetch — mesmo fora da janela do cooldown.
-    if (await readPersistedProof()) {
-      captureRateLimitHit({
-        route: IPN_ROUTE,
-        limitKind: "payment_deduped",
-        limit: 1,
-        windowMs: BILLING_LIMITS.ipnPaymentCooldownMs,
-        deduped: true,
-        paymentId,
-        ipHash,
-      });
-      return Response.json({ received: true, deduped: true }, { status: 200 });
-    }
+    // MAI-149: NUNCA retornar `deduped` persistente sem consultar o Mercado Pago.
+    // Mesmo payment_id pode transitar approved -> refunded/charged_back; a prova
+    // persistente fora da janela do cooldown foi removida para que notificações
+    // posteriores sempre consultem o estado atual. Idempotência de concessão via
+    // RPC/ledger; rajadas curtas seguem protegidas por cooldown + in-flight.
 
     // 5. Cooldown/dedupe por pagamento: SÓ responde 200 sem nova consulta
     // quando há prova de persistência (idempotência comprovada no banco).
