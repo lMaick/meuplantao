@@ -12,13 +12,13 @@ const features = [
     icon: SplitSquareVertical,
     title: "Status Derivado Real",
     description:
-      "Nunca salve status manual suscetível a esquecimento. O saldo é calculado com precisão matemática: valor do plantão menos a soma dos pagamentos parciais recebidos.",
+      "Evite status manual sujeito a esquecimento. O saldo é calculado a partir dos dados: valor do plantão menos a soma dos pagamentos parciais recebidos.",
   },
   {
     icon: ClockAlert,
-    title: "Alerta Imediato de Atrasos",
+    title: "Alertas de Atraso",
     description:
-      "A data prevista de repasse chegou e o dinheiro não caiu? O MeuPlantão sinaliza imediatamente para você não deixar semanas passarem sem cobrar.",
+      "A data prevista de repasse chegou e o dinheiro não caiu? O MeuPlantão destaca os repasses em atraso para você cobrar sem deixar semanas passarem.",
   },
   {
     icon: MapPin,
@@ -42,7 +42,7 @@ const features = [
     icon: Lock,
     title: "Segurança e Isolamento RLS",
     description:
-      "Banco de dados com políticas de isolamento estrito (Row Level Security). Seus dados e valores são 100% privados e confidenciais.",
+      "Banco de dados com isolamento por usuário (Row Level Security) e controles de acesso. Seus registros ficam associados apenas à sua conta.",
   },
 ];
 
@@ -58,7 +58,7 @@ export function FeaturesGrid() {
             Tudo o que você precisa, sem o peso do que você não usa.
           </h2>
           <p className="mt-4 text-muted-foreground text-base sm:text-lg">
-            Software desenhado para ser direto, rápido e infalível na gestão da sua remuneração de plantão.
+            Software desenhado para ser direto, rápido e confiável na organização da sua remuneração de plantão.
           </p>
         </div>
 

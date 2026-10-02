@@ -80,7 +80,7 @@ export function PainVsSolution() {
                   <Check className="size-3.5 stroke-[3]" />
                 </div>
                 <span>
-                  <strong>Registro em 5 segundos:</strong> Escolha o hospital, informe o valor e a data prevista. Interface rápida feita para usar com o polegar.
+                  <strong>Registro em segundos:</strong> Escolha o hospital, informe o valor e a data prevista. Interface rápida feita para usar com o polegar.
                 </span>
               </li>
               <li className="flex items-start gap-3">
@@ -88,7 +88,7 @@ export function PainVsSolution() {
                   <Check className="size-3.5 stroke-[3]" />
                 </div>
                 <span>
-                  <strong>Alerta de atraso automático:</strong> Se a data prevista chegou e o repasse não caiu, o app destaca em vermelho para você cobrar imediatamente.
+                  <strong>Alerta de atraso automático:</strong> Se a data prevista chegou e o repasse não caiu, o app destaca em vermelho para você cobrar sem demora.
                 </span>
               </li>
               <li className="flex items-start gap-3">
@@ -96,7 +96,7 @@ export function PainVsSolution() {
                   <Check className="size-3.5 stroke-[3]" />
                 </div>
                 <span>
-                  <strong>Pagamentos parciais sem erros:</strong> Se o hospital pagou apenas metade da escala, o saldo remanescente continua em aberto automaticamente.
+                  <strong>Pagamentos parciais sob controle:</strong> Se o hospital pagou apenas metade da escala, o saldo remanescente continua em aberto automaticamente.
                 </span>
               </li>
               <li className="flex items-start gap-3">
@@ -104,7 +104,7 @@ export function PainVsSolution() {
                   <Check className="size-3.5 stroke-[3]" />
                 </div>
                 <span>
-                  <strong>Contatos e responsáveis organizados:</strong> Saiba exatamente quem é a pessoa de contato de cada escala para enviar mensagens objetivas.
+                  <strong>Contatos e responsáveis organizados:</strong> Saiba quem é a pessoa de contato de cada escala para enviar mensagens objetivas.
                 </span>
               </li>
             </ul>

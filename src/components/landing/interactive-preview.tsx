@@ -80,7 +80,7 @@ export function InteractivePreview() {
             Sua escala médica e seu dinheiro sem mistérios
           </h2>
           <p className="mt-3 text-slate-400 text-base">
-            Interaja com a demonstração abaixo. É exatamente assim que você visualiza seus plantões no celular e no computador.
+            Interaja com a demonstração abaixo. É assim que você visualiza seus plantões no celular e no computador.
           </p>
         </div>
 
@@ -227,7 +227,7 @@ export function InteractivePreview() {
 
           {/* Feedback banner */}
           <div className="mt-5 rounded-xl bg-slate-900/40 border border-slate-800 p-3 text-center text-xs text-slate-400">
-            💡 <strong>Diferencial MeuPlantão:</strong> O status financeiro é sempre derivado das datas e pagamentos reais. Sem campos manuais que causam esquecimento.
+            💡 <strong>Diferencial MeuPlantão:</strong> O status financeiro é calculado a partir das datas e pagamentos registrados, sem depender de campos manuais de status.
           </div>
         </div>
       </div>
