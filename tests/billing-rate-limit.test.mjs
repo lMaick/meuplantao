@@ -116,7 +116,15 @@ function approvedPaymentRpc() {
   const futureEnd = new Date(Date.now() + 30 * 86400000).toISOString();
   globalThis.adminClient = {
     rpc: async (fn, params) => {
-      if (params?.p_payment_id) processedPayments.add(String(params.p_payment_id));
+      const pid = params?.p_payment_id ? String(params.p_payment_id) : "";
+      // MAI-149: RPC idempotente — mesmo payment_id nunca concede vigência twice.
+      if (pid && processedPayments.has(pid)) {
+        return {
+          data: { already_processed: true, current_period_end: futureEnd, validity_days_added: 0, status: "active" },
+          error: null,
+        };
+      }
+      if (pid) processedPayments.add(pid);
       return {
         data: { already_processed: false, current_period_end: futureEnd, validity_days_added: 30, status: "active" },
         error: null,
@@ -616,7 +624,7 @@ test("13. 429 helper: corpo genérico + teto de Retry-After", async () => {
 // 14. Auditoria §3: dedupe exige prova — sem prova, reprocessa (não descarta)
 // ---------------------------------------------------------------------------
 
-test("14. webhook: dedupe sem prova de persistência reprocessa; com prova, deduplica sem fetch", async () => {
+test("14. webhook: dedupe sem prova de persistência reprocessa; com prova, consulta MP e é idempotente (MAI-149)", async () => {
   useFreshStore();
   approvedPaymentRpc();
   const counter = { calls: [] };
@@ -639,12 +647,17 @@ test("14. webhook: dedupe sem prova de persistência reprocessa; com prova, dedu
   assert.notEqual(j1.deduped, true);
   assert.equal(counter.calls.length, 1);
 
-  // Com prova de persistência (payment já processado): dedupe legítimo, sem fetch.
+  // MAI-149: com prova persistente FORA da janela de cooldown, o webhook NÃO pode
+  // retornar `deduped` sem consultar o MP (mesmo payment_id pode ter virado
+  // refunded/charged_back). Deve consultar o estado atual e responder idempotente
+  // via RPC (already_processed, sem nova vigência).
   const before = counter.calls.length;
   const r2 = await webhookPost(reqFor("race-noproof-1"));
   assert.equal(r2.status, 200);
-  assert.equal((await r2.json()).deduped, true);
-  assert.equal(counter.calls.length, before);
+  const j2 = await r2.json();
+  assert.equal(j2.processed, true);
+  assert.equal(j2.already_processed, true);
+  assert.equal(counter.calls.length, before + 1);
 });
 
 // ---------------------------------------------------------------------------

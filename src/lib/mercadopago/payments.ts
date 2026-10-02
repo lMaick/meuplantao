@@ -734,11 +734,19 @@ export interface ProcessPaymentResult {
  * MAI-138 — Prova de idempotência: indica se um payment_id já foi persistido
  * com sucesso em `subscription_payments`.
  *
- * Usado pelo dedupe de webhook/IPN: só responde `200 deduped` (sem consultar
- * o Mercado Pago) quando há prova de persistência. Sem prova — concorrência
- * em voo ou falha anterior — a notificação é PROCESSADA normalmente (a RPC
- * atômica garante que a vigência só é estendida uma vez), nunca descartada.
- * Falha na consulta = sem prova (fail-open para processar, nunca descartar).
+ * MAI-149 — AVISO: esta prova NÃO pode ser usada para pular a consulta ao
+ * Mercado Pago fora da janela curta de cooldown. O mesmo `payment_id` pode
+ * transitar `approved -> refunded/charged_back`; retornar `deduped` persistente
+ * sem fetch impediria `reconcileMercadoPagoReversal()` e manteria o Pro ativo
+ * indevidamente. Dedupe persistente deve impedir NOVA concessão (via RPC
+ * idempotente `already_processed`), nunca impedir observação de mudança de
+ * status. Webhook/IPN usam esta prova SOMENTE dentro da janela de cooldown
+ * curta (rajadas), nunca como curto-circuito infinito.
+ *
+ * Sem prova — concorrência em voo ou falha anterior — a notificação é
+ * PROCESSADA normalmente (a RPC atômica garante que a vigência só é estendida
+ * uma vez), nunca descartada. Falha na consulta = sem prova (fail-open para
+ * processar, nunca descartar).
  */
 export async function hasProcessedMercadoPagoPayment(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
