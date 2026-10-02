@@ -392,3 +392,163 @@ test("MAI-149: IPN approved repetido + reversão repetida idempotentes", async (
   const jrev2 = await rev2.json();
   assert.equal(jrev2.already_reversed, true);
 });
+
+// ---------------------------------------------------------------------------
+// Auditoria 2026-10-02 (finding bloqueador): reversão DENTRO do cooldown curto
+// (15s webhook / 30s IPN), SEM reset manual e SEM segunda notificação.
+// O cooldown NÃO pode retornar 200 `deduped:true` sem consultar o MP —
+// a transição approved -> refunded/charged_back chegaria dentro da janela e
+// seria perdida (200 não garante retry). Correção: consulta o estado atual
+// mesmo no cooldown (lock in-flight protege rajada concorrente com 429).
+// ---------------------------------------------------------------------------
+
+test("MAI-149 auditoria: webhook approved -> refunded DENTRO do cooldown (sem reset, sem reenvio)", async () => {
+  useFreshMai149();
+  const pid = "mai149-audit-webhook-refund-incooldown-1";
+  mpStatusByPayment.set(pid, "approved");
+
+  const r1 = await webhookPost(webhookReqFor(pid));
+  assert.equal(r1.status, 200);
+  const j1 = await r1.json();
+  assert.equal(j1.processed, true);
+  assert.equal(j1.already_processed, false);
+  const firstEnd = j1.current_period_end;
+  assert.ok(firstEnd);
+  assert.equal(fetchCalls, 1);
+  assert.equal(processCalls.length, 1);
+
+  // Transição ocorre DENTRO da janela de 15s: NENHUM reset de cooldown/store,
+  // NENHUMA segunda notificação manual — a próxima notificação do provedor é a
+  // própria reversão e deve ser observada imediatamente.
+  mpStatusByPayment.set(pid, "refunded");
+
+  const r2 = await webhookPost(webhookReqFor(pid));
+  assert.equal(r2.status, 200);
+  const j2 = await r2.json();
+  // NUNCA `deduped:true` terminal sem fetch dentro do cooldown.
+  assert.notEqual(j2.deduped, true);
+  assert.equal(j2.reversed, true);
+  assert.equal(j2.already_reversed, false);
+  assert.equal(fetchCalls, 2);
+  assert.equal(reconcileCalls.length, 1);
+  assert.equal(ledger.get(pid)?.status, "refunded");
+  // Sem dupla concessão: só 1 concessão, 1 reversão.
+  assert.equal(processCalls.length, 1);
+});
+
+test("MAI-149 auditoria: webhook approved -> charged_back DENTRO do cooldown (sem reset, sem reenvio)", async () => {
+  useFreshMai149();
+  const pid = "mai149-audit-webhook-cb-incooldown-1";
+  mpStatusByPayment.set(pid, "approved");
+
+  const r1 = await webhookPost(webhookReqFor(pid));
+  assert.equal((await r1.json()).processed, true);
+  assert.equal(fetchCalls, 1);
+
+  mpStatusByPayment.set(pid, "charged_back");
+
+  const r2 = await webhookPost(webhookReqFor(pid));
+  const j2 = await r2.json();
+  assert.equal(r2.status, 200);
+  assert.notEqual(j2.deduped, true);
+  assert.equal(j2.reversed, true);
+  assert.equal(fetchCalls, 2);
+  assert.equal(reconcileCalls.length, 1);
+  assert.equal(ledger.get(pid)?.status, "charged_back");
+  assert.equal(processCalls.length, 1);
+});
+
+test("MAI-149 auditoria: webhook approved repetido DENTRO do cooldown consulta MP e é idempotente", async () => {
+  useFreshMai149();
+  const pid = "mai149-audit-webhook-repeat-incooldown-1";
+  mpStatusByPayment.set(pid, "approved");
+
+  const r1 = await webhookPost(webhookReqFor(pid));
+  const j1 = await r1.json();
+  assert.equal(j1.processed, true);
+  const firstEnd = j1.current_period_end;
+
+  // Mesmo status, ainda dentro dos 15s: deve CONSULTAR (fetch 2) e responder
+  // idempotente via RPC — nunca `deduped:true` sem fetch.
+  const r2 = await webhookPost(webhookReqFor(pid));
+  const j2 = await r2.json();
+  assert.equal(r2.status, 200);
+  assert.notEqual(j2.deduped, true);
+  assert.equal(j2.processed, true);
+  assert.equal(j2.already_processed, true);
+  assert.equal(j2.current_period_end, firstEnd);
+  assert.equal(fetchCalls, 2);
+  assert.equal(processCalls.length, 2);
+  assert.equal(reconcileCalls.length, 0);
+});
+
+test("MAI-149 auditoria: IPN approved -> refunded DENTRO do cooldown (sem reset, sem reenvio)", async () => {
+  useFreshMai149();
+  const pid = "mai149-audit-ipn-refund-incooldown-1";
+  mpStatusByPayment.set(pid, "approved");
+
+  const r1 = await ipnPost(ipnReqFor(pid));
+  assert.equal(r1.status, 200);
+  assert.equal((await r1.json()).processed, true);
+  assert.equal(fetchCalls, 1);
+
+  mpStatusByPayment.set(pid, "refunded");
+
+  const r2 = await ipnPost(ipnReqFor(pid));
+  const j2 = await r2.json();
+  assert.equal(r2.status, 200);
+  assert.notEqual(j2.deduped, true);
+  assert.equal(j2.reversed, true);
+  assert.equal(j2.already_reversed, false);
+  assert.equal(fetchCalls, 2);
+  assert.equal(reconcileCalls.length, 1);
+  assert.equal(ledger.get(pid)?.status, "refunded");
+  assert.equal(processCalls.length, 1);
+});
+
+test("MAI-149 auditoria: IPN approved -> charged_back DENTRO do cooldown (sem reset, sem reenvio)", async () => {
+  useFreshMai149();
+  const pid = "mai149-audit-ipn-cb-incooldown-1";
+  mpStatusByPayment.set(pid, "approved");
+
+  const r1 = await ipnPost(ipnReqFor(pid));
+  assert.equal((await r1.json()).processed, true);
+
+  mpStatusByPayment.set(pid, "charged_back");
+
+  const r2 = await ipnPost(ipnReqFor(pid));
+  const j2 = await r2.json();
+  assert.equal(r2.status, 200);
+  assert.notEqual(j2.deduped, true);
+  assert.equal(j2.reversed, true);
+  assert.equal(fetchCalls, 2);
+  assert.equal(reconcileCalls.length, 1);
+  assert.equal(ledger.get(pid)?.status, "charged_back");
+  assert.equal(processCalls.length, 1);
+});
+
+test("MAI-149 auditoria: reversão repetida DENTRO do cooldown é idempotente sem dupla remoção", async () => {
+  useFreshMai149();
+  const pid = "mai149-audit-reversal-repeat-incooldown-1";
+  mpStatusByPayment.set(pid, "approved");
+  await webhookPost(webhookReqFor(pid));
+
+  // Primeira reversão ainda dentro do cooldown da concessão.
+  mpStatusByPayment.set(pid, "refunded");
+  const rr1 = await webhookPost(webhookReqFor(pid));
+  const jr1 = await rr1.json();
+  assert.equal(jr1.reversed, true);
+  assert.equal(jr1.already_reversed, false);
+  const endAfterFirstReversal = jr1.current_period_end;
+
+  // Segunda entrega da MESMA reversão, ainda dentro do cooldown: idempotente.
+  const rr2 = await webhookPost(webhookReqFor(pid));
+  const jr2 = await rr2.json();
+  assert.equal(rr2.status, 200);
+  assert.notEqual(jr2.deduped, true);
+  assert.equal(jr2.reversed, true);
+  assert.equal(jr2.already_reversed, true);
+  assert.equal(jr2.current_period_end, endAfterFirstReversal);
+  assert.equal(reconcileCalls.length, 2);
+  assert.equal(processCalls.length, 1);
+});

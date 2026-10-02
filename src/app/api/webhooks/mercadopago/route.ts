@@ -24,7 +24,6 @@ import {
 import {
   completeSubscriptionCheckout,
   getValidityDays,
-  hasProcessedMercadoPagoPayment,
   isQuoteConsumedError,
   processMercadoPagoPayment,
   quarantinePayment,
@@ -187,29 +186,19 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
     });
     return buildBillingRateLimitedResponse(BILLING_LIMITS.inflightRetryAfterSeconds);
   };
-  const readPersistedProof = async (): Promise<boolean> => {
-    try {
-      return await hasProcessedMercadoPagoPayment(createAdminClient(), paymentId);
-    } catch {
-      return false;
-    }
-  };
-
   if (limiterOn) {
-    // MAI-149: NUNCA retornar `deduped` persistente sem consultar o Mercado Pago.
-    // `payment_id` já visto impede NOVA concessão (idempotência via RPC/ledger),
-    // mas NÃO pode impedir observação de mudança de status (approved -> refunded
-    // / charged_back). A prova persistente fora da janela do cooldown foi removida:
-    // notificações posteriores do mesmo payment_id sempre consultam o estado atual
-    // no provedor; `approved` repetido segue idempotente via
-    // `process_mercadopago_subscription_payment` (already_processed, sem nova
-    // vigência) e reversões chegam a `reconcileMercadoPagoReversal()`.
-    // Proteção contra rajadas mantida abaixo via cooldown curto + in-flight.
-
-    // Cooldown/dedupe por pagamento: SÓ responde 200 sem nova consulta quando
-    // há prova de persistência (idempotência comprovada no banco). Sem prova —
-    // concorrência em voo ou falha anterior — o lock in-flight decide abaixo
-    // (nunca descarta retry legítimo).
+    // MAI-149 (auditoria 2026-10-02, finding bloqueador): o cooldown curto NÃO
+    // pode retornar HTTP 200 `deduped:true` sem consultar o Mercado Pago, mesmo
+    // quando o `payment_id` já possui prova persistida. O mesmo payment_id pode
+    // transitar `approved -> refunded/charged_back` DENTRO da janela de 15s; como
+    // 200 não garante retry do provedor, a reversão seria perdida e o Pro ficaria
+    // ativo indevidamente. Correção: SEMPRE consultar o estado atual no provedor
+    // (fonte da verdade), mesmo dentro do cooldown. `payment_id` já visto impede
+    // NOVA concessão via RPC idempotente (`already_processed`, sem nova vigência),
+    // nunca impede observação de mudança de status; `refunded`/`charged_back`
+    // chegam a `reconcileMercadoPagoReversal()`. Rajadas concorrentes seguem
+    // protegidas pelo lock in-flight (só o dono faz fetch; demais recebem 429
+    // retentável com Retry-After). Nenhum 200 terminal sem fetch neste fluxo.
     const cooldown = await checkBillingCooldownAndMark(
       cooldownKey,
       BILLING_LIMITS.webhookPaymentCooldownMs,
@@ -218,22 +207,21 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
     if (cooldown.collapsed) return collapsedResponse(cooldown.storeName, cooldown.distributed, cooldown.fallback);
     cooldownStoreName = cooldown.storeName;
     if (cooldown.deduped) {
-      if (await readPersistedProof()) {
-        captureRateLimitHit({
-          route: WEBHOOK_ROUTE,
-          limitKind: "payment_cooldown",
-          limit: 1,
-          windowMs: BILLING_LIMITS.webhookPaymentCooldownMs,
-          deduped: true,
-          paymentId,
-          storeName: cooldown.storeName,
-          distributed: cooldown.distributed,
-          storeFallback: cooldown.fallback,
-          ipHash,
-        });
-        return Response.json({ received: true, deduped: true }, { status: 200 });
-      }
-      // Sem prova: pode ser concorrência em voo — tenta o lock in-flight.
+      // Dentro da janela curta: NÃO dedupe terminal. Tenta o lock in-flight —
+      // contenção concorrente => 429 retentável (o MP retenta após a janela);
+      // lock livre (duplicata sequencial) => segue para fetch do estado atual.
+      captureRateLimitHit({
+        route: WEBHOOK_ROUTE,
+        limitKind: "payment_cooldown",
+        limit: 1,
+        windowMs: BILLING_LIMITS.webhookPaymentCooldownMs,
+        deduped: false,
+        paymentId,
+        storeName: cooldown.storeName,
+        distributed: cooldown.distributed,
+        storeFallback: cooldown.fallback,
+        ipHash,
+      });
       const inflight = await checkBillingCooldownAndMark(
         inflightKey,
         BILLING_LIMITS.webhookInflightMs,
@@ -248,14 +236,8 @@ async function processPaymentWebhook(request: Request, rawBody: string) {
         // Outra requisição está em voo: resposta retentável SEM novo fetch.
         return inflightContentionResponse(inflight.storeName, inflight.distributed, inflight.fallback);
       }
-      // Lock adquirido sobre marca prematura: double-check — o dono anterior
-      // pode ter persistido entre as leituras.
-      if (await readPersistedProof()) {
-        await releaseInflight();
-        return Response.json({ received: true, deduped: true }, { status: 200 });
-      }
-      // Marca prematura (falha anterior) liberada; o in-flight agora protege.
-      await releaseBillingCooldown(cooldownKey, cooldownStoreName).catch(() => undefined);
+      // Lock adquirido dentro do cooldown: segue para consulta ao MP abaixo.
+      // Idempotência via RPC/ledger; cooldown mantido para métricas.
     } else {
       // Primeira marca: tenta o lock in-flight antes de qualquer fetch.
       const inflight = await checkBillingCooldownAndMark(
