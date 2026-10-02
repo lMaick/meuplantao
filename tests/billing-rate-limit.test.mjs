@@ -259,7 +259,7 @@ test("1. IPN: rajada por IP recebe 429 com Retry-After e não gera fetch além d
 // 2. Dedupe por pagamento: rajada do mesmo id gera 1 consulta externa
 // ---------------------------------------------------------------------------
 
-test("2. IPN: rajada do mesmo pagamento gera 1 consulta externa (dedupe 200)", async () => {
+test("2. IPN: duplicata sequencial DENTRO do cooldown consulta MP e é idempotente (MAI-149 auditoria 2026-10-02)", async () => {
   useFreshStore();
   const counter = { calls: [] };
   mockMpApproved(USER_A, counter);
@@ -275,6 +275,10 @@ test("2. IPN: rajada do mesmo pagamento gera 1 consulta externa (dedupe 200)", a
   assert.equal(first.status, 200);
   assert.equal((await first.json()).processed, true);
 
+  // MAI-149 auditoria: cooldown NUNCA retorna 200 `deduped` sem fetch — mesmo
+  // payment_id pode ter virado refunded/charged_back dentro da janela e 200 não
+  // garante retry. Duplicatas sequenciais consultam o estado atual; `approved`
+  // repetido é idempotente via RPC (sem nova vigência).
   for (let i = 0; i < 9; i++) {
     const res = await ipnPost(
       new Request("http://localhost/api/webhooks/mercadopago/ipn", {
@@ -284,9 +288,12 @@ test("2. IPN: rajada do mesmo pagamento gera 1 consulta externa (dedupe 200)", a
       }),
     );
     assert.equal(res.status, 200);
-    assert.equal((await res.json()).deduped, true);
+    const body = await res.json();
+    assert.notEqual(body.deduped, true);
+    assert.equal(body.processed, true);
+    assert.equal(body.already_processed, true);
   }
-  assert.equal(counter.calls.length, 1);
+  assert.equal(counter.calls.length, 10);
 });
 
 // ---------------------------------------------------------------------------
@@ -733,7 +740,7 @@ test("15b. upstash: hit com Redis lento rejeita no deadline (AbortSignal.timeout
 //     webhook gera exatamente 1 consulta externa (in-flight lock distribuído)
 // ---------------------------------------------------------------------------
 
-test("16. webhook: rajada concorrente do mesmo pagamento => exatamente 1 fetch; duplicata pós-persistência => 200 deduped", async () => {
+test("16. webhook: rajada concorrente do mesmo pagamento => exatamente 1 fetch; duplicata sequencial => consulta idempotente (MAI-149)", async () => {
   useFreshStore();
   const counter = { calls: [] };
   approvedPaymentRpc();
@@ -764,11 +771,16 @@ test("16. webhook: rajada concorrente do mesmo pagamento => exatamente 1 fetch; 
   // Prova de consulta única ao Mercado Pago sob concorrência real.
   assert.equal(counter.calls.length, 1);
 
-  // Duplicata após persistência: 200 deduped SEM novo fetch.
+  // MAI-149 auditoria 2026-10-02: duplicata sequencial DENTRO do cooldown NÃO
+  // pode retornar 200 `deduped` sem fetch (perderia refunded/charged_back).
+  // Consulta o estado atual; `approved` repetido é idempotente via RPC.
   const dup = await webhookPost(makeReq());
   assert.equal(dup.status, 200);
-  assert.equal((await dup.json()).deduped, true);
-  assert.equal(counter.calls.length, 1);
+  const dupBody = await dup.json();
+  assert.notEqual(dupBody.deduped, true);
+  assert.equal(dupBody.processed, true);
+  assert.equal(dupBody.already_processed, true);
+  assert.equal(counter.calls.length, 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -798,10 +810,15 @@ test("17. IPN: rajada concorrente do mesmo pagamento => exatamente 1 fetch", asy
   assert.deepEqual(statuses, [200, 429, 429, 429, 429]);
   assert.equal(counter.calls.length, 1);
 
+  // MAI-149 auditoria 2026-10-02: duplicata sequencial dentro do cooldown
+  // consulta o estado atual (idempotente), nunca `deduped` sem fetch.
   const dup = await ipnPost(makeReq());
   assert.equal(dup.status, 200);
-  assert.equal((await dup.json()).deduped, true);
-  assert.equal(counter.calls.length, 1);
+  const dupBody = await dup.json();
+  assert.notEqual(dupBody.deduped, true);
+  assert.equal(dupBody.processed, true);
+  assert.equal(dupBody.already_processed, true);
+  assert.equal(counter.calls.length, 2);
 });
 
 // ---------------------------------------------------------------------------
