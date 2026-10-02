@@ -123,4 +123,35 @@ describe("MAI-140: pagamento recebido nao aceita data futura (America/Bahia)", (
     // payments-page e historico derivam recebido do saldo da view (quitados).
     assert.match(UI, /expected - balance/);
   });
+
+  test("8. regressao janela UTC/Bahia: toISOString diverge entre 21h-23h59 Bahia (MAI-140)", () => {
+    // Janela critica: 00h00-02h59Z = 21h-23h59 Bahia do dia anterior.
+    // Ex.: 2026-09-16T01:30:00Z ainda e 2026-09-15 na Bahia (UTC-3).
+    // O bug usava `new Date().toISOString().slice(0,10)` (UTC = dia seguinte)
+    // como data do pagamento/plantao; o guard SQL compara com
+    // `(now() at time zone 'America/Bahia')::date` e rejeitava com 23514.
+    const inWindow = new Date("2026-09-16T01:30:00Z");
+    const utcDate = inWindow.toISOString().slice(0, 10);
+    const bahiaDate = bahiaTodayIso(inWindow);
+    assert.equal(utcDate, "2026-09-16");
+    assert.equal(bahiaDate, "2026-09-15");
+    assert.notEqual(utcDate, bahiaDate);
+    // UTC seria (corretamente) rejeitado como futuro pelo produto/SQL...
+    assert.equal(isPaymentDateInFuture(utcDate, inWindow), true);
+    assert.throws(() => assertPaymentDateNotFuture(utcDate, inWindow), /futura/);
+    // ...enquanto o hoje Bahia e aceito.
+    assert.equal(isPaymentDateInFuture(bahiaDate, inWindow), false);
+    assert.doesNotThrow(() => assertPaymentDateNotFuture(bahiaDate, inWindow));
+    // Fora da janela os dois calendarios coincidem.
+    const outside = new Date("2026-09-15T12:00:00-03:00");
+    assert.equal(outside.toISOString().slice(0, 10), bahiaTodayIso(outside));
+    assert.equal(isPaymentDateInFuture(bahiaTodayIso(outside), outside), false);
+  });
+
+  test("9. E2E real deriva hoje em America/Bahia (nunca UTC)", () => {
+    const e2e = fs.readFileSync(path.join(ROOT, "tests", "financial-real-e2e.real.mjs"), "utf8");
+    assert.match(e2e, /America\/Bahia/);
+    assert.match(e2e, /bahiaToday/);
+    assert.doesNotMatch(e2e, /toISOString\(\)\.slice\(0,\s*10\)/);
+  });
 });
