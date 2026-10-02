@@ -1,5 +1,5 @@
-import type { NextRequest } from "next/server";
-import { updateSession } from "@/lib/auth/session";
+import { NextResponse, type NextRequest } from "next/server";
+import { isMachineToMachineRoute, updateSession } from "@/lib/auth/session";
 import { getHstsValue, HSTS_HEADER, shouldSendHsts } from "@/lib/security/hsts";
 
 function requestHost(request: NextRequest): string {
@@ -18,7 +18,14 @@ function requestProto(request: NextRequest): string {
 }
 
 export async function middleware(request: NextRequest) {
-  const response = await updateSession(request);
+  // MAI-151: classificação M2M ANTES de qualquer Supabase Auth. Rotas
+  // machine-to-machine (/api/webhooks/mercadopago, .../ipn, /api/csp-report)
+  // pulam updateSession/auth.getUser por não terem sessão; o wrapper de
+  // headers (HSTS) abaixo continua aplicado. Sem bypass genérico /api/* —
+  // a lista exata vive em isMachineToMachineRoute.
+  const response = isMachineToMachineRoute(request.nextUrl.pathname)
+    ? NextResponse.next({ request })
+    : await updateSession(request);
   // MAI-146: HSTS somente no host de produção via HTTPS. Localhost, preview
   // (*.vercel.app), staging e HTTP nunca recebem o header; o redirect
   // HTTP→HTTPS é papel da Vercel/edge. `next.config.ts` propositalmente NÃO

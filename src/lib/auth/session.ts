@@ -23,7 +23,31 @@ function createRequestClient(request: NextRequest, response: NextResponse, confi
   );
 }
 
+export const MACHINE_TO_MACHINE_PATHS = [
+  "/api/webhooks/mercadopago",
+  "/api/webhooks/mercadopago/ipn",
+  "/api/csp-report",
+] as const;
+
+/**
+ * MAI-151: rotas machine-to-machine (webhooks Mercado Pago + relatório CSP).
+ * Chamadores server-to-server/browser-beacon sem sessão Supabase. A
+ * autenticação/autorização vive nos handlers (HMAC x-signature, consulta
+ * autenticada Mercado Pago, idempotência, rate limit, sanitização) — nunca
+ * em cookie de sessão. Comparação exata: sem prefixo genérico `/api/*`.
+ */
+export function isMachineToMachineRoute(pathname: string): boolean {
+  return (MACHINE_TO_MACHINE_PATHS as readonly string[]).includes(pathname);
+}
+
 export async function updateSession(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  // MAI-151: fast-path M2M ANTES de qualquer Supabase Auth. Retorna
+  // NextResponse.next sem criar client nem chamar auth.getUser, mas o
+  // middleware ainda aplica o wrapper de headers (HSTS) sobre este response.
+  if (isMachineToMachineRoute(pathname)) {
+    return NextResponse.next({ request });
+  }
   const config = getSupabaseConfig();
   if (!config) {
     return new NextResponse(`<!doctype html>
@@ -42,7 +66,6 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const pathname = request.nextUrl.pathname;
   const isLandingPage = pathname === "/";
   const isAuthEntryPage = pathname === "/login" || pathname === "/cadastro" || pathname === "/esqueci-senha";
   const isPublicLegalOrSupport = pathname === "/privacidade" || pathname === "/termos" || pathname === "/suporte";
