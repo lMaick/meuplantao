@@ -27,7 +27,7 @@ const faqs: FaqItem[] = [
   {
     question: "Preciso baixar da App Store ou Google Play?",
     answer:
-      "Não é obrigatório! O MeuPlantão é um web app moderno (PWA) de alta velocidade. Basta abrir no navegador do seu smartphone e selecionar 'Adicionar à tela de início' para usá-lo com ícone direto no celular, ocupando quase zero memória.",
+      "O MeuPlantão é um web app moderno (PWA) de alta velocidade. Basta abrir no navegador do seu smartphone e selecionar 'Adicionar à tela de início' para usá-lo com ícone direto no celular, ocupando pouco espaço no aparelho.",
   },
   {
     question: "Como funciona a cobrança do plano Pro?",
@@ -37,7 +37,7 @@ const faqs: FaqItem[] = [
   {
     question: "Meus dados financeiros e de plantões estão seguros?",
     answer:
-      "Absolutamente. A arquitetura conta com banco de dados Postgres de nível bancário e políticas estritas de Row Level Security (RLS). Ninguém além de você pode visualizar ou alterar seus registros financeiros.",
+      "Seus registros ficam associados apenas à sua conta e protegidos por políticas de Row Level Security (RLS) e controles de acesso em banco Postgres. Os Termos e a Política de Privacidade detalham responsabilidades, limitações e como exercer seus direitos.",
   },
 ];
 

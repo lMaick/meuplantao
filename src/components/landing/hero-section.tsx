@@ -33,7 +33,7 @@ export function HeroSection() {
         {/* Lead description */}
         <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground sm:text-xl leading-relaxed">
           Você sabe com certeza quanto tem para receber este mês? Se precisou pensar, o MeuPlantão é para você.
-          Controle plantões em múltiplos hospitais, identifique repasses atrasados e receba até o último centavo.
+          Controle plantões em múltiplos hospitais, identifique repasses atrasados e acompanhe cada valor até o recebimento.
         </p>
 
         {/* Actions */}
@@ -61,7 +61,7 @@ export function HeroSection() {
           </div>
           <div className="flex items-center gap-1.5">
             <Smartphone className="size-4 text-emerald-600" />
-            <span>100% otimizado para celular</span>
+            <span>Otimizado para celular</span>
           </div>
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="size-4 text-emerald-600" />
