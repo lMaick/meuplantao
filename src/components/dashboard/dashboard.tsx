@@ -134,6 +134,8 @@ export function Dashboard() {
       received: payments
         .filter((payment) => {
           if (payment.status !== "registrado") return false;
+          // Recebimento futuro/agendado nao conta como quitado (MAI-140, fuso America/Bahia).
+          if (payment.data_pagamento > today) return false;
           if (!matchesPeriod(payment.data_pagamento, period)) return false;
           if (placeId === ALL_PLACES) return true;
           const obligation = obligationById.get(payment.obligation_id);
