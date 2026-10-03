@@ -10,11 +10,18 @@ const ok = async (result, label) => { assert.equal(result.r.ok, true, `${label}:
 const rejected = async (result, label) => { const resolved = await result; assert.equal(resolved.r.ok, false, `${label} deveria ser rejeitado: HTTP ${resolved.r.status} ${JSON.stringify(resolved.body)}`); return resolved; };
 const patch = (token, table, id, values) => request(token, `${table}?id=eq.${id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(values) });
 const remove = (token, table, id) => request(token, `${table}?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=representation" } });
+// MAI-140: hoje derivado em America/Bahia, mesma politica do produto
+// (src/lib/obligations/financial.ts bahiaTodayIso, payments-page, guard SQL
+// `(now() at time zone 'America/Bahia')::date`). Derivacao UTC pura diverge
+// entre 21h-23h59 Bahia (00h-02h59Z dia seguinte),
+// gerando 23514 "Data de recebimento nao pode ser futura".
+const bahiaToday = (now = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(now);
 
 test("Supabase real: MAI-65 financeiro, RLS e concorrencia", async () => {
   if (process.env.RUN_REAL_E2E !== "1") throw new Error("E2E real bloqueado: defina RUN_REAL_E2E=1 e use um Supabase de teste");
   const missing = required.filter((name) => !process.env[name]); if (missing.length) throw new Error(`E2E real sem configuração: ${missing.join(", ")}`);
-  const [a, b] = await Promise.all([auth(process.env.E2E_USER_A_EMAIL, process.env.E2E_USER_A_PASSWORD), auth(process.env.E2E_USER_B_EMAIL, process.env.E2E_USER_B_PASSWORD)]); const aId = userId(a); const bId = userId(b); const date = new Date().toISOString().slice(0, 10);
+  const [a, b] = await Promise.all([auth(process.env.E2E_USER_A_EMAIL, process.env.E2E_USER_A_PASSWORD), auth(process.env.E2E_USER_B_EMAIL, process.env.E2E_USER_B_PASSWORD)]); const aId = userId(a); const bId = userId(b); const date = bahiaToday();
   const place = (await ok(await request(a, "places", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, nome: `E2E-${Date.now()}` }) }), "local A"))[0];
   const contact = (await ok(await request(a, "contacts", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: aId, nome: `E2E contato ${Date.now()}` }) }), "contato A"))[0];
   const obligationFor = async (token, shiftId) => { const rows = await ok(await request(token, `obligations?shift_id=eq.${shiftId}&select=id,shift_id,valor_devido,data_prevista,responsavel_place_id,responsavel_contact_id`), "ler obrigação"); assert.equal(rows.length, 1); return rows[0]; };
