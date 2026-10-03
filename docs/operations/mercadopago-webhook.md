@@ -70,11 +70,15 @@ slices/PRs da mesma issue.
 - Todas as rotas de billing (`/api/webhooks/mercadopago`, `/api/webhooks/mercadopago/ipn`,
   `/api/mercadopago/checkout`, `/api/mercadopago/sync`, `/api/mercadopago/verify`)
   aplicam rate limit + cooldown ANTES de qualquer consulta ao Mercado Pago.
-- Rajadas do mesmo pagamento retornam `200 { deduped: true }` SEM nova consulta
-  externa (webhooks/IPN) SOMENTE com prova de persistência (payment já gravado
-  em `subscription_payments`); sem prova — concorrência em voo ou falha anterior —
-  a marca prematura é liberada e a notificação é PROCESSADA normalmente (a RPC
-  atômica garante extensão única de vigência), nunca descartada; abuso por
+- MAI-149 (auditoria 2026-10-02): webhooks/IPN NUNCA retornam `200 { deduped: true }`
+  sem consultar o Mercado Pago — nem com prova persistida nem dentro do cooldown
+  curto (15s webhook / 30s IPN). O mesmo `payment_id` pode transitar
+  `approved -> refunded/charged_back` dentro da janela e 200 não garante retry,
+  logo a reversão seria perdida. Duplicatas sequenciais consultam o estado atual
+  (fonte da verdade); `approved` repetido é idempotente via RPC
+  (`already_processed`, sem nova vigência) e `refunded`/`charged_back` chegam a
+  `reconcileMercadoPagoReversal()`; rajada CONCORRENTE recebe `429` retentável
+  com `Retry-After` via lock in-flight (só o dono faz fetch). Abuso por
   IP/usuário recebe `429` com `Retry-After`.
   Falhas retentáveis (502/500/429 upstream) liberam o cooldown para preservar o
   retry legítimo do provedor; a idempotência financeira segue na RPC atômica.

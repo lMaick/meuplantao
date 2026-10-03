@@ -541,9 +541,16 @@ export async function checkBillingLimit(
 }
 
 /**
- * Cooldown/dedupe: a primeira ocorrência na janela prossegue; repetições
- * retornam `deduped=true` e a rota deve responder 200 SEM consultar o
- * Mercado Pago (evita 1 consulta externa por requisição em rajadas).
+ * Cooldown/rajada: a primeira ocorrência na janela prossegue; repetições
+ * retornam `deduped=true` como SINAL de rajada — NÃO como autorização para
+ * 200 terminal sem fetch.
+ *
+ * MAI-149 (auditoria 2026-10-02): webhook/IPN NUNCA retornam 200 `deduped`
+ * sem consultar o Mercado Pago, mesmo com prova persistida — o mesmo
+ * `payment_id` pode transitar `approved -> refunded/charged_back` dentro da
+ * janela curta e 200 não garante retry. Cooldown deduped + lock in-flight
+ * livre => consultar o estado atual (idempotência via RPC/ledger); contenção
+ * concorrente no in-flight => 429 retentável com Retry-After.
  *
  * Também é a primitiva do lock in-flight por payment ID (bloqueador 2):
  * `deduped=false` significa que esta requisição adquiriu o lock; as demais
