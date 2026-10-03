@@ -133,6 +133,11 @@ function fixtureUUID(suffix) {
     "e207b": "0000000207b0",
     "e208":  "000000000208",
     "e209":  "000000000209",
+    // MAI-152: autoridade canonica da cotacao (divergencia rejeitada).
+    "e210":  "000000000210",
+    "e211":  "000000000211",
+    "e212":  "000000000212",
+    "e213":  "000000000213",
   };
   const hex = suffixMap[suffix] ?? suffix.padStart(12, "0").slice(-12);
   return `00000000-0000-4000-8000-${hex}`;
@@ -587,6 +592,161 @@ test("7. user_id incompatível → payment_id de userA não estende assinatura d
     assert.equal(total[0].n, 1, "Deve existir apenas 1 linha para o payment_id");
   } finally {
     await cleanupUser(userA, userB);
+  }
+});
+
+// ─── MAI-152: autoridade canonica da cotacao ───────────────────────────────
+// A RPC deriva plano/preco/vigencia/moeda/periodo da cotacao bloqueada
+// (FOR UPDATE) e rejeita qualquer divergencia do caller (22023, opcao A).
+// Checkout mensal nunca pode produzir vigencia anual por parametro divergente.
+
+test("10. MAI-152: months divergente do caller e rejeitado e nada e concedido", async () => {
+  const userId = await createTestUser("e210");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, months: 1, amount: 49.9 });
+  const paymentId = `real-e2e-test10-months-${Date.now()}`;
+  try {
+    // Cotacao mensal (1/30) com caller tentando 12 meses: deve falhar.
+    const res = await callRpc({
+      payment_id: paymentId,
+      user_id: userId,
+      months: 12,
+      validity_days: 30,
+      amount: 49.9,
+      checkout_id: checkoutId,
+    });
+    assert.equal(res.ok, false, "months divergente deve ser rejeitado pela RPC");
+    const err = res.data ?? {};
+    assert.ok(
+      String(err.code ?? "").includes("22023") ||
+      String(err.message ?? "").toLowerCase().includes("months") ||
+      String(err.message ?? "").toLowerCase().includes("divergencia"),
+      `Esperado 22023/divergencia de months, obtido HTTP ${res.status}: ${JSON.stringify(res.data)}`,
+    );
+
+    // Invariante: rollback total — nenhum ledger, nenhuma vigencia, cotacao intacta.
+    const count = await countPayments(userId);
+    assert.equal(count, 0, "Ledger nao pode registrar pagamento com months divergente");
+    const sub = await getSubscription(userId);
+    assert.equal(sub, null, "Nenhuma vigencia pode ser concedida com months divergente");
+    const chk = await getCheckoutRow(checkoutId);
+    assert.ok(chk, "Checkout persistido nao pode ser removido");
+    assert.notEqual(chk.status, "completed", "Cotacao rejeitada nao pode ser marcada como consumida");
+  } finally {
+    await cleanupUser(userId);
+  }
+});
+
+test("11. MAI-152: validity_days divergente do caller e rejeitado (mensal nao vira anual)", async () => {
+  const userId = await createTestUser("e211");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, months: 1, amount: 49.9 });
+  const paymentId = `real-e2e-test11-validity-${Date.now()}`;
+  try {
+    // Cotacao mensal (30 dias) com caller tentando 365 dias: deve falhar.
+    const res = await callRpc({
+      payment_id: paymentId,
+      user_id: userId,
+      months: 1,
+      validity_days: 365,
+      amount: 49.9,
+      checkout_id: checkoutId,
+    });
+    assert.equal(res.ok, false, "validity_days divergente deve ser rejeitado pela RPC");
+    const err = res.data ?? {};
+    assert.ok(
+      String(err.code ?? "").includes("22023") ||
+      String(err.message ?? "").toLowerCase().includes("validity") ||
+      String(err.message ?? "").toLowerCase().includes("divergencia"),
+      `Esperado 22023/divergencia de validity_days, obtido HTTP ${res.status}: ${JSON.stringify(res.data)}`,
+    );
+
+    const count = await countPayments(userId);
+    assert.equal(count, 0, "Ledger nao pode registrar pagamento com validity divergente");
+    const sub = await getSubscription(userId);
+    assert.equal(sub, null, "Checkout mensal nunca pode produzir vigencia anual");
+    const chk = await getCheckoutRow(checkoutId);
+    assert.ok(chk, "Checkout persistido nao pode ser removido");
+    assert.notEqual(chk.status, "completed", "Cotacao rejeitada nao pode ser marcada como consumida");
+  } finally {
+    await cleanupUser(userId);
+  }
+});
+
+test("12. MAI-152: amount divergente do caller e rejeitado e ledger deriva da cotacao", async () => {
+  const userId = await createTestUser("e212");
+  const checkoutId = await createTestCheckout(userId, { validity_days: 30, months: 1, amount: 49.9 });
+  const paymentId = `real-e2e-test12-amount-${Date.now()}`;
+  try {
+    const res = await callRpc({
+      payment_id: paymentId,
+      user_id: userId,
+      months: 1,
+      validity_days: 30,
+      amount: 0.01,
+      checkout_id: checkoutId,
+    });
+    assert.equal(res.ok, false, "amount divergente deve ser rejeitado pela RPC");
+    const err = res.data ?? {};
+    assert.ok(
+      String(err.code ?? "").includes("22023") ||
+      String(err.message ?? "").toLowerCase().includes("amount") ||
+      String(err.message ?? "").toLowerCase().includes("divergencia"),
+      `Esperado 22023/divergencia de amount, obtido HTTP ${res.status}: ${JSON.stringify(res.data)}`,
+    );
+
+    const count = await countPayments(userId);
+    assert.equal(count, 0, "Ledger nao pode registrar amount divergente");
+    const sub = await getSubscription(userId);
+    assert.equal(sub, null, "Nenhuma vigencia pode ser concedida com amount divergente");
+  } finally {
+    await cleanupUser(userId);
+  }
+});
+
+test("13. MAI-152: fluxo valido com valores canonicos persiste plan_id/currency e concede vigencia exata", async () => {
+  const userId = await createTestUser("e213");
+  const checkoutId = await createTestCheckout(userId, {
+    validity_days: 30,
+    months: 1,
+    amount: 49.9,
+    plan_id: "pro-1m",
+  });
+  const paymentId = `real-e2e-test13-canonical-${Date.now()}`;
+  try {
+    const res = await callRpc({
+      payment_id: paymentId,
+      user_id: userId,
+      months: 1,
+      validity_days: 30,
+      amount: 49.9,
+      checkout_id: checkoutId,
+    });
+    assert.ok(res.ok, `Fluxo canonico falhou: HTTP ${res.status} — ${JSON.stringify(res.data)}`);
+    assert.equal(res.data.already_processed, false);
+    assert.equal(res.data.validity_days_added, 30, "Vigencia deve derivar da cotacao (30 dias)");
+
+    const row = await getPaymentRow(paymentId);
+    assert.ok(row, "Ledger deve existir");
+    assert.equal(Number(row.months), 1, "months do ledger deriva da cotacao");
+    assert.equal(Number(row.validity_days), 30, "validity_days do ledger deriva da cotacao");
+    assert.equal(parseFloat(row.amount), 49.9, "amount do ledger deriva da cotacao");
+    assert.equal(row.checkout_id, checkoutId);
+    // plan_id/currency canonicos persistidos (colunas MAI-147/MAI-152).
+    if ("plan_id" in row) {
+      assert.equal(row.plan_id, "pro-1m", "plan_id do ledger vem do registro canonico");
+    }
+    if ("currency" in row) {
+      assert.equal(row.currency, "BRL", "currency do ledger vem do registro canonico");
+    }
+    if ("amount_cents" in row && row.amount_cents !== null) {
+      assert.equal(Number(row.amount_cents), 4990, "amount_cents deriva da cotacao");
+    }
+
+    const sub = await getSubscription(userId);
+    assert.ok(sub, "Assinatura deve existir");
+    const diffDays = Math.round((new Date(sub.current_period_end).getTime() - Date.now()) / MS_PER_DAY);
+    assert.ok(diffDays >= 29 && diffDays <= 31, `Esperado ~30 dias canonicos, obtido ${diffDays}`);
+  } finally {
+    await cleanupUser(userId);
   }
 });
 
