@@ -92,7 +92,7 @@ jobs:
           migration_third="supabase/migrations/20260909190000_financial_authority_definer.sql"
           migration_fourth="supabase/migrations/20260909200000_financial_authority_table_privileges.sql"
           mkdir -p "${RUNNER_TEMP}/post_legacy_migrations"
-          for f in supabase/migrations/20260908* supabase/migrations/20260909* supabase/migrations/20260919* supabase/migrations/20260920* supabase/migrations/20260928* supabase/migrations/20260929*; do
+          for f in supabase/migrations/20260908* supabase/migrations/20260909* supabase/migrations/20260919* supabase/migrations/20260920* supabase/migrations/20260928* supabase/migrations/20260929* supabase/migrations/20260930100000_subscription_checkout_canonical_authority.sql; do
             if [ -f "$f" ]; then
               mv "$f" "${RUNNER_TEMP}/post_legacy_migrations/"
             fi
