@@ -45,6 +45,7 @@ function proofBody(overrides = {}) {
     event: "push",
     branch: "main",
     gate: { job: { conclusion: "success" } },
+    builtAt: "2026-10-04T02:32:44.000Z",
     ...overrides,
   });
 }
@@ -166,6 +167,26 @@ test("unreachable or malformed proof blocks", async () => {
       },
     );
     assert.equal(result.ok, false, JSON.stringify(page).slice(0, 40));
+  }
+});
+
+test("proof without a parsable builtAt timestamp blocks", async () => {
+  for (const builtAt of [undefined, "", "not-a-date"]) {
+    const body = JSON.parse(proofBody());
+    if (builtAt === undefined) delete body.builtAt;
+    else body.builtAt = builtAt;
+    const { result } = await runSmoke(
+      {},
+      {
+        deployments: [deployment()],
+        statuses: successStatus,
+        pages: happyPages({
+          [`https://meuplantao.pro/release-proof-${SHA}.json`]: text200(JSON.stringify(body)),
+        }),
+      },
+    );
+    assert.equal(result.ok, false, `builtAt=${builtAt}`);
+    assert.equal(result.reason, "proof-bad-timestamp");
   }
 });
 

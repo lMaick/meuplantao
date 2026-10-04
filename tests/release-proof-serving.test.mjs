@@ -51,7 +51,8 @@ test("proof is written to public/ pre-build (packaging evidence: post-build .nex
 test("proof path matches the smoke contract (same filename, root route)", () => {
   const buildSource = read("scripts/vercel-production-build.mjs");
   const smokeSource = read("scripts/verify-production-release.mjs");
-  assert.ok(buildSource.includes("release-proof-${sha"), "wrapper must write release-proof-<sha>.json");
+  assert.ok(buildSource.includes('PROOF_FILE_PREFIX = "release-proof-"'), "wrapper must name proofs release-proof-<sha>.json");
+  assert.ok(buildSource.includes('PROOF_FILE_SUFFIX = ".json"'), "wrapper must name proofs release-proof-<sha>.json");
   assert.ok(
     smokeSource.includes("/release-proof-${sha}.json"),
     "smoke must fetch the proof from the public root route",
