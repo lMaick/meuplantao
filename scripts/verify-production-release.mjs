@@ -174,6 +174,7 @@ export async function verifyRelease(options = {}) {
   }
   if (!proof || proof.sha !== sha || proof.releaseGate !== "mai-159-rendezvous" || proof.gate?.job?.conclusion !== "success") {
     log("BLOCK proof mismatch (SHA, gate marker or job attestation).");
+    log("TRIAGE proof absent from deployment outputs means the production build never engaged the wrapper: verify Vercel System Env Vars exposure and dashboard buildCommand source (docs/DEVOPS_MIGRATIONS.md 9.4); the gate logs BYPASS/BLOCK/PROCEED in the deployment build logs.");
     return { ok: false, reason: "proof-mismatch" };
   }
   log(`proof ok for sha=${sha}.`);
