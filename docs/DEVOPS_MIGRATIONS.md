@@ -55,7 +55,31 @@ Se qualquer uma dessas funções estiver ausente ou possuir assinatura incompat�
 
 ---
 
-## 4. Como Criar e Versionar Migrations
+## 4. Marcador Canônico de Contrato Semântico (`public.schema_contract`) (MAI-158)
+
+Embora a verificação de assinaturas (quantidade e tipos de argumentos via `pg_proc`) e RLS/grants garanta que a interface pública esteja presente, migrations podem alterar o **comportamento interno** de RPCs mantendo a mesma assinatura externa (ex.: `process_mercadopago_subscription_payment` mantida com 7 argumentos ao passar a derivar regras da cotação canônica em MAI-152).
+
+Para provar explicitamente qual semântica de schema está instalada em produção:
+1. **Tabela Singleton Canônica:**
+   - `public.schema_contract` com chave primária singleton `id integer primary key default 1 check (id = 1)`.
+   - Coluna `contract_version` tipada e validada por regex estrito de SemVer (`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$`).
+   - Rastreabilidade via `description`, `applied_by`, `created_at` e `updated_at`.
+2. **Segurança & Permissões Estritas:**
+   - Row Level Security (RLS) habilitada.
+   - `REVOKE ALL ON public.schema_contract FROM anon, authenticated, public;`
+   - `GRANT SELECT ON public.schema_contract TO service_role;`
+   - O valor só é alterado através de migrations versionadas executadas com privilégios de banco.
+3. **Verificação no Release Gate (`scripts/schema-contract.mjs`):**
+   - O gate de produção (`verify-production-schema.mjs` / `smoke-test-schema.mjs`) valida os 3 pilares em ordem:
+     1. Presença e assinatura exata de argumentos das RPCs críticas;
+     2. Invariantes de segurança (RLS ativa, policies canônicas e ausência de grants públicos/perigosos);
+     3. Versão do contrato semântico instalado vs. `EXPECTED_SCHEMA_CONTRACT_VERSION` no código da aplicação.
+   - **Comportamento estrito:** Versão ausente, antiga (`installed < expected`), formato inválido ou erro de conexão falham fechados com `exit 1` em produção (`VERCEL_ENV=production` ou `CHECK_SCHEMA_COMPATIBILITY=1`).
+   - Ambientes preview e local preservam o comportamento não-bloqueante (aviso diagnóstico informativo).
+
+---
+
+## 5. Como Criar e Versionar Migrations
 
 1. Toda alteração no banco de dados deve existir obrigatoriamente como um arquivo versionado no Git em:
    ```
@@ -67,7 +91,7 @@ Se qualquer uma dessas funções estiver ausente ou possuir assinatura incompat�
 
 ---
 
-## 5. Aplicação de Migrations em Produção
+## 6. Aplicação de Migrations em Produção
 
 ### Modo Automático (Recomendado via GitHub Actions)
 Ao realizar o merge de um PR na branch `main`, o workflow `.github/workflows/deploy-production.yml` é disparado automaticamente:
@@ -91,7 +115,7 @@ DATABASE_URL="$PRODUCTION_DATABASE_URL" npm run db:smoke
 
 ---
 
-## 6. Barreira de Build na Vercel (`prebuild`)
+## 7. Barreira de Build na Vercel (`prebuild`)
 
 No arquivo `package.json`, o script `prebuild` aciona `scripts/verify-production-schema.mjs`:
 
@@ -118,7 +142,7 @@ No arquivo `package.json`, o script `prebuild` aciona `scripts/verify-production
 
 ---
 
-## 7. Segurança de Segredos & Higiene de Logs
+## 8. Segurança de Segredos & Higiene de Logs
 
 Por contrato de segurança (`AGENTS.md` e políticas internas):
 1. **Nunca exponha `service_role` ou senhas de banco:**

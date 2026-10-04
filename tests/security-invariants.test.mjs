@@ -269,7 +269,13 @@ test("security-invariants: production gate strict falha quando invariante diverg
   ];
   class MockRpcClient {
     async connect() {}
-    async query() {
+    async query(sql) {
+      if (typeof sql === "string" && sql.includes("to_regclass")) {
+        return { rows: [{ regclass: "public.schema_contract" }] };
+      }
+      if (typeof sql === "string" && sql.includes("schema_contract")) {
+        return { rows: [{ contract_version: "1.0.0", updated_at: new Date().toISOString() }] };
+      }
       return { rows: validRows };
     }
     async end() {}
