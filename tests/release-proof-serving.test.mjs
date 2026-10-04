@@ -6,12 +6,12 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel) => readFileSync(`${root}/${rel}`, "utf8");
 
-test("vercel.json routes the production build through the versioned wrapper (404-class guard)", () => {
+test("vercel.json routes the production build through the versioned wrapper", () => {
   const vercel = JSON.parse(read("vercel.json"));
   assert.equal(
     vercel.buildCommand,
     "node scripts/vercel-production-build.mjs",
-    "dashboard default must stay overridden by the repo wrapper; a dashboard override silently skips the gate and the proof (live 404 on f85a7e6)",
+    "dashboard default must stay overridden by the repo wrapper; a dashboard override would silently skip gate and proof (H1 hypothesis for the f85a7e6 proof 404, unconfirmed)",
   );
 });
 
@@ -38,7 +38,7 @@ test("proof path matches the smoke contract (same filename, static route)", () =
   );
 });
 
-test("middleware matcher leaves /_next/static anonymous (else proof 404s/redirects)", () => {
+test("middleware matcher leaves /_next/static anonymous (keeps the proof reachable)", () => {
   const source = read("src/middleware.ts");
   const matcher = source.match(/matcher:\s*\[([^\]]*)\]/);
   assert.ok(matcher, "middleware must declare a matcher");

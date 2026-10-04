@@ -184,9 +184,9 @@ test("PROCEED while run still in_progress once the pinned job is green (no deadl
 });
 
 test("completed run with failed conclusion but green pinned job PROCEEDs (rebuild/recovery allowed)", async () => {
-  // Live incident shape (f85a7e6): run conclusion=failure came from the
-  // post-deploy smoke of a previous attempt; the migration/schema job is
-  // green for this exact SHA, so rebuilding must not self-lock.
+  // Observed API shape for f85a7e6 (run 37171319281 conclusion=failure, migrate
+  // job 111344671671 success): whatever failed the run, a green pinned job for
+  // this exact SHA must not self-lock the rebuild.
   const { result } = await evaluate(
     { env: prodEnv() },
     { runs: [okRuns([runPayload({ conclusion: "failure" })])], jobs: [okJobs([greenJob()])] },
