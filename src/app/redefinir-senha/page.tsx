@@ -9,8 +9,7 @@ import { Button } from "@/components/ui/button";
 import { verifyRecoveryClaims } from "@/lib/auth/recovery";
 import {
   MIN_PASSWORD_LENGTH,
-  validatePasswordReset,
-  mapPasswordUpdateError,
+  processPasswordResetSubmit,
 } from "@/lib/auth/password-policy";
 
 export default function RedefinirSenhaPage() {
@@ -69,22 +68,23 @@ export default function RedefinirSenhaPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-
-    const validation = validatePasswordReset(password, confirmPassword);
-    if (!validation.valid) {
-      setError(validation.error ?? "Erro ao validar nova senha.");
-      return;
-    }
-
     setLoading(true);
+
     try {
       const supabase = createClient();
-      const { error: updateError } = await supabase.auth.updateUser({
+      const result = await processPasswordResetSubmit({
         password,
+        confirmPassword,
+        isRecoveryContext,
+        client: supabase.auth,
       });
 
-      if (updateError) {
-        setError(mapPasswordUpdateError(updateError));
+      if (
+        result.status === "unauthorized" ||
+        result.status === "validation_error" ||
+        result.status === "update_error"
+      ) {
+        setError(result.error);
         return;
       }
 

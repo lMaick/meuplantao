@@ -8,12 +8,8 @@ import { Button } from "@/components/ui/button";
 import { getClientOrigin, oauthProviderConfig } from "@/lib/auth/redirect";
 import {
   MIN_PASSWORD_LENGTH,
-  PASSWORD_MIN_LENGTH_MESSAGE,
-  SIGNUP_SUCCESS_GENERIC_MESSAGE,
   NETWORK_ERROR_MESSAGE,
-  validatePasswordLength,
-  mapLoginAuthError,
-  mapSignupAuthError,
+  processAuthSubmit,
 } from "@/lib/auth/password-policy";
 
 type Mode = "login" | "signup";
@@ -31,39 +27,24 @@ export function AuthForm({ mode, next = "/dashboard", authOrigin }: { mode: Mode
     event.preventDefault();
     setError(null);
     setMessage(null);
-
-    // Guard client-side: exige min 8 caracteres apenas no signup, preservando login para senhas legadas
-    if (mode === "signup") {
-      const validation = validatePasswordLength(password);
-      if (!validation.valid) {
-        setError(validation.error ?? PASSWORD_MIN_LENGTH_MESSAGE);
-        return;
-      }
-    }
-
     setLoading(true);
+
     try {
       const supabase = createClient();
-      const result = mode === "login"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
+      const result = await processAuthSubmit({
+        mode,
+        email,
+        password,
+        client: supabase.auth,
+      });
 
-      if (result.error) {
-        if (mode === "login") {
-          setError(mapLoginAuthError(result.error));
-        } else {
-          const mapped = mapSignupAuthError(result.error);
-          if (mapped.type === "message") {
-            setMessage(mapped.text);
-          } else {
-            setError(mapped.text);
-          }
-        }
+      if (result.status === "validation_error" || result.status === "auth_error") {
+        setError(result.error);
         return;
       }
 
-      if (mode === "signup" && !result.data.session) {
-        setMessage(SIGNUP_SUCCESS_GENERIC_MESSAGE);
+      if (result.status === "confirmation_required") {
+        setMessage(result.message);
         return;
       }
 
