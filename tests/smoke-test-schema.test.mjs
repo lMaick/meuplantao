@@ -18,7 +18,7 @@ import { buildCompliantCatalogFixture } from "../scripts/check-rls-invariants.mj
 
 // Mock read-only de catálogo íntegro para o estágio de segurança do gate.
 // Sem isso, os testes de RPC válida falhariam no novo estágio de RLS/grants.
-function compliantSecurityMocks() {
+function compliantSecurityMocks(options = {}) {
   const c = buildCompliantCatalogFixture();
   const rows = {
     tables: c.tables.map((t) => ({ tablename: t.tablename, rls_enabled: t.rls_enabled, force_rls: false })),
@@ -37,6 +37,31 @@ function compliantSecurityMocks() {
     effectiveTablePrivs: c.effectiveTablePrivs || [],
     effectiveColumnPrivs: c.effectiveColumnPrivs || [],
   };
+
+  const contractVersion = options.contractVersion !== undefined ? options.contractVersion : "1.0.0";
+  const contractMissingTable = options.contractMissingTable === true;
+  const contractMissingRow = options.contractMissingRow === true;
+
+  const contractQueryFn = async (sql) => {
+    if (sql.includes("to_regclass")) {
+      return { rows: [{ regclass: contractMissingTable ? null : "public.schema_contract" }] };
+    }
+    if (sql.includes("schema_contract")) {
+      if (contractMissingRow) return { rows: [] };
+      return {
+        rows: [
+          {
+            contract_version: contractVersion,
+            description: "Mock compliant schema contract",
+            applied_by: "postgres",
+            updated_at: new Date().toISOString(),
+          },
+        ],
+      };
+    }
+    return { rows: [] };
+  };
+
   return {
     securityQueryFn: async (sql) => {
       if (sql.includes("has_table_privilege")) return { rows: rows.effectiveTablePrivs };
@@ -49,6 +74,8 @@ function compliantSecurityMocks() {
       throw new Error("unexpected catalog query");
     },
     securityClient: { query: async () => ({ rows: [] }), end: async () => {} },
+    contractQueryFn,
+    contractClient: { query: contractQueryFn, end: async () => {} },
   };
 }
 
@@ -515,7 +542,7 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
     },
   ];
 
-  function createMockPgClient(rows = validRows, shouldThrow = false, errorMessage = "connect ECONNREFUSED") {
+  function createMockPgClient(rows = validRows, shouldThrow = false, errorMessage = "connect ECONNREFUSED", mockOptions = {}) {
     return class MockPgClient {
       constructor(config) {
         this.config = config;
@@ -531,6 +558,28 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
       async query(sql, params) {
         if (shouldThrow) {
           throw new Error(errorMessage);
+        }
+        if (typeof sql === "string" && sql.includes("to_regclass")) {
+          if (mockOptions.contractMissingTable) {
+            return { rows: [{ regclass: null }] };
+          }
+          return { rows: [{ regclass: "public.schema_contract" }] };
+        }
+        if (typeof sql === "string" && sql.includes("schema_contract")) {
+          if (mockOptions.contractMissingRow) {
+            return { rows: [] };
+          }
+          const version = mockOptions.contractVersion !== undefined ? mockOptions.contractVersion : "1.0.0";
+          return {
+            rows: [
+              {
+                contract_version: version,
+                description: "Mock schema contract",
+                applied_by: "postgres",
+                updated_at: new Date().toISOString(),
+              },
+            ],
+          };
         }
         return { rows };
       }
