@@ -7,6 +7,11 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 
 import { verifyRecoveryClaims } from "@/lib/auth/recovery";
+import {
+  MIN_PASSWORD_LENGTH,
+  validatePasswordReset,
+  mapPasswordUpdateError,
+} from "@/lib/auth/password-policy";
 
 export default function RedefinirSenhaPage() {
   const router = useRouter();
@@ -65,13 +70,9 @@ export default function RedefinirSenhaPage() {
     event.preventDefault();
     setError(null);
 
-    if (password.length < 6) {
-      setError("A senha deve ter pelo menos 6 caracteres.");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("As senhas digitadas não coincidem. Verifique e tente novamente.");
+    const validation = validatePasswordReset(password, confirmPassword);
+    if (!validation.valid) {
+      setError(validation.error ?? "Erro ao validar nova senha.");
       return;
     }
 
@@ -83,7 +84,7 @@ export default function RedefinirSenhaPage() {
       });
 
       if (updateError) {
-        setError(updateError.message || "Não foi possível atualizar a senha. Tente novamente.");
+        setError(mapPasswordUpdateError(updateError));
         return;
       }
 
@@ -200,10 +201,10 @@ export default function RedefinirSenhaPage() {
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
+                minLength={MIN_PASSWORD_LENGTH}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder="Mínimo 6 caracteres"
+                placeholder="Mínimo 8 caracteres"
                 className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
               />
             </div>
@@ -218,7 +219,7 @@ export default function RedefinirSenhaPage() {
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
+                minLength={MIN_PASSWORD_LENGTH}
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
                 placeholder="Repita a nova senha"

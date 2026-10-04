@@ -6,6 +6,15 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { getClientOrigin, oauthProviderConfig } from "@/lib/auth/redirect";
+import {
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_MIN_LENGTH_MESSAGE,
+  SIGNUP_SUCCESS_GENERIC_MESSAGE,
+  NETWORK_ERROR_MESSAGE,
+  validatePasswordLength,
+  mapLoginAuthError,
+  mapSignupAuthError,
+} from "@/lib/auth/password-policy";
 
 type Mode = "login" | "signup";
 
@@ -22,6 +31,16 @@ export function AuthForm({ mode, next = "/dashboard", authOrigin }: { mode: Mode
     event.preventDefault();
     setError(null);
     setMessage(null);
+
+    // Guard client-side: exige min 8 caracteres apenas no signup, preservando login para senhas legadas
+    if (mode === "signup") {
+      const validation = validatePasswordLength(password);
+      if (!validation.valid) {
+        setError(validation.error ?? PASSWORD_MIN_LENGTH_MESSAGE);
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       const supabase = createClient();
@@ -30,19 +49,28 @@ export function AuthForm({ mode, next = "/dashboard", authOrigin }: { mode: Mode
         : await supabase.auth.signUp({ email, password });
 
       if (result.error) {
-        setError(result.error.message);
+        if (mode === "login") {
+          setError(mapLoginAuthError(result.error));
+        } else {
+          const mapped = mapSignupAuthError(result.error);
+          if (mapped.type === "message") {
+            setMessage(mapped.text);
+          } else {
+            setError(mapped.text);
+          }
+        }
         return;
       }
 
       if (mode === "signup" && !result.data.session) {
-        setMessage("Confira seu e-mail para confirmar a conta, se o cadastro foi aceito. Veja também a pasta de spam. Após confirmar, volte aqui e entre com sua senha. Se já possui conta, tente entrar.");
+        setMessage(SIGNUP_SUCCESS_GENERIC_MESSAGE);
         return;
       }
 
       router.push(next);
       router.refresh();
     } catch {
-      setError("Não foi possível conectar. Verifique sua conexão e tente novamente.");
+      setError(NETWORK_ERROR_MESSAGE);
     } finally {
       setLoading(false);
     }
@@ -80,9 +108,9 @@ export function AuthForm({ mode, next = "/dashboard", authOrigin }: { mode: Mode
             </Link>
           )}
         </div>
-        <input id="password" name="password" type="password" minLength={mode === "signup" ? 6 : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
+        <input id="password" name="password" type="password" minLength={mode === "signup" ? MIN_PASSWORD_LENGTH : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
       </div>
-      {mode === "signup" && <p id="password-help" className="text-sm text-muted-foreground">Use pelo menos 6 caracteres. Podemos pedir a confirmação do seu e-mail antes do primeiro acesso.</p>}
+      {mode === "signup" && <p id="password-help" className="text-sm text-muted-foreground">Use pelo menos 8 caracteres. Podemos pedir a confirmação do seu e-mail antes do primeiro acesso.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {message && <p role="status" className="text-sm text-emerald-600">{message}</p>}
       {message && <Link href={`/login?next=${encodeURIComponent(next)}`} className="block py-2 text-sm font-medium underline">Já confirmei meu e-mail: entrar</Link>}
