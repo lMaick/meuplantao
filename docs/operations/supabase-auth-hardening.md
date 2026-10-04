@@ -14,7 +14,7 @@ Documento operacional de referência técnica para os controles de autenticaçã
   - Backend/Provider: Validação no Supabase GoTrue via `password_min_length = 8`.
 
 ### 1.2 Mapeamento Canônico de Código
-- Arquivo centralizador: [`src/lib/auth/password-policy.ts`](file:///C:/Users/Maick/orca/workspaces/meuplantao/mai-166-ag03-auth/src/lib/auth/password-policy.ts)
+- Arquivo centralizador: [`src/lib/auth/password-policy.ts`](../../src/lib/auth/password-policy.ts)
 - Constante: `MIN_PASSWORD_LENGTH = 8`
 - Mensagem padrão: `"A senha deve ter pelo menos 8 caracteres."`
 - Validação de reset: Exige tamanho mínimo e confirmação idêntica com mensagem `"As senhas digitadas não coincidem. Verifique e tente novamente."`
@@ -55,15 +55,15 @@ A auditoria e o alinhamento da configuração foram executados via Management AP
 | :--- | :--- | :--- | :--- |
 | **Minimum Password Length** | `6` (inicial) | **Atualizado para `8`** | PATCH em 2026-10-04T17:38:47Z com readback confirmado em 17:38:51Z. Apenas este campo foi alterado. |
 | **Password HIBP (Leaked Passwords)** | `false` | **Preservado `false`** | Endpoint oficial de entitlements retornou `auth.leaked_password_protection: false` e `auth.password_hibp: false` (`hasAccess: false`). O entitlement atual da organização não suporta HIBP; nenhuma tentativa de forçar patch foi feita e nenhum upgrade comercial foi acionado. |
-| **CAPTCHA (Anti-Bot)** | `false` | **Preservado `false`** | Mantido desativado por ausência de chaves de provedor (hCaptcha/Cloudflare Turnstile) e ausência de componente/fluxo de challenge UX na interface. Habilitar sem o fluxo na UI quebraria 100% dos cadastros e resets legítimos. |
+| **CAPTCHA (Anti-Bot)** | `false` | **Preservado `false`** | Mantido desativado por ausência de widget/challenge UX na interface da aplicação; presença ou ausência de chaves de provedor no tenant não foi auditada. Ativação sem fluxo na interface quebraria novos cadastros e resets. |
 | **Rate Limits Nativos** | Configurados | **Preservados** | `email_sent = 2/hora`, `sms_sent = 30/hora`, `verify = 30/5min`, `token_refresh = 150/5min`, `otp = 30`, `anonymous = 30/hora`, `smtp_max_frequency = 60s`. |
 | **Confirmação de E-mail** | `enable_confirmations = true` | **Preservado `true`** | Exige confirmação de e-mail antes do primeiro acesso (`mailer_autoconfirm = false`). |
-| **Provedores Externos** | Google / GitHub | **Preservados `true`** | PKCE redirect urls autorizados e preservados. |
+| **Provedores Externos** | Google / GitHub | **Configuração Preservada** | Flags de provedores habilitadas na API (`external_google_enabled = true`, `external_github_enabled = true`). Validação funcional de round-trip de autorização permanece como pendência operacional. |
 | **Sessão e Recovery** | JWT claims (RFC 8176) | **Preservados** | Inspeciona claims verificadas do JWT (`amr.method === "recovery"`), garantindo compatibilidade estrita. |
 
 ### 3.1 Riscos Residuais e Decisões Técnicas
-- **Decisão CAPTCHA:** Na ausência de chaves de provedor (Turnstile/hCaptcha) e do componente de desafio no front-end, a plataforma depende dos rate limits nativos do Supabase Auth (`smtp_max_frequency = 60s`, `email_sent = 2/h`) e da proteção de rate limit no middleware. Não se alega equivalência técnica total a um CAPTCHA interativo, mas preserva-se a funcionalidade dos cadastros legítimos sem atrito.
-- **Decisão HIBP:** A proteção contra senhas vazadas depende de entitlement Pro/Enterprise no Supabase. O endurecimento para 8 caracteres na UI e no backend mitiga senhas curtas triviais de 6 dígitos.
+- **Decisão CAPTCHA e Risco Residual:** Como os fluxos de `signUp` e `resetPasswordForEmail` são chamados diretamente do browser para os endpoints do Supabase Auth, o middleware da aplicação não intercepta nem atua como barreira anti-bot nesses endpoints. A mitigação operacional apoia-se exclusivamente nos limites reais preservados no provedor (`smtp_max_frequency = 60s`, `email_sent = 2/h`, `verify = 30/5min`) e no endurecimento da senha (8 caracteres). O risco residual de automação abusiva em endpoints públicos permanece como débito documentado até a eventual introdução de challenge interativo na UI.
+- **Decisão HIBP:** A proteção contra senhas vazadas depende de entitlement da organização no Supabase (`hasAccess: false` retornado pela API oficial). O endurecimento para 8 caracteres na UI e no backend mitiga senhas curtas triviais de 6 dígitos.
 
 ---
 
@@ -72,10 +72,11 @@ A auditoria e o alinhamento da configuração foram executados via Management AP
 Para transparência estrita de auditoria, distingue-se o que foi verificado programmaticamente do que depende de homologação operacional:
 
 1. **Passou (Passed):**
-   - Suite automatizada de testes (`npm test`): 868 testes unitários e de integração verdes.
+   - Suite automatizada de testes (`npm test`): 871 testes unitários e de integração verdes (0 falhas).
    - Teste de limiar estrito: rejeição de 7 caracteres e aceitação de 8 caracteres em cadastro e reset.
    - Não-enumeração de usuários e mapeamento estrito por `code`/`status`.
    - Teste adversarial: imunidade a injeções em `message` e vazamento de PII.
+   - Teste de manipuladores reais: bloqueio pré-rede em `signUp` < 8 chars e `updateUser` fora de recovery / com senhas inválidas.
    - Linting (`npm run lint`), tipagem TypeScript (`npx tsc --noEmit`) e build estático (`npm run build`) 100% verdes.
    - Auditoria de segurança de produção (`npm run audit:prod` com `--audit-level=high`): 0 vulnerabilidades high ou critical.
    - Alinhamento de backend: `password_min_length = 8` confirmado via GET readback na Management API.
