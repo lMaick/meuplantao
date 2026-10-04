@@ -154,7 +154,26 @@ test("gated build writes verified proof on success", async () => {
   assert.equal(verifyReleaseProof({ outDir, sha: SHA }).ok, true);
 });
 
-test("gated build failure writes no proof", async () => {
+test("proof exists before the app build starts (public/ packaging contract)", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "proof-prebuild-"));
+  const { logger } = captureLogger();
+  let proofExistedAtSpawn = false;
+  const { verifyReleaseProof: verify } = await import("../scripts/vercel-production-build.mjs");
+  const result = await runProductionBuild({
+    env: prodEnv(),
+    logger,
+    outDir,
+    spawnImpl: () => {
+      proofExistedAtSpawn = verify({ outDir, sha: SHA }).ok;
+      return { status: 0 };
+    },
+    gateOptions: { fetchJson: greenGateFetch() },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(proofExistedAtSpawn, true, "builder collects public/ after the buildCommand, so the proof must predate the build");
+});
+
+test("gated build failure blocks promotion even though the proof was staged pre-build", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "proof-gated-fail-"));
   const { logger } = captureLogger();
   const result = await runProductionBuild({
@@ -166,5 +185,6 @@ test("gated build failure writes no proof", async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "gated-build-failed");
-  assert.equal(verifyReleaseProof({ outDir, sha: SHA }).ok, false);
+  // Failed builds are never deployed, so a staged proof file is harmless;
+  // what matters is the BLOCKED result.
 });

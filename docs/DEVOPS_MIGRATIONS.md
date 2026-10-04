@@ -178,8 +178,8 @@ Por contrato de segurança (`AGENTS.md` e políticas internas):
 
 ### 9.3 Prova de release e smoke pós-deploy
 
-- Após build de produção com gate aprovado, o wrapper grava `.next/static/release-proof-<SHA>.json` (saída de build gitignored; só SHA + workflow/run/job/attempt/tempo — sem segredos, sem dados de usuário) e revalida o arquivo antes de concluir.
-- A rota `/_next/static/*` já é excluída do matcher do middleware, portanto a prova é pública sem nenhuma mudança de auth, rota ou CSP.
+- O wrapper grava a prova em `public/release-proof-<SHA>.json` ANTES de compilar e a revalida depois do build (mesmo SHA + gate `success`). `public/` é coletado pelo builder a partir da árvore de fontes APÓS o buildCommand (`getStaticFiles` em `@vercel/next`), enquanto arquivos criados dentro de `.next/` após o `next build` não são empacotados de forma confiável — evidência: em f85a7e6 o wrapper registrou prova verificada em `.next/static/` nos build logs e o arquivo respondeu 404 no deployment e no alias exato (`X-Matched-Path: /_next/static/not-found.txt`). `public/` nunca é apagado pelo `next build`; a prova é gitignored e não leva segredos nem dados de usuário.
+- A rota raiz `/release-proof-<SHA>.json` é excluída no matcher do middleware (apenas esse prefixo; demais rotas inalteradas), portanto a prova é pública sem nenhuma outra mudança de auth, rota ou CSP.
 - O job `post-deploy-smoke` aguarda o deployment `Production` criado por `vercel[bot]` com `success` para o SHA exato (nunca aceita alias/página antiga; `inactive`/superseded bloqueia), confere a prova do mesmo SHA e faz GET em `/` e `/sitemap.xml` no site canônico `https://meuplantao.pro`. Nenhuma requisição destrutiva de billing.
 - Cobertura offline por mocks: `tests/vercel-production-gate.test.mjs`, `tests/vercel-production-build.test.mjs`, `tests/verify-production-release.test.mjs` (casos positivos, negativos, timeouts, erros e higiene de logs).
 
