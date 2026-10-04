@@ -263,13 +263,16 @@ export async function evaluateGate(options = {}) {
     log(`poll ${attempt}: run=${run.id} attempt=${run.run_attempt ?? "?"} status=${run.status} conclusion=${run.conclusion ?? "-"}.`);
 
     if (run.status === "completed") {
-      if (run.conclusion !== "success") {
-        log(`BLOCK run terminal without success conclusion=${run.conclusion}.`);
-        return { decision: "BLOCK", reason: `run-conclusion-${run.conclusion}` };
-      }
+      // Anti-deadlock / recovery: the run conclusion alone never decides.
+      // A completed run may carry failure from the post-deploy smoke of a
+      // previous deployment attempt while the pinned migration/schema job is
+      // green for this exact SHA — rebuilding then must be allowed. Only the
+      // pinned job (plus required steps and attempt) can PROCEED or BLOCK.
+      log(`poll ${attempt}: run completed conclusion=${run.conclusion}; evaluating pinned job (run conclusion is advisory only).`);
       const jobCheck = await checkPinnedJob(fetchJson, run, { token, logger });
       if (jobCheck.ready) {
-        log(`PROCEED run=${run.id} job=${jobCheck.proof.job.id} pinned job green.`);
+        jobCheck.proof.runConclusion = run.conclusion ?? null;
+        log(`PROCEED run=${run.id} job=${jobCheck.proof.job.id} pinned job green (run conclusion=${run.conclusion}).`);
         return { decision: "PROCEED", reason: "pinned-job-success", proof: jobCheck.proof };
       }
       log(`BLOCK ${jobCheck.reason}.`);

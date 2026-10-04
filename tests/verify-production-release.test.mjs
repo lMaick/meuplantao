@@ -45,13 +45,14 @@ function proofBody(overrides = {}) {
     event: "push",
     branch: "main",
     gate: { job: { conclusion: "success" } },
+    attestedAt: "2026-10-04T02:32:44.000Z",
     ...overrides,
   });
 }
 
 function happyPages(overrides = {}) {
   return {
-    [`https://meuplantao.pro/_next/static/release-proof-${SHA}.json`]: text200(proofBody()),
+    [`https://meuplantao.pro/release-proof-${SHA}.json`]: text200(proofBody()),
     "https://meuplantao.pro/": text200("<html>home</html>"),
     "https://meuplantao.pro/sitemap.xml": text200("<urlset/>"),
     ...overrides,
@@ -88,6 +89,19 @@ test("happy path verifies deployment, proof and public pages", async () => {
   );
   assert.equal(result.ok, true);
   assert.equal(result.deploymentId, 987654321);
+});
+
+test("proof is verified before any page success is accepted (order pinned)", async () => {
+  const { result, calls } = await runSmoke(
+    {},
+    { deployments: [deployment()], statuses: successStatus, pages: happyPages() },
+  );
+  assert.equal(result.ok, true);
+  const proofIdx = calls.findIndex((u) => u.includes("release-proof-"));
+  const homeIdx = calls.findIndex((u) => u === "https://meuplantao.pro/");
+  const mapIdx = calls.findIndex((u) => u === "https://meuplantao.pro/sitemap.xml");
+  assert.ok(proofIdx !== -1 && homeIdx !== -1 && mapIdx !== -1, "all fetches must happen");
+  assert.ok(proofIdx < homeIdx && proofIdx < mapIdx, "page success must never precede proof verification");
 });
 
 test("failed deployment blocks", async () => {
@@ -132,7 +146,7 @@ test("proof with wrong SHA blocks", async () => {
       deployments: [deployment()],
       statuses: successStatus,
       pages: happyPages({
-        [`https://meuplantao.pro/_next/static/release-proof-${SHA}.json`]: text200(proofBody({ sha: "e".repeat(40) })),
+          [`https://meuplantao.pro/release-proof-${SHA}.json`]: text200(proofBody({ sha: "e".repeat(40) })),
       }),
     },
   );
@@ -148,11 +162,31 @@ test("unreachable or malformed proof blocks", async () => {
         deployments: [deployment()],
         statuses: successStatus,
         pages: happyPages({
-          [`https://meuplantao.pro/_next/static/release-proof-${SHA}.json`]: page,
+          [`https://meuplantao.pro/release-proof-${SHA}.json`]: page,
         }),
       },
     );
     assert.equal(result.ok, false, JSON.stringify(page).slice(0, 40));
+  }
+});
+
+test("proof without a parsable attestedAt timestamp blocks", async () => {
+  for (const attestedAt of [undefined, "", "not-a-date"]) {
+    const body = JSON.parse(proofBody());
+    if (attestedAt === undefined) delete body.attestedAt;
+    else body.attestedAt = attestedAt;
+    const { result } = await runSmoke(
+      {},
+      {
+        deployments: [deployment()],
+        statuses: successStatus,
+        pages: happyPages({
+          [`https://meuplantao.pro/release-proof-${SHA}.json`]: text200(JSON.stringify(body)),
+        }),
+      },
+    );
+    assert.equal(result.ok, false, `attestedAt=${attestedAt}`);
+    assert.equal(result.reason, "proof-bad-timestamp");
   }
 });
 

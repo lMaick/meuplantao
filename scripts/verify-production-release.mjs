@@ -8,7 +8,8 @@
  *      `vercel[bot]` to reach `success` (anything else fails closed; a
  *      superseded/inactive deployment fails closed too — never accepts an
  *      old alias or page success as proof of the new release);
- *   2. fetches `/_next/static/release-proof-<SHA>.json` and requires the
+ *   2. fetches `/release-proof-<SHA>.json` (generated into `public/` pre-build,
+ *      collected by the builder) and requires the
  *      same SHA plus a successful gate attestation inside;
  *   3. GETs `/` and `/sitemap.xml` (safe, anonymous, no billing actions).
  *
@@ -160,7 +161,7 @@ export async function verifyRelease(options = {}) {
     return { ok: false, reason: `deployment-${status.state}` };
   }
 
-  const proofUrl = `${site}/_next/static/release-proof-${sha}.json`;
+  const proofUrl = `${site}/release-proof-${sha}.json`;
   const proofRes = await fetchText(proofUrl);
   if (!proofRes.ok) {
     log(`BLOCK proof unreachable status=${proofRes.status}.`);
@@ -174,7 +175,12 @@ export async function verifyRelease(options = {}) {
   }
   if (!proof || proof.sha !== sha || proof.releaseGate !== "mai-159-rendezvous" || proof.gate?.job?.conclusion !== "success") {
     log("BLOCK proof mismatch (SHA, gate marker or job attestation).");
+    log("TRIAGE hypotheses (unconfirmed — inspect the deployment build logs, which record BYPASS/BLOCK/PROCEED): H1 wrapper never engaged (Vercel System Env Vars unexposed or dashboard buildCommand override — docs/DEVOPS_MIGRATIONS.md 9.4); H2 proof missing from deployment outputs (packaging/collection; post-`next build` writes inside `.next/` are not reliably packaged, hence the proof lives in `public/`). A 404 on alias and domain alike only proves the file is unreachable, it does not distinguish H1 from H2.");
     return { ok: false, reason: "proof-mismatch" };
+  }
+  if (typeof proof.attestedAt !== "string" || Number.isNaN(Date.parse(proof.attestedAt))) {
+    log("BLOCK proof timestamp missing or unparsable (attestedAt must be ISO-8601 gate-attestation instant, recorded pre-build).");
+    return { ok: false, reason: "proof-bad-timestamp" };
   }
   log(`proof ok for sha=${sha}.`);
 

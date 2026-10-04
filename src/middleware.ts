@@ -48,5 +48,9 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!robots\\.txt$|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
+  // MAI-159: exact reserved anonymous path `release-proof-<40-hex>.json`
+  // (production release attestation served from `public/`). Nothing else
+  // bypasses through this alternative; every other route keeps the previous
+  // behavior.
+  matcher: ["/((?!robots\\.txt$|release-proof-[0-9a-fA-F]{40}\\.json$|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
 };

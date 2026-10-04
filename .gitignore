@@ -7,6 +7,9 @@
 /.next/
 /out/
 
+# MAI-159: release proof artifacts generated into public/ at build time
+/public/release-proof-*.json
+
 # Production
 /build
 
