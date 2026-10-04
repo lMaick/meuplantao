@@ -7,6 +7,10 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 
 import { verifyRecoveryClaims } from "@/lib/auth/recovery";
+import {
+  MIN_PASSWORD_LENGTH,
+  processPasswordResetSubmit,
+} from "@/lib/auth/password-policy";
 
 export default function RedefinirSenhaPage() {
   const router = useRouter();
@@ -64,26 +68,23 @@ export default function RedefinirSenhaPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-
-    if (password.length < 6) {
-      setError("A senha deve ter pelo menos 6 caracteres.");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("As senhas digitadas não coincidem. Verifique e tente novamente.");
-      return;
-    }
-
     setLoading(true);
+
     try {
       const supabase = createClient();
-      const { error: updateError } = await supabase.auth.updateUser({
+      const result = await processPasswordResetSubmit({
         password,
+        confirmPassword,
+        isRecoveryContext,
+        client: supabase.auth,
       });
 
-      if (updateError) {
-        setError(updateError.message || "Não foi possível atualizar a senha. Tente novamente.");
+      if (
+        result.status === "unauthorized" ||
+        result.status === "validation_error" ||
+        result.status === "update_error"
+      ) {
+        setError(result.error);
         return;
       }
 
@@ -200,10 +201,10 @@ export default function RedefinirSenhaPage() {
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
+                minLength={MIN_PASSWORD_LENGTH}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder="Mínimo 6 caracteres"
+                placeholder="Mínimo 8 caracteres"
                 className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
               />
             </div>
@@ -218,7 +219,7 @@ export default function RedefinirSenhaPage() {
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
+                minLength={MIN_PASSWORD_LENGTH}
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
                 placeholder="Repita a nova senha"
