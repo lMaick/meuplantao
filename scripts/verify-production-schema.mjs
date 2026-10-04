@@ -61,10 +61,10 @@ export async function verifyProductionSchema(options = {}) {
       if (!result.ok) {
         logger.error("[SCHEMA-GATE] FATAL: Production database schema verification failed!");
         logger.error("[SCHEMA-GATE] Aborting build/deploy to prevent serving broken code to users.");
-        return { ok: false, strict: true, error: result.error, missingCount: result.missingCount, results: result.results };
+        return { ok: false, strict: true, error: result.error, missingCount: result.missingCount, results: result.results, contract: result.contract };
       }
       logger.log("[SCHEMA-GATE] Production schema compatibility verified successfully.");
-      return { ok: true, strict: true, results: result.results };
+      return { ok: true, strict: true, results: result.results, contract: result.contract };
     } catch (err) {
       logger.error("[SCHEMA-GATE] FATAL: Database unreachable during strict schema gate:", redactSecrets(err?.message || String(err)));
       return { ok: false, strict: true, error: err?.message || String(err) };
@@ -93,10 +93,10 @@ export async function verifyProductionSchema(options = {}) {
     if (!result.ok) {
       logger.warn(`[SCHEMA-GATE] WARNING: Target database schema is missing ${result.missingCount || 1} migration(s)/RPC(s).`);
       logger.warn("[SCHEMA-GATE] Build proceeding without blocking because this is a preview / non-strict environment.");
-      return { ok: true, warned: true, preview: isVercelPreview, missingCount: result.missingCount, results: result.results };
+      return { ok: true, warned: true, preview: isVercelPreview, missingCount: result.missingCount, results: result.results, contract: result.contract };
     }
     logger.log("[SCHEMA-GATE] Diagnostic schema check passed successfully.");
-    return { ok: true, preview: isVercelPreview, results: result.results };
+    return { ok: true, preview: isVercelPreview, results: result.results, contract: result.contract, warned: result.warned };
   } catch (err) {
     logger.warn(`[SCHEMA-GATE] Diagnostic check warning (non-blocking): ${redactSecrets(err?.message || String(err))}`);
     return { ok: true, warned: true, preview: isVercelPreview };
