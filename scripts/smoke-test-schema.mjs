@@ -20,6 +20,21 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import pg from "pg";
 import { checkSecurityInvariantsViaPg } from "./check-rls-invariants.mjs";
+import {
+  EXPECTED_SCHEMA_CONTRACT_VERSION,
+  CONTRACT_STATUS,
+  evaluateSchemaContract,
+  checkSchemaContractViaPg,
+  checkSchemaContractViaRest,
+} from "./schema-contract.mjs";
+
+export {
+  EXPECTED_SCHEMA_CONTRACT_VERSION,
+  CONTRACT_STATUS,
+  evaluateSchemaContract,
+  checkSchemaContractViaPg,
+  checkSchemaContractViaRest,
+};
 
 const { Client: PgClient } = pg;
 
@@ -502,31 +517,69 @@ export async function runSmokeTest(options = {}) {
     }
     if (missingCount === 0) {
       logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
-      if (options.skipSecurityCheck === true) {
-        return { ok: true, strict: true, method: pgRes.method || "pg", results: pgRes.results };
+      let secRes = null;
+      if (options.skipSecurityCheck !== true) {
+        logger.log("[SMOKE] Checking RLS & grants invariants via pg_catalog (read-only)...");
+        secRes = await checkSecurityInvariantsViaPg(databaseUrl, {
+          Client: options.Client,
+          client: options.securityClient || options.pgClient || options.client,
+          clientConfig: options.clientConfig,
+          queryFn: options.securityQueryFn,
+          logger,
+        });
+        if (!secRes.ok) {
+          const detail = secRes.error || `${secRes.failureCount || 1} invariante(s) de segurança divergente(s)`;
+          logger.error(`[FAIL-CLOSED] RLS/grants invariants divergentes: ${detail}`);
+          return {
+            ok: false,
+            strict: true,
+            method: pgRes.method || "pg",
+            results: pgRes.results,
+            security: secRes,
+            error: `[FAIL-CLOSED] Security invariants failed: ${detail}`,
+          };
+        }
+        logger.log("[SUCCESS] RLS & grants invariants verified (read-only catalog).");
       }
-      logger.log("[SMOKE] Checking RLS & grants invariants via pg_catalog (read-only)...");
-      const secRes = await checkSecurityInvariantsViaPg(databaseUrl, {
-        Client: options.Client,
-        client: options.securityClient || options.pgClient || options.client,
-        clientConfig: options.clientConfig,
-        queryFn: options.securityQueryFn,
-        logger,
-      });
-      if (!secRes.ok) {
-        const detail = secRes.error || `${secRes.failureCount || 1} invariante(s) de segurança divergente(s)`;
-        logger.error(`[FAIL-CLOSED] RLS/grants invariants divergentes: ${detail}`);
-        return {
-          ok: false,
-          strict: true,
-          method: pgRes.method || "pg",
-          results: pgRes.results,
-          security: secRes,
-          error: `[FAIL-CLOSED] Security invariants failed: ${detail}`,
-        };
+
+      // Check Semantic Schema Contract (MAI-158)
+      let contractRes = null;
+      if (options.skipContractCheck !== true) {
+        logger.log("[SMOKE] Checking semantic schema contract version in PostgreSQL (public.schema_contract)...");
+        contractRes = await checkSchemaContractViaPg(databaseUrl, {
+          Client: options.Client,
+          contractClient: options.contractClient,
+          client: options.pgClient || options.client,
+          clientConfig: options.clientConfig,
+          queryFn: options.contractQueryFn,
+          expectedVersion: options.expectedVersion,
+          exactMatch: options.exactContractMatch,
+        });
+
+        if (!contractRes.ok) {
+          const detail = contractRes.error || contractRes.details || "Contrato do schema divergente/incompatível";
+          logger.error(`[FAIL-CLOSED] Semantic schema contract verification failed: ${detail}`);
+          return {
+            ok: false,
+            strict: true,
+            method: pgRes.method || "pg",
+            results: pgRes.results,
+            security: secRes,
+            contract: contractRes,
+            error: `[FAIL-CLOSED] Semantic schema contract verification failed: ${detail}`,
+          };
+        }
+        logger.log(`[SUCCESS] Semantic schema contract verified: ${contractRes.installedVersion} (expected: ${contractRes.expectedVersion}).`);
       }
-      logger.log("[SUCCESS] RLS & grants invariants verified (read-only catalog).");
-      return { ok: true, strict: true, method: pgRes.method || "pg", results: pgRes.results, security: secRes };
+
+      return {
+        ok: true,
+        strict: true,
+        method: pgRes.method || "pg",
+        results: pgRes.results,
+        security: secRes,
+        contract: contractRes,
+      };
     } else {
       logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
       return { ok: false, strict: true, missingCount, method: pgRes.method || "pg", results: pgRes.results };
@@ -560,9 +613,10 @@ export async function runSmokeTest(options = {}) {
       }
       if (missingCount === 0) {
         logger.log("\n[SUCCESS] All critical RPCs and signatures confirmed present in PostgreSQL!");
+        let secRes = null;
         if (options.skipSecurityCheck !== true) {
           logger.log("[SMOKE] Diagnostic RLS & grants check via pg_catalog (read-only, non-blocking)...");
-          const secRes = await checkSecurityInvariantsViaPg(databaseUrl, {
+          secRes = await checkSecurityInvariantsViaPg(databaseUrl, {
             Client: options.Client,
             client: options.securityClient || options.pgClient || options.client,
             clientConfig: options.clientConfig,
@@ -571,10 +625,37 @@ export async function runSmokeTest(options = {}) {
           });
           if (!secRes.ok) {
             logger.warn(`[SMOKE] WARNING: ${secRes.failureCount || 1} invariante(s) de segurança divergente(s) (diagnóstico não-bloqueante).`);
-            return { ok: true, warned: true, method: pgRes.method || "pg", results: pgRes.results, security: secRes };
           }
         }
-        return { ok: true, method: pgRes.method || "pg", results: pgRes.results };
+
+        let contractRes = null;
+        if (options.skipContractCheck !== true) {
+          logger.log("[SMOKE] Diagnostic semantic schema contract check (read-only, non-blocking)...");
+          contractRes = await checkSchemaContractViaPg(databaseUrl, {
+            Client: options.Client,
+            contractClient: options.contractClient,
+            client: options.pgClient || options.client,
+            clientConfig: options.clientConfig,
+            queryFn: options.contractQueryFn,
+            expectedVersion: options.expectedVersion,
+            exactMatch: options.exactContractMatch,
+          });
+          if (!contractRes.ok) {
+            logger.warn(`[SMOKE] WARNING: Semantic schema contract: ${contractRes.details || contractRes.error} (diagnóstico não-bloqueante).`);
+          } else {
+            logger.log(`[SUCCESS] Semantic schema contract verified: ${contractRes.installedVersion}.`);
+          }
+        }
+
+        const hasWarning = (secRes && !secRes.ok) || (contractRes && !contractRes.ok);
+        return {
+          ok: true,
+          warned: hasWarning,
+          method: pgRes.method || "pg",
+          results: pgRes.results,
+          security: secRes,
+          contract: contractRes,
+        };
       } else {
         logger.error(`\n[FAIL-CLOSED] ${missingCount} critical RPC(s) missing or incompatible in database.`);
         return { ok: false, missingCount, method: pgRes.method || "pg", results: pgRes.results };
@@ -645,8 +726,22 @@ export async function runSmokeTest(options = {}) {
     return { ok: false, missingCount, errorCount, skippedCount, totalFailures, results };
   }
 
+  let contractRes = null;
+  if (options.skipContractCheck !== true && isServiceRole) {
+    contractRes = await checkSchemaContractViaRest(supabaseUrl, effectiveKey, {
+      fetchFn,
+      expectedVersion: options.expectedVersion,
+      exactMatch: options.exactContractMatch,
+    });
+    if (!contractRes.ok) {
+      logger.warn(`[SMOKE] WARNING: Semantic schema contract via REST: ${contractRes.details || contractRes.error} (diagnóstico não-bloqueante).`);
+    } else {
+      logger.log(`[SUCCESS] Semantic schema contract verified via REST: ${contractRes.installedVersion}.`);
+    }
+  }
+
   logger.log("\n[SUCCESS] All verified critical RPCs are present in Supabase schema cache (FOUND)!");
-  return { ok: true, results };
+  return { ok: true, results, contract: contractRes };
 }
 
 // Execute directly when called from command line
