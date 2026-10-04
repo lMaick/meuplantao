@@ -13,6 +13,7 @@
     "test:subscription-real": "node --experimental-strip-types --test tests/subscription-payment-real-e2e.real.mjs",
     "test:subscription-reversal-real": "node --experimental-strip-types --test tests/subscription-reversal-real-e2e.real.mjs",
     "test:security-real": "node --experimental-strip-types --test tests/security-invariants-real.local.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "db:smoke": "node scripts/smoke-test-schema.mjs",
     "db:verify": "node scripts/verify-production-schema.mjs"
   },
@@ -24,11 +25,10 @@
     "class-variance-authority": "^0.7.1",
     "cn": "^0.2.5",
     "lucide-react": "^1.41.0",
-    "next": "16.3.4",
+    "next": "16.3.8",
     "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "shadcn": "^4.21.0",
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
@@ -38,7 +38,8 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "16.3.8",
+    "shadcn": "^4.21.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

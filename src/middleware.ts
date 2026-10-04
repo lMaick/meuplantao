@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { isMachineToMachineRoute, isPublicSeoRoute, updateSession } from "@/lib/auth/session";
+import { isMachineToMachineRoute, isPublicContentRoute, isPublicSeoRoute, updateSession } from "@/lib/auth/session";
 import { getHstsValue, HSTS_HEADER, shouldSendHsts } from "@/lib/security/hsts";
 
 function requestHost(request: NextRequest): string {
@@ -26,8 +26,15 @@ export async function middleware(request: NextRequest) {
   // MAI-155: mesmo fast-path para a rota pública exata de SEO
   // (/sitemap.xml, via isPublicSeoRoute — lista separada da M2M); crawlers
   // anônimos chegam ao handler sem sessão e sem 307/308.
+  // MAI-160: mesmo fast-path para páginas públicas de conteúdo
+  // (`/`, `/privacidade`, `/termos`, `/suporte` via isPublicContentRoute —
+  // lista exata separada da M2M e do SEO); visitantes anônimos chegam ao
+  // handler sem criar client Supabase e sem `auth.getUser`. Login/cadastro/
+  // recovery dependem de sessão e ficam fora deste fast-path.
   const response =
-    isMachineToMachineRoute(request.nextUrl.pathname) || isPublicSeoRoute(request.nextUrl.pathname)
+    isMachineToMachineRoute(request.nextUrl.pathname) ||
+    isPublicSeoRoute(request.nextUrl.pathname) ||
+    isPublicContentRoute(request.nextUrl.pathname)
       ? NextResponse.next({ request })
       : await updateSession(request);
   // MAI-146: HSTS somente no host de produção via HTTPS. Localhost, preview

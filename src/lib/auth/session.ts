@@ -53,6 +53,22 @@ export function isPublicSeoRoute(pathname: string): boolean {
   return (PUBLIC_SEO_PATHS as readonly string[]).includes(pathname);
 }
 
+export const PUBLIC_CONTENT_PATHS = ["/", "/privacidade", "/termos", "/suporte"] as const;
+
+/**
+ * MAI-160: páginas públicas de conteúdo servidas sem sessão (não precisam de
+ * usuário para renderizar). Classificação exata — lista separada da M2M e do
+ * SEO (não é webhook/beacon nem rota de crawler). O fast-path ocorre ANTES de
+ * criar o client Supabase/chamar `auth.getUser`, mas o middleware continua
+ * aplicando o wrapper de headers (HSTS) sobre o response. Sem prefixo
+ * genérico: `/api/*`, dashboard, calendário, pagamentos e rotas autenticadas
+ * nunca entram aqui. Login/cadastro/recovery dependem de sessão/redirect e
+ * ficam fora deste fast-path.
+ */
+export function isPublicContentRoute(pathname: string): boolean {
+  return (PUBLIC_CONTENT_PATHS as readonly string[]).includes(pathname);
+}
+
 export async function updateSession(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   // MAI-151: fast-path M2M ANTES de qualquer Supabase Auth. Retorna
@@ -66,6 +82,14 @@ export async function updateSession(request: NextRequest) {
   // duplicar a classificação M2M acima). Crawlers anônimos chegam ao
   // handler sem sessão; o middleware preserva o wrapper de headers (HSTS).
   if (isPublicSeoRoute(pathname)) {
+    return NextResponse.next({ request });
+  }
+  // MAI-160: mesmo fast-path para páginas públicas de conteúdo
+  // (`/` + `/privacidade` + `/termos` + `/suporte` via isPublicContentRoute —
+  // lista separada da M2M e do SEO). Visitantes anônimos chegam ao handler
+  // sem sessão e sem custo de Auth; o middleware preserva o wrapper de
+  // headers (HSTS). ANTES de criar o client Supabase/chamar `auth.getUser`.
+  if (isPublicContentRoute(pathname)) {
     return NextResponse.next({ request });
   }
   const config = getSupabaseConfig();
