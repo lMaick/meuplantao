@@ -40,12 +40,32 @@ export function isMachineToMachineRoute(pathname: string): boolean {
   return (MACHINE_TO_MACHINE_PATHS as readonly string[]).includes(pathname);
 }
 
+export const PUBLIC_SEO_PATHS = ["/sitemap.xml"] as const;
+
+/**
+ * MAI-155: rota pública de SEO servida sem sessão (crawlers anônimos não têm
+ * cookie Supabase). Classificação exata da rota `/sitemap.xml` — lista
+ * separada da M2M (não é webhook/beacon e não entra em
+ * MACHINE_TO_MACHINE_PATHS). O fast-path pula `auth.getUser` mas o
+ * middleware continua aplicando o wrapper de headers (HSTS) sobre o response.
+ */
+export function isPublicSeoRoute(pathname: string): boolean {
+  return (PUBLIC_SEO_PATHS as readonly string[]).includes(pathname);
+}
+
 export async function updateSession(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   // MAI-151: fast-path M2M ANTES de qualquer Supabase Auth. Retorna
   // NextResponse.next sem criar client nem chamar auth.getUser, mas o
   // middleware ainda aplica o wrapper de headers (HSTS) sobre este response.
   if (isMachineToMachineRoute(pathname)) {
+    return NextResponse.next({ request });
+  }
+  // MAI-155: mesmo fast-path para a rota pública exata de SEO
+  // (/sitemap.xml via isPublicSeoRoute — lista separada da M2M, sem
+  // duplicar a classificação M2M acima). Crawlers anônimos chegam ao
+  // handler sem sessão; o middleware preserva o wrapper de headers (HSTS).
+  if (isPublicSeoRoute(pathname)) {
     return NextResponse.next({ request });
   }
   const config = getSupabaseConfig();
