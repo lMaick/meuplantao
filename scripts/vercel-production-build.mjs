@@ -5,15 +5,20 @@
  * Sequence (technically guaranteed, not just documented):
  *   1. production rendezvous via scripts/vercel-production-gate.mjs
  *      (exact-SHA migration + strict schema job; preview/local bypass);
- *   2. `npm run build` (retains the strict semantic prebuild gate incl. the
+ *   2. write the release proof to `public/release-proof-<SHA>.json`
+ *      BEFORE compiling — the Vercel builder collects `public/` from the
+ *      source tree AFTER the buildCommand (see @vercel/next `getStaticFiles`),
+ *      while files created inside `.next/` after `next build` are not
+ *      reliably packaged (live 404 on f85a7e6 despite a verified
+ *      `.next/static` proof). `public/` is never wiped by `next build`;
+ *   3. `npm run build` (retains the strict semantic prebuild gate incl. the
  *      MAI-158 `schema_contract` version assert; NEVER `next build` direct);
- *   3. on gated production success only, write verifiable proof to
- *      `.next/static/release-proof-<SHA>.json` (gitignored build output, no
- *      secrets/user data/code) and verify it parses with the same SHA.
+ *   4. re-verify the proof on disk (same SHA, successful gate attestation).
  *
- * The proof is served by Next as `/_next/static/release-proof-<SHA>.json`,
- * which the middleware matcher already excludes from auth, so no auth,
- * routing or CSP change is required to fetch it anonymously post-deploy.
+ * The proof is served by Next/Vercel as `/release-proof-<SHA>.json` from
+ * `public/`. The middleware matcher explicitly excludes that path so it
+ * stays anonymous with no other auth, routing or CSP change. The file is
+ * gitignored build output carrying no secrets, user data or code.
  */
 
 import { spawnSync } from "node:child_process";
@@ -74,7 +79,7 @@ export async function runProductionBuild(options = {}) {
   const spawnImpl =
     options.spawnImpl ||
     ((cmd, args, opts) => spawnSync(cmd, args, opts));
-  const outDir = options.outDir || join(REPO_ROOT, ".next", "static");
+  const outDir = options.outDir || join(REPO_ROOT, "public");
   const nowIso = options.nowIso || (() => new Date().toISOString());
 
   const gate = await evaluateGate({ env, logger, ...options.gateOptions });
@@ -88,24 +93,26 @@ export async function runProductionBuild(options = {}) {
     return { ok: built, gated: false, reason: built ? "bypass-build-ok" : "bypass-build-failed" };
   }
 
-  const built = runAppBuild({ spawnImpl, logger });
-  if (!built) {
-    logger.log("[release-build] BLOCKED: gated app build failed; no proof written.");
-    return { ok: false, gated: true, reason: "gated-build-failed" };
-  }
   const sha = (env.VERCEL_GIT_COMMIT_SHA || "").trim().toLowerCase();
   if (!FULL_SHA_REGEX.test(sha)) {
-    logger.log("[release-build] BLOCKED: production build succeeded but commit SHA is invalid; refusing proof.");
-    return { ok: false, gated: true, reason: "post-build-invalid-sha" };
+    logger.log("[release-build] BLOCKED: gated production context but commit SHA is invalid; refusing proof and build.");
+    return { ok: false, gated: true, reason: "invalid-sha" };
   }
-  const fullPath = writeReleaseProof({ outDir, sha, gateProof: gate.proof, builtAt: nowIso() });
+  const prePath = writeReleaseProof({ outDir, sha, gateProof: gate.proof, builtAt: nowIso() });
+  logger.log(`[release-build] proof written pre-build at ${prePath}; invoking app build.`);
+
+  const built = runAppBuild({ spawnImpl, logger });
+  if (!built) {
+    logger.log("[release-build] BLOCKED: gated app build failed; proof will not be promoted.");
+    return { ok: false, gated: true, reason: "gated-build-failed" };
+  }
   const verified = verifyReleaseProof({ outDir, sha });
   if (!verified.ok) {
-    logger.log(`[release-build] BLOCKED: proof integrity failed (${verified.reason}).`);
+    logger.log(`[release-build] BLOCKED: proof integrity failed post-build (${verified.reason}).`);
     return { ok: false, gated: true, reason: verified.reason };
   }
-  logger.log(`[release-build] PROCEED gated production build ok; proof verified at ${fullPath}.`);
-  return { ok: true, gated: true, proofPath: fullPath };
+  logger.log(`[release-build] PROCEED gated production build ok; proof verified at ${verified.fullPath}.`);
+  return { ok: true, gated: true, proofPath: verified.fullPath };
 }
 
 async function main() {

@@ -5,7 +5,7 @@ import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server.j
 
 // Exercise the actual statically declared matcher without importing auth clients.
 const source = readFileSync(new URL("../src/middleware.ts", import.meta.url), "utf8");
-const matcher = JSON.parse(source.match(/matcher:\s*(\[[^\]]*\])/)[1]);
+const matcher = JSON.parse(source.match(/matcher:\s*(\[.*"\])/)[1]);
 
 test("only the exact robots endpoint bypasses auth alongside existing static assets", () => {
   for (const url of ["/robots.txt", "/robots.txt?crawler=1", "/favicon.ico", "/_next/static/chunk.js"]) {

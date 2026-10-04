@@ -51,7 +51,7 @@ function proofBody(overrides = {}) {
 
 function happyPages(overrides = {}) {
   return {
-    [`https://meuplantao.pro/_next/static/release-proof-${SHA}.json`]: text200(proofBody()),
+    [`https://meuplantao.pro/release-proof-${SHA}.json`]: text200(proofBody()),
     "https://meuplantao.pro/": text200("<html>home</html>"),
     "https://meuplantao.pro/sitemap.xml": text200("<urlset/>"),
     ...overrides,
@@ -145,7 +145,7 @@ test("proof with wrong SHA blocks", async () => {
       deployments: [deployment()],
       statuses: successStatus,
       pages: happyPages({
-        [`https://meuplantao.pro/_next/static/release-proof-${SHA}.json`]: text200(proofBody({ sha: "e".repeat(40) })),
+          [`https://meuplantao.pro/release-proof-${SHA}.json`]: text200(proofBody({ sha: "e".repeat(40) })),
       }),
     },
   );
@@ -161,7 +161,7 @@ test("unreachable or malformed proof blocks", async () => {
         deployments: [deployment()],
         statuses: successStatus,
         pages: happyPages({
-          [`https://meuplantao.pro/_next/static/release-proof-${SHA}.json`]: page,
+          [`https://meuplantao.pro/release-proof-${SHA}.json`]: page,
         }),
       },
     );
