@@ -88,3 +88,37 @@ jobs:
           echo "  - \`register_payment\`" >> $GITHUB_STEP_SUMMARY
           echo "  - \`process_mercadopago_subscription_payment\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Canonical Process:** See \`docs/DEVOPS_MIGRATIONS.md\`" >> $GITHUB_STEP_SUMMARY
+
+  # MAI-159: post-deploy smoke runs AFTER the migration/schema job in the same
+  # workflow chain (needs:), but the Vercel production buildCommand gate waits
+  # ONLY for the `migrate-and-verify` JOB success — never for whole-workflow
+  # completion — so this job cannot deadlock the build it verifies. Push-only:
+  # manual workflow_dispatch runs (incl. force_smoke_test) never count as
+  # migration proof for the gate and never trigger this smoke.
+  post-deploy-smoke:
+    name: Post-Deploy Production Smoke
+    runs-on: ubuntu-latest
+    needs: [migrate-and-verify]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      deployments: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Wait Production deployment and smoke test release
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SITE: https://meuplantao.pro
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          node scripts/verify-production-release.mjs
