@@ -30,6 +30,7 @@ The test architecture is founded on the following non-negotiable principles:
 | `npm run test:real` | Real financial E2E vs isolated local Supabase via CLI (opt-in, never production) | `tests/financial-real-e2e.real.mjs` | Requires Supabase CLI / Docker |
 | `npm run test:subscription-real` / `npm run test:subscription-reversal-real` | Real subscription payment + reversal E2E vs isolated local Supabase via CLI (opt-in, never production) | `tests/subscription-payment-real-e2e.real.mjs`, `tests/subscription-reversal-real-e2e.real.mjs` | Requires Supabase CLI / Docker |
 | `npm run test:security-real` | Real RLS/grants invariants vs isolated local PostgreSQL 16 via `pg` direct — NOT Supabase local (fail-closed local-only guard; skips without DB unless `SECURITY_REAL_REQUIRE_DB=1`) | `tests/security-invariants-real.local.mjs` | Requires local Postgres (CI provides `postgres:16` service) |
+| `npm run audit:prod` | Production-only vulnerability gate: `npm audit --omit=dev --audit-level=high` (fails on any high/critical runtime advisory; dev-only tooling findings never block) | `package.json` scripts | No services required |
 | `npm run db:smoke` / `npm run db:verify` | Schema + critical RPC signature validation via `DATABASE_URL`; `db:verify` is also the `prebuild` gate — bypassed for local/CI-quality builds, strict fail-closed in production (`VERCEL_ENV=production` or `CHECK_SCHEMA_COMPATIBILITY=1`) | `scripts/smoke-test-schema.mjs`, `scripts/verify-production-schema.mjs` | Requires DB URL when not bypassed |
 
 ### 2.2 Continuous Integration Pipeline (`.github/workflows/ci.yml`)
@@ -39,6 +40,7 @@ CI runs on every push and PR to `main` under Node 22:
 3. `security-invariants-e2e`: isolated local `postgres:16` service + `npm run test:security-real` (fail-closed via `SECURITY_REAL_REQUIRE_DB=1`; local-only guard, never remote).
 4. `real-e2e`: isolated local Supabase via CLI (disposable) + migration validators (`tests/financial-migration-upgrade-real.sh`, `tests/subscription-entitlement-real.sh`, `tests/shifts-direct-write-prohibition-real.sh`) + `npm run db:smoke` + `npm run test:real`.
 5. `subscription-payment-real-e2e`: isolated local Supabase via CLI (disposable) + `npm run test:subscription-real` + `npm run test:subscription-reversal-real`.
+6. `security-audit` (`ubuntu-latest`, MAI-157): `npm ci` → `npm run audit:prod` — production-only gate that fails on any high/critical runtime advisory. Offline contract mirror: `tests/security-deps-audit.test.mjs` (Next 16.3.x patched line, `eslint-config-next` pinned in lockstep, `shadcn` dev-only, no runtime `shadcn` imports in `src/`).
 
 Migrations reach production on merge to `main` via `deploy-production.yml`; the `prebuild` schema gate (`scripts/verify-production-schema.mjs`) is bypassed locally/in CI-quality and diagnostic in preview, but strict fail-closed in production. Full policy: `docs/DEVOPS_MIGRATIONS.md`.
 
