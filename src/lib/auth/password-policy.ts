@@ -1,8 +1,14 @@
 /**
- * Regra canônica de política de senhas e sanitização/mapeamento de erros de autenticação.
- * Centraliza o comprimento mínimo (8 caracteres) e mensagens amigáveis de produto (MAI-166).
+ * Regra canônica de política de senhas e sanitização/mapeamento de erros de autenticação (MAI-166).
  *
- * Previne enumeração de usuários unificando erros de credenciais e preservando confirmações genéricas.
+ * Contratos estritos:
+ * 1. Comprimento mínimo de 8 caracteres obrigatório no signup e redefinição de senha.
+ * 2. Login não bloqueia senhas de 6 ou 7 caracteres para manter compatibilidade com contas legadas.
+ * 3. Mapeamento de erros do Supabase Auth avalia EXCLUSIVAMENTE `code` e `status` numérico,
+ *    ignorando completamente `message` e `name` para neutralizar injeções adversariais,
+ *    evitar vazamento de PII e garantir estabilidade contra mudanças de texto do provedor.
+ * 4. Não-enumeração de usuários no login (unificação de invalid_credentials/email_not_confirmed)
+ *    e no signup (resposta neutra para user_already_exists).
  */
 
 export const MIN_PASSWORD_LENGTH = 8;
@@ -53,45 +59,38 @@ export function validatePasswordReset(password: string, confirmPassword: string)
 interface AuthErrorShape {
   status?: number;
   code?: string;
-  message?: string;
-  name?: string;
 }
 
-function extractErrorProps(error: unknown): AuthErrorShape {
+/**
+ * Extrai unicamente status HTTP e código canônico do erro.
+ * Jamais extrai ou processa `message` ou `name` do provedor.
+ */
+function extractErrorCodeAndStatus(error: unknown): AuthErrorShape {
   if (!error || typeof error !== "object") return {};
   const err = error as Record<string, unknown>;
-  return {
-    status: typeof err.status === "number" ? err.status : undefined,
-    code: typeof err.code === "string" ? err.code : undefined,
-    message: typeof err.message === "string" ? err.message : undefined,
-    name: typeof err.name === "string" ? err.name : undefined,
-  };
+  const status = typeof err.status === "number" ? err.status : undefined;
+  const rawCode = typeof err.code === "string" ? err.code.trim().toLowerCase() : undefined;
+  return { status, code: rawCode };
 }
 
-function isRateLimitError(err: AuthErrorShape): boolean {
+function isRateLimit(err: AuthErrorShape): boolean {
   if (err.status === 429) return true;
-  if (err.code === "over_request_rate_limit" || err.code === "rate_limit_exceeded") return true;
-  const msg = err.message?.toLowerCase() ?? "";
-  return msg.includes("rate limit") || msg.includes("too many requests");
-}
-
-function isWeakPasswordError(err: AuthErrorShape): boolean {
-  if (err.code === "weak_password") return true;
-  const msg = err.message?.toLowerCase() ?? "";
   return (
-    msg.includes("password should be at least") ||
-    msg.includes("password is too short") ||
-    msg.includes("weak password")
+    err.code === "over_request_rate_limit" ||
+    err.code === "rate_limit_exceeded" ||
+    err.code === "over_email_send_rate_limit" ||
+    err.code === "over_sms_send_rate_limit"
   );
 }
 
 /**
  * Mapeia erros do Supabase Auth no Login para mensagens do produto.
- * Unifica invalid_credentials e email_not_confirmed para impedir a enumeração de contas existentes.
+ * Avalia estritamente status/code. Unifica erros de credenciais e e-mail não confirmado
+ * para impedir a enumeração de contas existentes.
  */
 export function mapLoginAuthError(error: unknown): string {
-  const err = extractErrorProps(error);
-  if (isRateLimitError(err)) {
+  const err = extractErrorCodeAndStatus(error);
+  if (isRateLimit(err)) {
     return RATE_LIMIT_ERROR_MESSAGE;
   }
   return GENERIC_LOGIN_ERROR_MESSAGE;
@@ -103,31 +102,25 @@ export type SignupResultAction =
 
 /**
  * Mapeia erros do Supabase Auth no Cadastro (signup).
- * Se o provedor retornar que o usuário já existe (user_already_exists), oculta a enumeração
- * retornando a mesma mensagem neutra de confirmação por e-mail.
+ * Avalia estritamente status/code. Se o provedor indicar usuário já existente,
+ * oculta a enumeração retornando a mesma mensagem neutra de confirmação por e-mail.
  */
 export function mapSignupAuthError(error: unknown): SignupResultAction {
-  const err = extractErrorProps(error);
+  const err = extractErrorCodeAndStatus(error);
 
-  if (isWeakPasswordError(err)) {
+  if (err.code === "weak_password") {
     return { type: "error", text: PASSWORD_MIN_LENGTH_MESSAGE };
   }
 
-  if (isRateLimitError(err)) {
+  if (isRateLimit(err)) {
     return { type: "error", text: RATE_LIMIT_ERROR_MESSAGE };
   }
 
-  // Prevenção estrita de enumeração de contas cadastradas
-  const msg = err.message?.toLowerCase() ?? "";
-  const isAlreadyExists =
+  if (
     err.code === "user_already_exists" ||
     err.code === "identity_already_exists" ||
-    msg.includes("already registered") ||
-    msg.includes("already been registered") ||
-    msg.includes("already in use") ||
-    msg.includes("already exists");
-
-  if (isAlreadyExists) {
+    err.code === "email_exists"
+  ) {
     return { type: "message", text: SIGNUP_SUCCESS_GENERIC_MESSAGE };
   }
 
@@ -136,41 +129,164 @@ export function mapSignupAuthError(error: unknown): SignupResultAction {
 
 /**
  * Mapeia erros do Supabase Auth na atualização de senha (redefinição).
- * Trata erros conhecidos (senha idêntica, sessão expirada, rate limit) sem expor mensagens brutas.
+ * Avalia estritamente status/code para tratar mesma senha, sessão expirada e rate limits.
  */
 export function mapPasswordUpdateError(error: unknown): string {
-  const err = extractErrorProps(error);
+  const err = extractErrorCodeAndStatus(error);
 
-  if (isWeakPasswordError(err)) {
+  if (err.code === "weak_password") {
     return PASSWORD_MIN_LENGTH_MESSAGE;
   }
 
-  if (isRateLimitError(err)) {
-    return RATE_LIMIT_ERROR_MESSAGE;
-  }
-
-  const msg = err.message?.toLowerCase() ?? "";
-  const code = err.code?.toLowerCase() ?? "";
-
-  if (
-    code === "same_password" ||
-    msg.includes("same as old") ||
-    msg.includes("different from the old") ||
-    msg.includes("should be different")
-  ) {
+  if (err.code === "same_password") {
     return PASSWORD_SAME_AS_OLD_MESSAGE;
   }
 
   if (
-    code === "session_expired" ||
-    code === "bad_jwt" ||
-    msg.includes("jwt") ||
-    msg.includes("session") ||
-    msg.includes("expired") ||
-    msg.includes("invalid token")
+    err.code === "session_expired" ||
+    err.code === "bad_jwt" ||
+    err.code === "token_expired" ||
+    err.code === "otp_expired"
   ) {
     return RECOVERY_SESSION_EXPIRED_MESSAGE;
   }
 
+  if (isRateLimit(err)) {
+    return RATE_LIMIT_ERROR_MESSAGE;
+  }
+
   return PASSWORD_UPDATE_GENERIC_ERROR_MESSAGE;
+}
+
+export interface MinimalSupabaseAuthClient {
+  signInWithPassword: (credentials: { email: string; password: string }) => Promise<{
+    data: { session?: unknown } | null;
+    error: unknown;
+  }>;
+  signUp: (credentials: { email: string; password: string }) => Promise<{
+    data: { session?: unknown } | null;
+    error: unknown;
+  }>;
+}
+
+export interface AuthSubmitParams {
+  mode: "login" | "signup";
+  email: string;
+  password: string;
+  client: MinimalSupabaseAuthClient;
+}
+
+export type AuthSubmitResult =
+  | { status: "validation_error"; error: string }
+  | { status: "auth_error"; error: string }
+  | { status: "confirmation_required"; message: string }
+  | { status: "success" };
+
+/**
+ * Manipulador real e compartilhado de submissão de autenticação (Login / Cadastro).
+ * Garante que signup < 8 caracteres seja bloqueado antes de chamar o provedor,
+ * enquanto login permite qualquer tamanho >= 1 para não rejeitar contas legadas.
+ */
+export async function processAuthSubmit(params: AuthSubmitParams): Promise<AuthSubmitResult> {
+  const { mode, email, password, client } = params;
+
+  if (mode === "signup") {
+    const validation = validatePasswordLength(password);
+    if (!validation.valid) {
+      return {
+        status: "validation_error",
+        error: validation.error ?? PASSWORD_MIN_LENGTH_MESSAGE,
+      };
+    }
+  }
+
+  const result =
+    mode === "login"
+      ? await client.signInWithPassword({ email, password })
+      : await client.signUp({ email, password });
+
+  if (result.error) {
+    if (mode === "login") {
+      return {
+        status: "auth_error",
+        error: mapLoginAuthError(result.error),
+      };
+    }
+    const mapped = mapSignupAuthError(result.error);
+    if (mapped.type === "message") {
+      return {
+        status: "confirmation_required",
+        message: mapped.text,
+      };
+    }
+    return {
+      status: "auth_error",
+      error: mapped.text,
+    };
+  }
+
+  if (mode === "signup" && !result.data?.session) {
+    return {
+      status: "confirmation_required",
+      message: SIGNUP_SUCCESS_GENERIC_MESSAGE,
+    };
+  }
+
+  return { status: "success" };
+}
+
+export interface MinimalSupabasePasswordResetClient {
+  updateUser: (attributes: { password: string }) => Promise<{
+    data: unknown;
+    error: unknown;
+  }>;
+}
+
+export interface PasswordResetSubmitParams {
+  password: string;
+  confirmPassword: string;
+  isRecoveryContext: boolean;
+  client: MinimalSupabasePasswordResetClient;
+}
+
+export type PasswordResetSubmitResult =
+  | { status: "unauthorized"; error: string }
+  | { status: "validation_error"; error: string }
+  | { status: "update_error"; error: string }
+  | { status: "success" };
+
+/**
+ * Manipulador real e compartilhado de redefinição de nova senha.
+ * Exige contexto recovery válido e validação de 8 caracteres + confirmação
+ * antes de despachar a chamada updateUser para o provedor.
+ */
+export async function processPasswordResetSubmit(
+  params: PasswordResetSubmitParams
+): Promise<PasswordResetSubmitResult> {
+  const { password, confirmPassword, isRecoveryContext, client } = params;
+
+  if (!isRecoveryContext) {
+    return {
+      status: "unauthorized",
+      error: RECOVERY_SESSION_EXPIRED_MESSAGE,
+    };
+  }
+
+  const validation = validatePasswordReset(password, confirmPassword);
+  if (!validation.valid) {
+    return {
+      status: "validation_error",
+      error: validation.error ?? "Erro ao validar nova senha.",
+    };
+  }
+
+  const { error: updateError } = await client.updateUser({ password });
+  if (updateError) {
+    return {
+      status: "update_error",
+      error: mapPasswordUpdateError(updateError),
+    };
+  }
+
+  return { status: "success" };
 }
