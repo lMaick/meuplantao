@@ -31,13 +31,14 @@ O ciclo de vida de qualquer alteração de código ou schema segue o seguinte mo
 [4. Revisão Humana & Merge em main] (Apenas Maick faz o merge)
         ↓
 push main
-   ├── GitHub Actions → migrations (deploy-production.yml)
-   └── Vercel → build / prebuild (verify-production-schema)
+    ├── GitHub Actions `migrate-and-verify` → migrations + strict gate (RPC + RLS + contrato semântico)
+    ├── Vercel production buildCommand → aguarda o JOB `migrate-and-verify` do SHA exato → `npm run build` + prova de release
+    └── GitHub Actions `post-deploy-smoke` (needs do job acima) → aguarda deployment Production do SHA → prova + `/` + `/sitemap.xml`
 ```
 
 > [!IMPORTANT]
-> **Barreira de Compatibilidade Fail-Closed (Sem Ordenação Automática)**
-> O `prebuild` atua como barreira de compatibilidade fail-closed. GitHub Actions e Vercel são disparados de forma independente e podem executar em paralelo. Se o build da Vercel atingir o schema gate antes da aplicação de uma migration necessária, o build falhará e a versão incompatível não será publicada. Após a migration ser aplicada, um novo build/deploy poderá ser necessário. Uma garantia estrita de ordenação migration → deploy exigiria mecanismo adicional de orquestração.
+> **Ordenação Serializada migration → gate → deploy (MAI-159)**
+> O `prebuild` continua como barreira de compatibilidade fail-closed dentro do build, mas a ordem agora é tecnicamente garantida: o `buildCommand` versionado (`vercel.json` → `node scripts/vercel-production-build.mjs`) só compila produção depois que o job `Apply & Verify Production Schema` do workflow pinado (`Production Migrations & Release Gate`, id `362947044`) atinge `completed/success` para o `VERCEL_GIT_COMMIT_SHA` exato. O gate observa o JOB (nunca a conclusão do workflow inteiro), de modo que o smoke pós-deploy — que aguarda o próprio deployment — não causa deadlock. Falha de migration/schema impede o build e a promoção. Detalhes na seção 9.
 
 ---
 
@@ -156,3 +157,33 @@ Por contrato de segurança (`AGENTS.md` e políticas internas):
    - `PRODUCTION_DATABASE_URL`: Connection string do Supabase de produção.
    - `NEXT_PUBLIC_SUPABASE_URL`: URL pública da instância Supabase de produção.
    - `SUPABASE_SERVICE_ROLE_KEY`: Chave secreta de administração (usada exclusivamente para validação das RPCs restritas de webhooks).
+
+---
+
+## 9. Release Serializado de Produção (MAI-159)
+
+### 9.1 Quem dispara o quê (sem aprovação extra além do merge)
+
+1. **Merge em `main` (humano, Maick):** único gatilho e único ponto de aprovação humana. O ruleset `main-ruleset` exige PR + checks estritos; não há environment com revisores obrigatórios.
+2. **GitHub Actions (`deploy-production.yml`, push em `main`):** job `migrate-and-verify` aplica migrations (`supabase db push --include-all`) e roda o strict gate (assinaturas RPC + RLS/grants + `schema_contract` semântico via MAI-158). Em seguida, e somente em push, o job `post-deploy-smoke` (needs do anterior) aguarda o deployment e valida a release.
+3. **Vercel (integração Git):** o `buildCommand` versionado (`vercel.json` → `scripts/vercel-production-build.mjs`) executa o rendezvous (`scripts/vercel-production-gate.mjs`, spec `1.0.0`) contra a API pública do GitHub — sem `VERCEL_TOKEN` — e só então roda `npm run build` (prebuild estrito preservado, nunca `next build` direto).
+
+### 9.2 Contrato do rendezvous (fail-closed)
+
+- Pinos: repo `lMaick/meuplantao`, workflow id `362947044` + path `.github/workflows/deploy-production.yml`, branch `main`, evento `push`, SHA = `VERCEL_GIT_COMMIT_SHA` (40-hex exato), job `Apply & Verify Production Schema` + steps `Apply Migrations to Production Database` e `Production Schema Smoke Test (Fail-Closed)`, tentativa mais recente (`run_attempt`).
+- Produção = `VERCEL_ENV=production`, ou build Vercel (`VERCEL=1`) no ref `main` (cobre System Env Vars desligado). Qualquer outro contexto (preview, development, local, CI) desvia imediatamente sem bloquear.
+- Bloqueiam na hora: SHA ausente/malformado em produção, erro de transporte, HTTP 403/429/5xx, timeout, JSON malformado/desconhecido, job/steps ausentes ou renomeados, tentativa obsoleta, workflow/branch/evento divergente, conclusão terminal sem sucesso.
+- Espera limitada (~10 min, polls de ~45 s, orçamento folgado dentro de 60 req/hora); esgotar o orçamento bloqueia em vez de estender. Nenhum segredo é registrado (só ids, status e conclusões).
+
+### 9.3 Prova de release e smoke pós-deploy
+
+- Após build de produção com gate aprovado, o wrapper grava `.next/static/release-proof-<SHA>.json` (saída de build gitignored; só SHA + workflow/run/job/attempt/tempo — sem segredos, sem dados de usuário) e revalida o arquivo antes de concluir.
+- A rota `/_next/static/*` já é excluída do matcher do middleware, portanto a prova é pública sem nenhuma mudança de auth, rota ou CSP.
+- O job `post-deploy-smoke` aguarda o deployment `Production` criado por `vercel[bot]` com `success` para o SHA exato (nunca aceita alias/página antiga; `inactive`/superseded bloqueia), confere a prova do mesmo SHA e faz GET em `/` e `/sitemap.xml` no site canônico `https://meuplantao.pro`. Nenhuma requisição destrutiva de billing.
+- Cobertura offline por mocks: `tests/vercel-production-gate.test.mjs`, `tests/vercel-production-build.test.mjs`, `tests/verify-production-release.test.mjs` (casos positivos, negativos, timeouts, erros e higiene de logs).
+
+### 9.4 Rollback, previews e checklist do dono
+
+- **Previews preservados:** o mesmo `buildCommand` roda em preview e desvia na hora; `npm run build` local não passa pelo wrapper.
+- **Rollback de app:** Instant Rollback / Promote na Vercel re-atribui deployment anterior sem rebuild. **Rollback de banco:** não há rollback destrutivo; migrations são append-only (`supabase_migrations.schema_migrations`) com forward-fix idempotente (`db push --include-all`).
+- **Checklist do dono antes do cutover (dashboard, não verificável pelo repo):** confirmar que o `buildCommand` efetivo vem do `vercel.json` (sem override no dashboard), que as System Environment Variables estão expostas e que não há array legado `builds`; nenhuma credencial nova é necessária para este desenho.
