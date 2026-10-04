@@ -38,6 +38,22 @@ jobs:
           python-version: '3.11'
       - run: python -m unittest discover -s ops/meuplantao-dispatcher -p "test_*.py" -v
 
+  # MAI-157: production-only vulnerability gate. Fails on any high/critical
+  # advisory in runtime dependencies (`--omit=dev`); dev-only tooling findings
+  # (shadcn CLI chain, eslint plugin chain) never block. Temporary exceptions,
+  # if ever required, must be documented explicitly with advisory ID + expiry.
+  security-audit:
+    name: Production dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run audit:prod
+
   security-invariants-e2e:
     name: PostgreSQL Security Invariants E2E
     runs-on: ubuntu-latest
