@@ -82,7 +82,7 @@ test("proof filename pins the exact SHA", () => {
 
 test("proof round-trip writes verifiable attestation", () => {
   const outDir = mkdtempSync(join(tmpdir(), "proof-"));
-  const fullPath = writeReleaseProof({ outDir, sha: SHA, gateProof: gateProof(), builtAt: "2026-10-04T00:00:00Z" });
+  const fullPath = writeReleaseProof({ outDir, sha: SHA, gateProof: gateProof(), attestedAt: "2026-10-04T00:00:00Z" });
   const verified = verifyReleaseProof({ outDir, sha: SHA });
   assert.equal(verified.ok, true);
   assert.equal(verified.fullPath, fullPath);
@@ -94,7 +94,7 @@ test("proof round-trip writes verifiable attestation", () => {
 
 test("tampered or missing proof fails verification", () => {
   const outDir = mkdtempSync(join(tmpdir(), "proof-tamper-"));
-  writeReleaseProof({ outDir, sha: SHA, gateProof: gateProof(), builtAt: "2026-10-04T00:00:00Z" });
+  writeReleaseProof({ outDir, sha: SHA, gateProof: gateProof(), attestedAt: "2026-10-04T00:00:00Z" });
   const fullPath = join(outDir, proofFileName(SHA));
   const body = JSON.parse(readFileSync(fullPath, "utf8"));
   body.sha = "0".repeat(40);
@@ -165,7 +165,7 @@ test("proof file content is an exact pinned snapshot (wrapper/smoke contract)", 
     job: { id: 2, name: "Apply & Verify Production Schema", conclusion: "success" },
     steps: [{ name: "Apply Migrations to Production Database", conclusion: "success" }],
   };
-  const fullPath = writeReleaseProof({ outDir, sha: SHA, gateProof: proof, builtAt: "2026-10-04T02:32:44.000Z" });
+  const fullPath = writeReleaseProof({ outDir, sha: SHA, gateProof: proof, attestedAt: "2026-10-04T02:32:44.000Z" });
   const raw = readFileSync(fullPath, "utf8");
   assert.deepEqual(JSON.parse(raw), {
     releaseGate: "mai-159-rendezvous",
@@ -173,7 +173,7 @@ test("proof file content is an exact pinned snapshot (wrapper/smoke contract)", 
     event: "push",
     branch: "main",
     gate: proof,
-    builtAt: "2026-10-04T02:32:44.000Z",
+    attestedAt: "2026-10-04T02:32:44.000Z",
   });
   assert.ok(raw.endsWith("\n"), "proof file ends with a newline");
 });
@@ -183,6 +183,7 @@ test("stale proofs are cleaned before gating; unrelated files untouched", async 
   writeFileSync(join(outDir, `release-proof-${"0".repeat(40)}.json`), "{}", "utf8");
   writeFileSync(join(outDir, "logo.png"), "binary", "utf8");
   writeFileSync(join(outDir, "release-proof-notes.txt"), "notes", "utf8");
+  writeFileSync(join(outDir, "release-proof-abc.json"), "{}", "utf8");
   const { logger } = captureLogger();
   const result = await runProductionBuild({
     env: { VERCEL_ENV: "preview" },
@@ -194,6 +195,7 @@ test("stale proofs are cleaned before gating; unrelated files untouched", async 
   assert.equal(existsSync(join(outDir, `release-proof-${"0".repeat(40)}.json`)), false);
   assert.equal(existsSync(join(outDir, "logo.png")), true);
   assert.equal(existsSync(join(outDir, "release-proof-notes.txt")), true);
+  assert.equal(existsSync(join(outDir, "release-proof-abc.json")), true, "non exact-name lookalikes are preserved");
 });
 
 test("proof exists before the app build starts (public/ packaging contract)", async () => {
@@ -227,6 +229,24 @@ test("gated build failure blocks promotion even though the proof was staged pre-
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "gated-build-failed");
-  // Failed builds are never deployed, so a staged proof file is harmless;
-  // what matters is the BLOCKED result.
+  // Failed builds are never deployed; the staged proof must be cleaned so no
+  // proof of a failed build can ever be promoted or reused.
+  assert.equal(existsSync(join(outDir, proofFileName(SHA))), false);
+});
+
+test("gated build exception cleans the staged proof and blocks", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "proof-gated-exc-"));
+  const { logger } = captureLogger();
+  const result = await runProductionBuild({
+    env: prodEnv(),
+    logger,
+    outDir,
+    spawnImpl: () => {
+      throw new Error("spawn exploded");
+    },
+    gateOptions: { fetchJson: greenGateFetch() },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "gated-build-exception");
+  assert.equal(existsSync(join(outDir, proofFileName(SHA))), false);
 });

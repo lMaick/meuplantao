@@ -14,6 +14,10 @@
  *   3. `npm run build` (retains the strict semantic prebuild gate incl. the
  *      MAI-158 `schema_contract` version assert; NEVER `next build` direct);
  *   4. re-verify the proof on disk (same SHA, successful gate attestation).
+ *      Any build failure or exception cleans the staged proof first, so no
+ *      proof of a failed build can ever be promoted or reused. Cleanup only
+ *      ever removes exact `release-proof-<40-hex>.json` names and is
+ *      best-effort; verification stays authoritative.
  *
  * The proof is served by Next/Vercel as `/release-proof-<SHA>.json` from
  * `public/`. The middleware matcher explicitly excludes that path so it
@@ -30,6 +34,9 @@ import { evaluateGate, FULL_SHA_REGEX } from "./vercel-production-gate.mjs";
 export const REPO_ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 export const PROOF_FILE_PREFIX = "release-proof-";
 export const PROOF_FILE_SUFFIX = ".json";
+// Exact proof names only: release-proof-<40-hex>.json. Never broader globs,
+// so cleanup can never touch non-generated assets.
+export const PROOF_FILE_PATTERN = /^release-proof-[0-9a-f]{40}\.json$/i;
 
 export function proofFileName(sha) {
   return `${PROOF_FILE_PREFIX}${sha.toLowerCase()}${PROOF_FILE_SUFFIX}`;
@@ -39,7 +46,8 @@ export function proofFileName(sha) {
  * Removes stale proof artifacts from a previous local invocation so a
  * failed/blocked build can never leave behind a proof that a later smoke
  * could mistake for the current release. Only exact
- * `release-proof-*.json` files directly inside outDir are touched.
+ * `release-proof-<40-hex>.json` names directly inside outDir are touched;
+ * everything else is preserved. Best-effort: verification stays authoritative.
  */
 export function removeStaleProofs({ outDir }) {
   let entries;
@@ -50,7 +58,7 @@ export function removeStaleProofs({ outDir }) {
   }
   let removed = 0;
   for (const entry of entries) {
-    if (entry.startsWith(PROOF_FILE_PREFIX) && entry.endsWith(PROOF_FILE_SUFFIX)) {
+    if (PROOF_FILE_PATTERN.test(entry)) {
       try {
         unlinkSync(join(outDir, entry));
         removed += 1;
@@ -62,7 +70,7 @@ export function removeStaleProofs({ outDir }) {
   return { removed };
 }
 
-export function writeReleaseProof({ outDir, sha, gateProof, builtAt }) {
+export function writeReleaseProof({ outDir, sha, gateProof, attestedAt }) {
   const fileName = proofFileName(sha);
   const body = {
     releaseGate: "mai-159-rendezvous",
@@ -70,7 +78,10 @@ export function writeReleaseProof({ outDir, sha, gateProof, builtAt }) {
     event: "push",
     branch: "main",
     gate: gateProof,
-    builtAt,
+    // Attestation instant: when the gate cleared this SHA, BEFORE the app
+    // build. It never claims the build finished — promotion is proven
+    // separately by build exit 0 plus the exact-deployment smoke.
+    attestedAt,
   };
   mkdirSync(outDir, { recursive: true });
   const fullPath = join(outDir, fileName);
@@ -132,21 +143,29 @@ export async function runProductionBuild(options = {}) {
     logger.log("[release-build] BLOCKED: gated production context but commit SHA is invalid; refusing proof and build.");
     return { ok: false, gated: true, reason: "invalid-sha" };
   }
-  const prePath = writeReleaseProof({ outDir, sha, gateProof: gate.proof, builtAt: nowIso() });
-  logger.log(`[release-build] proof written pre-build at ${prePath}; invoking app build.`);
+  const prePath = writeReleaseProof({ outDir, sha, gateProof: gate.proof, attestedAt: nowIso() });
+  logger.log(`[release-build] proof staged pre-build at ${prePath}; invoking app build.`);
 
-  const built = runAppBuild({ spawnImpl, logger });
-  if (!built) {
-    logger.log("[release-build] BLOCKED: gated app build failed; proof will not be promoted.");
-    return { ok: false, gated: true, reason: "gated-build-failed" };
+  try {
+    const built = runAppBuild({ spawnImpl, logger });
+    if (!built) {
+      removeStaleProofs({ outDir });
+      logger.log("[release-build] BLOCKED: gated app build failed; staged proof cleaned, nothing promoted.");
+      return { ok: false, gated: true, reason: "gated-build-failed" };
+    }
+    const verified = verifyReleaseProof({ outDir, sha });
+    if (!verified.ok) {
+      removeStaleProofs({ outDir });
+      logger.log(`[release-build] BLOCKED: proof integrity failed post-build (${verified.reason}); staged proof cleaned.`);
+      return { ok: false, gated: true, reason: verified.reason };
+    }
+  } catch (error) {
+    removeStaleProofs({ outDir });
+    logger.log(`[release-build] BLOCKED: exception during gated build (${error?.message || error}); staged proof cleaned.`);
+    return { ok: false, gated: true, reason: "gated-build-exception" };
   }
-  const verified = verifyReleaseProof({ outDir, sha });
-  if (!verified.ok) {
-    logger.log(`[release-build] BLOCKED: proof integrity failed post-build (${verified.reason}).`);
-    return { ok: false, gated: true, reason: verified.reason };
-  }
-  logger.log(`[release-build] PROCEED gated production build ok; proof verified at ${verified.fullPath}.`);
-  return { ok: true, gated: true, proofPath: verified.fullPath };
+  logger.log(`[release-build] PROCEED gated production build ok; proof verified at ${prePath}.`);
+  return { ok: true, gated: true, proofPath: prePath };
 }
 
 async function main() {

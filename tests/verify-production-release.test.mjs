@@ -45,7 +45,7 @@ function proofBody(overrides = {}) {
     event: "push",
     branch: "main",
     gate: { job: { conclusion: "success" } },
-    builtAt: "2026-10-04T02:32:44.000Z",
+    attestedAt: "2026-10-04T02:32:44.000Z",
     ...overrides,
   });
 }
@@ -170,11 +170,11 @@ test("unreachable or malformed proof blocks", async () => {
   }
 });
 
-test("proof without a parsable builtAt timestamp blocks", async () => {
-  for (const builtAt of [undefined, "", "not-a-date"]) {
+test("proof without a parsable attestedAt timestamp blocks", async () => {
+  for (const attestedAt of [undefined, "", "not-a-date"]) {
     const body = JSON.parse(proofBody());
-    if (builtAt === undefined) delete body.builtAt;
-    else body.builtAt = builtAt;
+    if (attestedAt === undefined) delete body.attestedAt;
+    else body.attestedAt = attestedAt;
     const { result } = await runSmoke(
       {},
       {
@@ -185,7 +185,7 @@ test("proof without a parsable builtAt timestamp blocks", async () => {
         }),
       },
     );
-    assert.equal(result.ok, false, `builtAt=${builtAt}`);
+    assert.equal(result.ok, false, `attestedAt=${attestedAt}`);
     assert.equal(result.reason, "proof-bad-timestamp");
   }
 });
