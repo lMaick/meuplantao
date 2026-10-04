@@ -22,15 +22,44 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluateGate, FULL_SHA_REGEX } from "./vercel-production-gate.mjs";
 
 export const REPO_ROOT = join(fileURLToPath(import.meta.url), "..", "..");
+export const PROOF_FILE_PREFIX = "release-proof-";
+export const PROOF_FILE_SUFFIX = ".json";
 
 export function proofFileName(sha) {
-  return `release-proof-${sha.toLowerCase()}.json`;
+  return `${PROOF_FILE_PREFIX}${sha.toLowerCase()}${PROOF_FILE_SUFFIX}`;
+}
+
+/**
+ * Removes stale proof artifacts from a previous local invocation so a
+ * failed/blocked build can never leave behind a proof that a later smoke
+ * could mistake for the current release. Only exact
+ * `release-proof-*.json` files directly inside outDir are touched.
+ */
+export function removeStaleProofs({ outDir }) {
+  let entries;
+  try {
+    entries = readdirSync(outDir);
+  } catch {
+    return { removed: 0 };
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (entry.startsWith(PROOF_FILE_PREFIX) && entry.endsWith(PROOF_FILE_SUFFIX)) {
+      try {
+        unlinkSync(join(outDir, entry));
+        removed += 1;
+      } catch {
+        // Best-effort: a leftover is reported via verification anyway.
+      }
+    }
+  }
+  return { removed };
 }
 
 export function writeReleaseProof({ outDir, sha, gateProof, builtAt }) {
@@ -81,6 +110,11 @@ export async function runProductionBuild(options = {}) {
     ((cmd, args, opts) => spawnSync(cmd, args, opts));
   const outDir = options.outDir || join(REPO_ROOT, "public");
   const nowIso = options.nowIso || (() => new Date().toISOString());
+
+  const cleaned = removeStaleProofs({ outDir });
+  if (cleaned.removed > 0) {
+    logger.log(`[release-build] removed ${cleaned.removed} stale proof artifact(s) before gating.`);
+  }
 
   const gate = await evaluateGate({ env, logger, ...options.gateOptions });
   if (gate.decision === "BLOCK") {

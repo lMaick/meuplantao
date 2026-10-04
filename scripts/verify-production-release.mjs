@@ -178,6 +178,10 @@ export async function verifyRelease(options = {}) {
     log("TRIAGE hypotheses (unconfirmed — inspect the deployment build logs, which record BYPASS/BLOCK/PROCEED): H1 wrapper never engaged (Vercel System Env Vars unexposed or dashboard buildCommand override — docs/DEVOPS_MIGRATIONS.md 9.4); H2 proof missing from deployment outputs (packaging/collection; post-`next build` writes inside `.next/` are not reliably packaged, hence the proof lives in `public/`). A 404 on alias and domain alike only proves the file is unreachable, it does not distinguish H1 from H2.");
     return { ok: false, reason: "proof-mismatch" };
   }
+  if (typeof proof.builtAt !== "string" || Number.isNaN(Date.parse(proof.builtAt))) {
+    log("BLOCK proof timestamp missing or unparsable (builtAt must be ISO-8601).");
+    return { ok: false, reason: "proof-bad-timestamp" };
+  }
   log(`proof ok for sha=${sha}.`);
 
   for (const path of ["/", "/sitemap.xml"]) {
