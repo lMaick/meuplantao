@@ -171,6 +171,7 @@ Por contrato de segurança (`AGENTS.md` e políticas internas):
 ### 9.2 Contrato do rendezvous (fail-closed)
 
 - Pinos: repo `lMaick/meuplantao`, workflow id `362947044` + path `.github/workflows/deploy-production.yml`, branch `main`, evento `push`, SHA = `VERCEL_GIT_COMMIT_SHA` (40-hex exato), job `Apply & Verify Production Schema` + steps `Apply Migrations to Production Database` e `Production Schema Smoke Test (Fail-Closed)`, tentativa mais recente (`run_attempt`).
+- O JOB governa em todos os estados do run: a conclusão do workflow é apenas informativa. Um run concluído como `failure` por causa do smoke pós-deploy de uma tentativa anterior, com o job de migration/schema verde para o SHA exato, permite rebuild/recuperação (incidente f85a7e6: `PROCEED run=37171319281 job=111344671671` com `run conclusion=failure`, comprovado ao vivo).
 - Produção = `VERCEL_ENV=production`, ou build Vercel (`VERCEL=1`) no ref `main` (cobre System Env Vars desligado). Qualquer outro contexto (preview, development, local, CI) desvia imediatamente sem bloquear.
 - Bloqueiam na hora: SHA ausente/malformado em produção, erro de transporte, HTTP 403/429/5xx, timeout, JSON malformado/desconhecido, job/steps ausentes ou renomeados, tentativa obsoleta, workflow/branch/evento divergente, conclusão terminal sem sucesso.
 - Espera limitada (~10 min, polls de ~45 s, orçamento folgado dentro de 60 req/hora); esgotar o orçamento bloqueia em vez de estender. Nenhum segredo é registrado (só ids, status e conclusões).

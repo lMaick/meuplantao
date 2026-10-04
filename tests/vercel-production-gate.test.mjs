@@ -183,22 +183,35 @@ test("PROCEED while run still in_progress once the pinned job is green (no deadl
   assert.equal(result.reason, "pinned-job-success-run-active");
 });
 
-test("completed failure run blocks immediately", async () => {
-  const { result, calls } = await evaluate(
-    { env: prodEnv() },
-    { runs: [okRuns([runPayload({ conclusion: "failure" })])] },
-  );
-  assert.equal(result.decision, "BLOCK");
-  assert.equal(result.reason, "run-conclusion-failure");
-  assert.ok(calls.every((u) => !u.includes("/actions/runs/")), "no jobs fetch after terminal failure");
-});
-
-test("cancelled run blocks", async () => {
+test("completed run with failed conclusion but green pinned job PROCEEDs (rebuild/recovery allowed)", async () => {
+  // Live incident shape (f85a7e6): run conclusion=failure came from the
+  // post-deploy smoke of a previous attempt; the migration/schema job is
+  // green for this exact SHA, so rebuilding must not self-lock.
   const { result } = await evaluate(
     { env: prodEnv() },
-    { runs: [okRuns([runPayload({ conclusion: "cancelled" })])] },
+    { runs: [okRuns([runPayload({ conclusion: "failure" })])], jobs: [okJobs([greenJob()])] },
+  );
+  assert.equal(result.decision, "PROCEED");
+  assert.equal(result.proof.runConclusion, "failure");
+});
+
+test("completed run with failed conclusion and red pinned job BLOCKs", async () => {
+  const { result } = await evaluate(
+    { env: prodEnv() },
+    {
+      runs: [okRuns([runPayload({ conclusion: "failure" })])],
+      jobs: [okJobs([greenJob({ status: "completed", conclusion: "failure" })])],
+    },
   );
   assert.equal(result.decision, "BLOCK");
+});
+
+test("cancelled run with green pinned job PROCEEDs (job attestation governs)", async () => {
+  const { result } = await evaluate(
+    { env: prodEnv() },
+    { runs: [okRuns([runPayload({ conclusion: "cancelled" })])], jobs: [okJobs([greenJob()])] },
+  );
+  assert.equal(result.decision, "PROCEED");
 });
 
 test("completed success run with missing pinned job blocks (workflow edited)", async () => {

@@ -90,6 +90,19 @@ test("happy path verifies deployment, proof and public pages", async () => {
   assert.equal(result.deploymentId, 987654321);
 });
 
+test("proof is verified before any page success is accepted (order pinned)", async () => {
+  const { result, calls } = await runSmoke(
+    {},
+    { deployments: [deployment()], statuses: successStatus, pages: happyPages() },
+  );
+  assert.equal(result.ok, true);
+  const proofIdx = calls.findIndex((u) => u.includes("release-proof-"));
+  const homeIdx = calls.findIndex((u) => u === "https://meuplantao.pro/");
+  const mapIdx = calls.findIndex((u) => u === "https://meuplantao.pro/sitemap.xml");
+  assert.ok(proofIdx !== -1 && homeIdx !== -1 && mapIdx !== -1, "all fetches must happen");
+  assert.ok(proofIdx < homeIdx && proofIdx < mapIdx, "page success must never precede proof verification");
+});
+
 test("failed deployment blocks", async () => {
   const { result } = await runSmoke(
     {},
