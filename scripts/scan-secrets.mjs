@@ -21,7 +21,7 @@ function git(args) {
   if (result.status !== 0) throw new Error('Git input unavailable; secret scan failed closed.');
   return result.stdout;
 }
-function scan(args) {
+function scan(args, requiredRule) {
   const reportDir = mkdtempSync(path.join(tmpdir(), 'meuplantao-scan-report-'));
   try {
     const report = path.join(reportDir, 'redacted.json');
@@ -34,6 +34,9 @@ function scan(args) {
       const findings = JSON.parse(readFileSync(report, 'utf8')) || [];
       console.log(JSON.stringify({ findings: findings.map(f => ({ rule: f.RuleID,
         file: f.File.replaceAll('\\', '/').replace(args[1].replaceAll('\\', '/') + '/', ''), line: f.StartLine })) }));
+      if (requiredRule && !findings.some(f => f.RuleID === requiredRule)) {
+        throw new Error('Required regression detector rule was not observed.');
+      }
     } else console.error('Gitleaks failed; raw diagnostic output withheld.');
     return result.status === 0 ? 0 : result.status === 1 ? 1 : 2;
   } finally {
@@ -52,6 +55,11 @@ try {
     if (scan(['dir', temporary]) !== 1) throw new Error('Provider seed detection failed.');
     writeFileSync(path.join(temporary, 'seed.txt'), 'apiKey: "' + 'deadbeef'.repeat(8) + '"\n');
     if (scan(['dir', temporary]) !== 1) throw new Error('Opaque API seed detection failed.');
+    for (const field of ['apiKey', 'api_key', 'api-key', 'accessToken', 'access_token',
+      'access-token', 'clientsecret', 'client_secret', 'client-secret']) {
+      writeFileSync(path.join(temporary, 'seed.txt'), field + ': "' + 'deadbeef'.repeat(8) + '"\n');
+      if (scan(['dir', temporary], 'opaque-api-key') !== 1) throw new Error('Opaque field spelling detection failed.');
+    }
     writeFileSync(path.join(temporary, 'seed.txt'), 'apiKey: "${POSTIZ_API_KEY}"\n');
     if (scan(['dir', temporary]) !== 0) throw new Error('Placeholder regression failed.');
     mkdirSync(path.join(temporary, 'tests'));
