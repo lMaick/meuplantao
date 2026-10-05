@@ -1,0 +1,61 @@
+title = "MeuPlantao secret prevention"
+
+[extend]
+useDefault = true
+
+# Postiz credentials do not have a provider prefix. Also cover other opaque
+# literal API keys; environment references and short offline fixtures do not match.
+[[rules]]
+id = "opaque-api-key"
+description = "Literal opaque API credential (including Postiz)"
+regex = '''(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret)["']?\s*[:=]\s*["']([a-z0-9_./+=-]{24,})["']'''
+secretGroup = 1
+keywords = ["apikey", "api_key", "api-key", "accesstoken", "access_token", "client_secret"]
+
+# The upstream minimum 64-character body can consume source code following a
+# short invalid fixture until the next END marker. Match the nearest whole block
+# even for short bodies; real PEM detection is retained (and more inclusive).
+[[rules]]
+id = "private-key"
+regex = '''(?i)-----BEGIN(?: [A-Z0-9_]+(?:-[A-Z0-9_]+)*)*? PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END(?: [A-Z0-9_]+(?:-[A-Z0-9_]+)*)*? PRIVATE KEY(?: BLOCK)?-----'''
+
+# Reviewed offline redaction fixtures only. AND binds exact synthetic values to
+# these three files; no test directory is excluded and real new tokens fail.
+[[allowlists]]
+description = "Existing deterministic offline redaction fixtures"
+# Bind to rules: global path exclusions are applied before a finding exists.
+targetRules = ["generic-api-key", "jwt", "github-pat"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)(?:tests/(?:observability|smoke-test-schema)\.test\.mjs|ops/meuplantao-dispatcher/test_dispatcher_linear_bus\.py)$''']
+regexes = [
+  '''^ghp_(?:0123456789abcdef){2}0123$''',
+  '''^sbp_abcdef1234567890$''',
+  '''^valid-key-1234?$''',
+  '''^(?:xyz|abc)123456789012345$''',
+  '''^sk-synth-0123456789abcdef$''',
+  '''^eyJzdXBlcmZha2U$''',
+  '''^ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.(?:fake_signature_part|doNotLeakThisSignaturePart)$''',
+]
+
+[[allowlists]]
+description = "Exact two/four-byte invalid PEM fixtures, not a private key header bypass"
+targetRules = ["private-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)ops/meuplantao-dispatcher/test_dispatcher_linear_bus\.py$''']
+regexes = [
+  '''^\-\-\-\-\-BEGIN\ EC\ PRIVATE\ KEY\-\-\-\-\-\\nMBLK\\n\-\-\-\-\-END\ EC\ PRIVATE\ KEY\-\-\-\-\-$''',
+  '''^\-\-\-\-\-BEGIN\ RSA\ PRIVATE\ KEY\-\-\-\-\-\ M7\ \-\-\-\-\-END\ RSA\ PRIVATE\ KEY\-\-\-\-\-$''',
+  '''^\-\-\-\-\-BEGIN\ RSA\ PRIVATE\ KEY\-\-\-\-\-\ MIIE\ \-\-\-\-\-END\ RSA\ PRIVATE\ KEY\-\-\-\-\-$''',
+  '''^\-\-\-\-\-BEGIN\ RSA\ PRIVATE\ KEY\-\-\-\-\-\\nM72X\\n\-\-\-\-\-END\ RSA\ PRIVATE\ KEY\-\-\-\-\-$''',
+  '''^\-\-\-\-\-BEGIN\ RSA\ PRIVATE\ KEY\-\-\-\-\-\\nMERR\\n\-\-\-\-\-END\ RSA\ PRIVATE\ KEY\-\-\-\-\-$''',
+]
+
+[[allowlists]]
+description = "Historical instruction placeholder only"
+targetRules = ["opaque-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)ops/marketing/postiz-config\.example\.json$''']
+regexes = ['''^YOUR_POSTIZ_API_KEY_HERE$''']

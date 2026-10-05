@@ -50,4 +50,11 @@ yarn-error.log*
 !.agents/skills/**
 
 # Marketing / Postiz Local Config (credentials must not be committed)
-ops/marketing/postiz-config.json
+ops/marketing/postiz-config.json
+ops/marketing/postiz-config.*.json
+!ops/marketing/postiz-config.example.json
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.key
