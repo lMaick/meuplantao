@@ -10,7 +10,7 @@ id = "opaque-api-key"
 description = "Literal opaque API credential (including Postiz)"
 regex = '''(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret)["']?\s*[:=]\s*["']([a-z0-9_./+=-]{24,})["']'''
 secretGroup = 1
-keywords = ["apikey", "api_key", "api-key", "accesstoken", "access_token", "client_secret"]
+keywords = ["apikey", "api_key", "api-key", "accesstoken", "access_token", "access-token", "clientsecret", "client_secret", "client-secret"]
 
 # The upstream minimum 64-character body can consume source code following a
 # short invalid fixture until the next END marker. Match the nearest whole block

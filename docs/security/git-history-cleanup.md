@@ -43,6 +43,9 @@ elimina somente a configuração operacional que já deve permanecer local.
    preservação, recuperação e regras de proteção. Obter gate explícito. Se a PR
    de prevenção for mergeada depois do backup, refazer inventário e simulação a
    partir do novo main: nunca publicar o mirror antigo por cima de commits novos.
+   Antes da publicação, repetir a prova privada de revogação: chave antiga HTTP
+   401, nova e configuração operacional HTTP 200, somente metadados. Qualquer
+   status divergente ou provedor indisponível interrompe a publicação.
 
 ## Publicação aprovada
 
