@@ -138,4 +138,3 @@ imagens como parte do retorno.
 - https://docs.postiz.com/self-host/installation/docker-compose
 - https://docs.postiz.com/self-host/installation/migration
 - https://docs.docker.com/engine/install/ubuntu/
-
