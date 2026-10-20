@@ -92,12 +92,19 @@ Baseline: `45c592171666f2a09fc702b9e3da031925875617`.
 | Pagamentos de assinatura | 13 testes reais passaram |
 | Estornos de assinatura | 6 testes reais passaram |
 | Vercel | Projeto e 3 deploys consultados; todos em `READY` |
-| Navegação visual local | Pendente: Browser recusou acesso ao serviço local |
+| Navegação visual local | Login, dashboard, cadastro de local/plantão e persistência após recarregar passaram |
 
 O aviso de depreciação `middleware` → `proxy` continua presente no build.
 Não houve migração de framework, mudança funcional, merge ou deploy.
-A suíte offline e os testes HTTP/RPC não substituem inspeção visual: login,
-cadastro de plantão e atualização da interface devem ser confirmados em uma
-superfície de navegador autorizada a acessar este ambiente local.
+A inspeção visual foi realizada no Browser montado do OpenMausBot após
+autorização do proprietário para adicionar somente `127.0.0.1:3173` e
+`127.0.0.1:54321` à configuração oficial `browserEngine.egress.allow`. A API
+aplicou a configuração sem reinício. Nenhuma proteção foi removida.
+
+Com uma conta fictícia, foram conferidos login, dashboard, cadastro de local e
+cadastro de um plantão agendado de R$ 800, das 08h às 12h. O registro permaneceu
+visível após recarregar e foi confirmado por consulta ao banco local filtrada
+pelo usuário fictício. Trata-se de uma verificação de preparação do ambiente,
+não de uma auditoria visual completa de todas as telas e dispositivos.
 
 Referência: [Supabase — desenvolvimento local](https://supabase.com/docs/guides/local-development).
