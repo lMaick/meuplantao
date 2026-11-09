@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Copy,
   Moon,
   Pencil,
   Plus,
@@ -23,7 +24,9 @@ import { Input, Select, Badge } from "@/components/ui/primitives";
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "cn";
 import { removeShift, saveShiftWithObligation, type Shift, type ShiftStatus } from "@/lib/shifts";
-import { ShiftCreationIntent, keyForShiftSave } from "@/lib/shifts/idempotency";
+import { ShiftCreationIntent, keyForShiftSave, newIdempotencyKey } from "@/lib/shifts/idempotency";
+import { BulkCreateSession, MAX_BULK_DATES, type BulkFailure } from "@/lib/shifts/bulk-create";
+import { resolveRealizedDefaults } from "@/lib/shifts/place-defaults";
 import { listObligations, type Obligation } from "@/lib/obligations";
 import type { Place } from "@/lib/places";
 import { listContacts, type Contact } from "@/lib/contacts";
@@ -57,6 +60,16 @@ const colors: Record<ShiftStatus, string> = {
   cancelado: "bg-muted text-muted-foreground border border-border/50",
 };
 
+type ShiftSaveInput = Parameters<typeof saveShiftWithObligation>[1];
+
+/** Valores copiados de um plantão existente para abrir um NOVO plantão. */
+type ShiftDraft = Pick<Shift, "place_id" | "hora_inicio" | "hora_fim" | "valor_previsto">;
+
+/** Estado de um lote que salvou só parte das datas. */
+type BulkRetry = { input: ShiftSaveInput; failed: BulkFailure[] };
+
+const formatDate = (isoDate: string) => isoDate.split("-").reverse().join("/");
+
 const iso = (d: Date) => {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -88,13 +101,39 @@ export function ShiftCalendar({
     initialOpen || query.get("novo") === "1" ? ShiftCreationIntent.begin() : null
   );
 
+  const [draft, setDraft] = useState<ShiftDraft | null>(null);
+  const [bulkRetry, setBulkRetry] = useState<BulkRetry | null>(null);
+  const bulkRef = useRef<BulkCreateSession<Shift> | null>(null);
+
+  function resetBulk() {
+    bulkRef.current?.discard();
+    bulkRef.current = null;
+    setBulkRetry(null);
+  }
+
   function openNew() {
+    resetBulk();
+    setDraft(null);
+    setIntent(ShiftCreationIntent.begin());
+    setEditing(null);
+  }
+
+  function openDuplicate(source: Shift) {
+    resetBulk();
+    setDraft({
+      place_id: source.place_id,
+      hora_inicio: source.hora_inicio,
+      hora_fim: source.hora_fim,
+      valor_previsto: source.valor_previsto,
+    });
     setIntent(ShiftCreationIntent.begin());
     setEditing(null);
   }
 
   function closeForm() {
     intent?.markCancelled();
+    resetBulk();
+    setDraft(null);
     setIntent(null);
     setEditing(false);
   }
@@ -126,7 +165,47 @@ export function ShiftCalendar({
 
   const name = (id: string) => places.find((p) => p.id === id)?.nome ?? "Local não encontrado";
 
-  async function save(data: FormData) {
+  async function runBulk(session: BulkCreateSession<Shift>, input: ShiftSaveInput, dates?: string[]) {
+    const result = await session.run(
+      ({ data: shiftDate, key }) =>
+        saveShiftWithObligation(null, {
+          ...input,
+          data: shiftDate,
+          status: "agendado",
+          data_prevista: null,
+          responsavel_place_id: null,
+          responsavel_contact_id: null,
+          idempotency_key: key,
+        }),
+      dates
+    );
+    if (result.saved.length > 0) {
+      const created = result.saved.map((item) => item.result);
+      setShifts((list) => [...created.reverse(), ...list]);
+      setSelected(result.saved.find((item) => item.data === input.data)?.data ?? result.saved[0].data);
+    }
+    if (!result.complete) {
+      setBulkRetry({ input, failed: result.failed });
+      const missing = result.failed.map((item) => formatDate(item.data)).join(", ");
+      throw new Error(
+        `${result.saved.length} plantão(ões) salvo(s). Faltam: ${missing}. ${result.failed[0].message} ` +
+          "Toque em reenviar para tentar só as datas pendentes."
+      );
+    }
+    intent?.markSucceeded();
+    resetBulk();
+    setDraft(null);
+    setIntent(null);
+    setEditing(false);
+  }
+
+  async function save(data: FormData, extraDates: string[] = []) {
+    const retrySession = bulkRef.current;
+    if (bulkRetry && retrySession?.isActive) {
+      // Reenvio: só as datas pendentes, com as mesmas chaves e o mesmo conteúdo.
+      await runBulk(retrySession, bulkRetry.input);
+      return;
+    }
     const status = String(data.get("status")) as ShiftStatus;
     const rawValue = String(data.get("valor_previsto") ?? "").trim();
     const value = rawValue === "" ? null : Number(rawValue);
@@ -158,6 +237,15 @@ export function ShiftCalendar({
     }
 
     const isNew = !editing;
+    if (isNew && status === "agendado" && extraDates.length > 0) {
+      if (extraDates.length > MAX_BULK_DATES) {
+        throw new Error(`Escolha no máximo ${MAX_BULK_DATES} datas extras.`);
+      }
+      const session = (bulkRef.current ??= new BulkCreateSession<Shift>(newIdempotencyKey));
+      session.keyFor(input.data, keyForShiftSave(true, intent) ?? undefined);
+      await runBulk(session, input, [input.data, ...extraDates]);
+      return;
+    }
     const result = await saveShiftWithObligation(editing ? editing.id : null, {
       ...input,
       data_prevista: status === "realizado" ? dueDate : null,
@@ -521,12 +609,23 @@ export function ShiftCalendar({
                           </span>
                         )}
                       </div>
-                      <Link
-                        href={`/calendario/plantao/${s.id}`}
-                        className="inline-flex min-h-[44px] items-center text-xs font-semibold text-primary hover:underline py-1"
-                      >
-                        Ver ficha
-                      </Link>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => openDuplicate(s)}
+                          aria-label={`Duplicar plantão em ${name(s.place_id)}`}
+                          className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation items-center gap-1 text-xs font-semibold text-primary hover:underline py-1"
+                        >
+                          <Copy className="size-3.5 shrink-0" />
+                          Duplicar
+                        </button>
+                        <Link
+                          href={`/calendario/plantao/${s.id}`}
+                          className="inline-flex min-h-[44px] items-center text-xs font-semibold text-primary hover:underline py-1"
+                        >
+                          Ver ficha
+                        </Link>
+                      </div>
                     </div>
                   </div>
                 );
@@ -548,6 +647,8 @@ export function ShiftCalendar({
           places={places}
           contacts={contacts}
           date={selected}
+          draft={editing ? null : draft}
+          retry={editing ? null : bulkRetry}
           close={closeForm}
           save={save}
           remove={remove}
@@ -563,6 +664,8 @@ function Form({
   places,
   contacts,
   date,
+  draft,
+  retry,
   close,
   save,
   remove,
@@ -572,8 +675,10 @@ function Form({
   places: Place[];
   contacts: Contact[];
   date: string;
+  draft: ShiftDraft | null;
+  retry: BulkRetry | null;
   close: () => void;
-  save: (data: FormData) => Promise<void>;
+  save: (data: FormData, extraDates?: string[]) => Promise<void>;
   remove: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -591,10 +696,61 @@ function Form({
   const [responsibleId, setResponsibleId] = useState(
     obligation?.responsavel_contact_id ?? obligation?.responsavel_place_id ?? ""
   );
+  const isNewShift = !shift;
+  const [placeId, setPlaceId] = useState(shift?.place_id ?? draft?.place_id ?? places[0]?.id ?? "");
+  const [dataValue, setDataValue] = useState(shift?.data ?? (draft ? "" : date));
+  const [valor, setValor] = useState(() => {
+    const existing = obligation?.valor_devido ?? shift?.valor_previsto ?? draft?.valor_previsto;
+    if (existing !== null && existing !== undefined) return String(existing);
+    if (!isNewShift) return "";
+    const defaultValue = places.find((p) => p.id === (draft?.place_id ?? places[0]?.id))?.valor_padrao;
+    return defaultValue === null || defaultValue === undefined ? "" : String(defaultValue);
+  });
+  const [dueDate, setDueDate] = useState(obligation?.data_prevista ?? "");
+  const [repeatOpen, setRepeatOpen] = useState(false);
+  const [extraDates, setExtraDates] = useState<string[]>([]);
+  const canRepeat = isNewShift && status === "agendado";
+  const locked = retry !== null;
+  const bulkLabel = retry
+    ? `Reenviar ${retry.failed.length} pendente${retry.failed.length > 1 ? "s" : ""}`
+    : canRepeat && extraDates.length > 0
+      ? `Salvar ${extraDates.length + 1} plantões`
+      : null;
 
   const isBecomingCanceled = status === "cancelado" && (!shift || shift.status !== "cancelado");
 
+  function handlePlaceChange(nextPlaceId: string) {
+    setPlaceId(nextPlaceId);
+    // Só sugere em plantão novo e nunca sobrescreve o que a pessoa digitou.
+    if (!isNewShift || valor.trim() !== "") return;
+    const suggested = places.find((p) => p.id === nextPlaceId)?.valor_padrao;
+    if (suggested !== null && suggested !== undefined) setValor(String(suggested));
+  }
+
+  function applyRealizedDefaults() {
+    const place = places.find((p) => p.id === placeId);
+    if (!place) return;
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dataValue);
+    const parsed = valor.trim() === "" ? null : Number(valor);
+    const suggestion = resolveRealizedDefaults(
+      { data: validDate ? dataValue : date, valor_previsto: parsed !== null && Number.isFinite(parsed) ? parsed : null },
+      place
+    );
+    if (valor.trim() === "" && suggestion.valor !== null) setValor(String(suggestion.valor));
+    if (!dueDate && validDate && suggestion.dataPrevista) setDueDate(suggestion.dataPrevista);
+    if (!responsibleType && !responsibleId) {
+      if (suggestion.responsavelTipo === "contato" && contacts.some((c) => c.id === suggestion.responsavelId)) {
+        setResponsibleType("contato");
+        setResponsibleId(suggestion.responsavelId);
+      } else {
+        setResponsibleType("local");
+        setResponsibleId(place.id);
+      }
+    }
+  }
+
   function handleStatusChange(newStatus: ShiftStatus) {
+    if (newStatus === "realizado" && status !== "realizado") applyRealizedDefaults();
     setStatus(newStatus);
     if (newStatus !== "cancelado") {
       setConfirmCancel(false);
@@ -626,7 +782,7 @@ function Form({
               event.currentTarget.querySelectorAll<HTMLElement>(
                 "button:not(:disabled), input:not(:disabled), select:not(:disabled)"
               )
-            );
+            ).filter((control) => !control.closest("[inert]"));
             const first = controls[0];
             const last = controls[controls.length - 1];
             if (event.shiftKey && document.activeElement === first) {
@@ -647,7 +803,7 @@ function Form({
             return;
           }
           const data = new FormData(event.currentTarget);
-          void run(() => save(data));
+          void run(() => save(data, canRepeat ? extraDates : []));
         }}
         className="max-h-[90dvh] overflow-y-auto w-full max-w-md rounded-t-2xl border border-border bg-card p-5 sm:p-6 shadow-xl text-card-foreground sm:rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]"
       >
@@ -669,7 +825,7 @@ function Form({
           </button>
         </div>
 
-        <fieldset disabled={busy} className="mt-5 grid gap-5">
+        <fieldset disabled={busy || locked} className="mt-5 grid gap-5">
           <div className="grid gap-3">
             <div>
               <h3 className="text-sm font-semibold text-foreground">Quando e onde?</h3>
@@ -690,7 +846,12 @@ function Form({
                 </Link>
               </div>
             ) : (
-              <Select name="place_id" autoFocus required defaultValue={shift?.place_id ?? places[0]?.id}>
+              <Select name="place_id"
+                autoFocus
+                required
+                value={placeId}
+                onChange={(event) => handlePlaceChange(event.target.value)}
+              >
                 {places.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.nome}
@@ -702,7 +863,11 @@ function Form({
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
             <span>Data</span>
-            <Input name="data" type="date" required defaultValue={shift?.data ?? date} />
+            <Input name="data" type="date"
+              required
+              value={dataValue}
+              onChange={(event) => setDataValue(event.target.value)}
+            />
           </label>
 
           <div className="grid grid-cols-2 gap-3">
@@ -712,7 +877,7 @@ function Form({
                 name="hora_inicio"
                 type="time"
                 required
-                defaultValue={shift?.hora_inicio}
+                defaultValue={shift?.hora_inicio ?? draft?.hora_inicio}
               />
             </label>
             <label className="grid gap-1.5 text-sm font-medium text-foreground">
@@ -721,7 +886,7 @@ function Form({
                 name="hora_fim"
                 type="time"
                 required
-                defaultValue={shift?.hora_fim}
+                defaultValue={shift?.hora_fim ?? draft?.hora_fim}
               />
             </label>
           </div>
@@ -744,7 +909,8 @@ function Form({
               min="0"
               step="0.01"
               placeholder="0,00"
-              defaultValue={obligation?.valor_devido ?? shift?.valor_previsto ?? ""}
+              value={valor}
+              onChange={(event) => setValor(event.target.value)}
             />
           </label>
 
@@ -759,7 +925,8 @@ function Form({
               name="data_prevista"
               type="date"
               required
-              defaultValue={obligation?.data_prevista ?? ""}
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
             />
           </label>
 
@@ -905,6 +1072,75 @@ function Form({
           </div>
         </fieldset>
 
+        {retry && (
+          <div
+            role="status"
+            className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-sm text-amber-950 dark:text-amber-100"
+          >
+            <p className="font-semibold">Datas pendentes</p>
+            <ul className="mt-2 flex flex-wrap gap-1.5">
+              {retry.failed.map((item) => (
+                <li
+                  key={item.data}
+                  className="rounded-md border border-amber-600/40 bg-background px-2 py-1 text-xs font-semibold text-foreground"
+                >
+                  {formatDate(item.data)}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs leading-relaxed">
+              O que já foi salvo não será duplicado. Reenviar usa as mesmas chaves, só para estas datas.
+            </p>
+          </div>
+        )}
+
+        {canRepeat && !retry && (
+          <fieldset disabled={busy} className="mt-5 border-t border-border pt-4">
+            <button
+              type="button"
+              id="repeat-toggle"
+              aria-expanded={repeatOpen}
+              aria-controls="repeat-panel"
+              onClick={() => setRepeatOpen((value) => !value)}
+              className="flex min-h-[44px] w-full cursor-pointer touch-manipulation items-center justify-between gap-2 rounded-lg text-left text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <span>
+                Repetir em outras datas
+                {extraDates.length > 0 && (
+                  <span className="ml-2 rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-bold text-primary">
+                    {extraDates.length}
+                  </span>
+                )}
+              </span>
+              <ChevronRight
+                aria-hidden="true"
+                className={cn(
+                  "size-4 shrink-0 text-muted-foreground transition-transform duration-[190ms] ease-out motion-reduce:transition-none",
+                  repeatOpen && "rotate-90"
+                )}
+              />
+            </button>
+            <div
+              id="repeat-panel"
+              role="region"
+              aria-labelledby="repeat-toggle"
+              className={cn(
+                "grid transition-[grid-template-rows,opacity] duration-[190ms] ease-out motion-reduce:transition-none",
+                repeatOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+              )}
+            >
+              <div className="overflow-hidden" inert={!repeatOpen}>
+                <RepeatDatesPicker
+                  mainDate={dataValue}
+                  selected={extraDates}
+                  onChange={setExtraDates}
+                  max={MAX_BULK_DATES}
+                />
+              </div>
+            </div>
+          </fieldset>
+        )}
+
         {isBecomingCanceled && confirmCancel && (
           <div
             role="alert"
@@ -982,19 +1218,146 @@ function Form({
                 >
                   Fechar
                 </Button>
-                <Button
-                  type="submit"
-                  size="default"
-                  disabled={busy}
-                  className="min-h-[44px] w-full sm:w-auto font-semibold"
-                >
-                  {busy ? "Salvando..." : "Salvar alterações"}
-                </Button>
+                {bulkLabel ? (
+                  <Button
+                    type="submit"
+                    size="default"
+                    disabled={busy}
+                    className="min-h-[44px] w-full sm:w-auto font-semibold"
+                  >
+                    {busy ? "Salvando..." : bulkLabel}
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    size="default"
+                    disabled={busy}
+                    className="min-h-[44px] w-full sm:w-auto font-semibold"
+                  >
+                    {busy ? "Salvando..." : "Salvar alterações"}
+                  </Button>
+                )}
               </>
             )}
           </div>
         </div>
       </form>
+    </div>
+  );
+}
+
+function RepeatDatesPicker({
+  mainDate,
+  selected,
+  onChange,
+  max,
+}: {
+  mainDate: string;
+  selected: string[];
+  onChange: (dates: string[]) => void;
+  max: number;
+}) {
+  const [month, setMonth] = useState(() => {
+    const base = /^\d{4}-\d{2}-\d{2}$/.test(mainDate) ? new Date(`${mainDate}T12:00:00`) : new Date();
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+
+  const cells = useMemo(() => {
+    const start = month.getDay();
+    const count = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+    return Array.from({ length: Math.ceil((start + count) / 7) * 7 }, (_, i) =>
+      i < start || i >= start + count ? null : new Date(month.getFullYear(), month.getMonth(), i - start + 1)
+    );
+  }, [month]);
+
+  const atLimit = selected.length >= max;
+
+  function toggle(date: string) {
+    onChange(
+      selected.includes(date)
+        ? selected.filter((item) => item !== date)
+        : atLimit
+          ? selected
+          : [...selected, date].sort()
+    );
+  }
+
+  return (
+    <div className="pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          aria-label="Mês anterior das datas extras"
+          onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+          className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ChevronLeft className="size-4" />
+        </button>
+        <p className="text-sm font-semibold text-foreground" aria-live="polite">
+          {months[month.getMonth()]} {month.getFullYear()}
+        </p>
+        <button
+          type="button"
+          aria-label="Próximo mês das datas extras"
+          onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
+          className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ChevronRight className="size-4" />
+        </button>
+      </div>
+
+      <div className="mt-1 grid grid-cols-7 text-center text-xs font-bold uppercase text-muted-foreground">
+        {weekShort.map((day, index) => (
+          <span key={index} className="py-1">
+            {day}
+          </span>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((day, index) => {
+          if (!day) return <div key={`blank-${index}`} className="min-h-[44px]" aria-hidden="true" />;
+          const date = iso(day);
+          const isMain = date === mainDate;
+          const isOn = selected.includes(date);
+          return (
+            <button
+              key={date}
+              type="button"
+              disabled={isMain || (!isOn && atLimit)}
+              aria-pressed={isMain ? true : isOn}
+              aria-label={`${day.getDate()} de ${months[day.getMonth()]}${isMain ? ", data principal" : ""}`}
+              onClick={() => toggle(date)}
+              className={cn(
+                "min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation rounded-lg text-sm font-medium transition-colors duration-[190ms] motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed",
+                isMain
+                  ? "border border-primary/50 bg-primary/10 font-bold text-foreground"
+                  : isOn
+                    ? "bg-primary font-bold text-primary-foreground"
+                    : "text-foreground hover:bg-muted disabled:text-muted-foreground disabled:opacity-60"
+              )}
+            >
+              {day.getDate()}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-2 flex min-h-[44px] items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span aria-live="polite">
+          {selected.length === 0
+            ? "Toque nos dias para repetir este plantão."
+            : `${selected.length} de ${max} datas extras${atLimit ? " (limite atingido)" : ""}`}
+        </span>
+        {selected.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="inline-flex min-h-[44px] cursor-pointer items-center px-2 font-semibold text-primary hover:underline"
+          >
+            Limpar
+          </button>
+        )}
+      </div>
     </div>
   );
 }
