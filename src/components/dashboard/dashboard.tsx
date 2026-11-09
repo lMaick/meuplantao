@@ -37,6 +37,7 @@ import {
 } from "@/lib/finance-filters";
 import { computeDashboardAlerts } from "@/lib/dashboard/alerts";
 import { DashboardAlerts } from "@/components/dashboard/dashboard-alerts";
+import { PendingConfirmation } from "@/components/dashboard/pending-confirmation";
 import { cn } from "cn";
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -84,6 +85,17 @@ export function Dashboard() {
   useEffect(() => {
     void load();
   }, []);
+
+  // Plantão confirmado/cancelado no cartão: atualiza o item na hora e recarrega
+  // as obrigações (criadas pelo RPC) sem voltar ao skeleton.
+  async function handleShiftSaved(saved: Shift) {
+    setShifts((current) => current.map((shift) => (shift.id === saved.id ? saved : shift)));
+    try {
+      setObligations(await listObligations());
+    } catch {
+      void load();
+    }
+  }
 
   useEffect(() => {
     setOnboardingDismissed(window.localStorage.getItem("meuplantao:onboarding-dismissed") === "true");
@@ -280,6 +292,13 @@ export function Dashboard() {
         )}
 
         <DashboardAlerts summary={alertsSummary} placeId={placeId} />
+
+        <PendingConfirmation
+          shifts={shifts}
+          places={places}
+          todayIso={bahiaDate()}
+          onSaved={(saved) => void handleShiftSaved(saved)}
+        />
 
         <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {kpis.map(([label, value, Icon]) => {
