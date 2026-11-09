@@ -37,6 +37,7 @@ import {
 } from "@/lib/finance-filters";
 import { computeDashboardAlerts } from "@/lib/dashboard/alerts";
 import { DashboardAlerts } from "@/components/dashboard/dashboard-alerts";
+import { PendingConfirmation } from "@/components/dashboard/pending-confirmation";
 import { cn } from "cn";
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -84,6 +85,17 @@ export function Dashboard() {
   useEffect(() => {
     void load();
   }, []);
+
+  // Plantão confirmado/cancelado no cartão: atualiza o item na hora e recarrega
+  // as obrigações (criadas pelo RPC) sem voltar ao skeleton.
+  async function handleShiftSaved(saved: Shift) {
+    setShifts((current) => current.map((shift) => (shift.id === saved.id ? saved : shift)));
+    try {
+      setObligations(await listObligations());
+    } catch {
+      void load();
+    }
+  }
 
   useEffect(() => {
     setOnboardingDismissed(window.localStorage.getItem("meuplantao:onboarding-dismissed") === "true");
@@ -261,25 +273,32 @@ export function Dashboard() {
               Explorar sozinho
             </button>
             <div className="max-w-2xl pr-24">
-              <p className="text-xs font-semibold uppercase tracking-wider text-primary">Primeiro passo · 1 de 2</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-primary">Primeiro passo</p>
               <h2 id="first-value-title" className="mt-1.5 text-xl font-bold tracking-tight text-foreground">
                 Vamos registrar seu primeiro plantão?
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                Comece cadastrando o hospital ou local onde você trabalha. Em seguida, informe um plantão para acompanhar o valor previsto e o saldo a receber.
+                Lance o plantão e crie o local ali mesmo, sem trocar de tela. Se quiser, lance também os plantões dos últimos 3 meses e veja quanto você tem a receber.
               </p>
               <Link
-                href="/locais"
+                href="/calendario?novo=1"
                 className={cn(buttonVariants({ variant: "default", size: "default" }), "mt-4 min-h-[44px] rounded-xl")}
               >
                 <Hospital className="mr-2 size-4" />
-                Cadastrar primeiro local
+                Lançar meu primeiro plantão
               </Link>
             </div>
           </section>
         )}
 
         <DashboardAlerts summary={alertsSummary} placeId={placeId} />
+
+        <PendingConfirmation
+          shifts={shifts}
+          places={places}
+          todayIso={bahiaDate()}
+          onSaved={(saved) => void handleShiftSaved(saved)}
+        />
 
         <section className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {kpis.map(([label, value, Icon]) => {

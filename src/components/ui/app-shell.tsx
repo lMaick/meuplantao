@@ -160,6 +160,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
       "/privacidade",
       "/termos",
       "/suporte",
+      "/descadastrar",
     ].includes(pathname)
   ) {
     return <>{children}</>;

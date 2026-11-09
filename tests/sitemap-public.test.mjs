@@ -56,7 +56,7 @@ test("MAI-155: GET /sitemap.xml anônimo chega ao handler SEM sessão e SEM 307/
   // Allowlist M2M da MAI-151 intacta: /sitemap.xml NÃO entra na lista M2M.
   assert.deepEqual(
     [...MACHINE_TO_MACHINE_PATHS].sort(),
-    ["/api/csp-report", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
+    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
     "allowlist M2M exata, sem ampliação",
   );
   assert.deepEqual([...PUBLIC_SEO_PATHS], ["/sitemap.xml"], "allowlist SEO pública exata: só /sitemap.xml");
