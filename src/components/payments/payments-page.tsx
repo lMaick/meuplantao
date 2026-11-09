@@ -13,6 +13,7 @@ import {
   DollarSign,
   Download,
   FilterX,
+  MessageCircle,
   Moon,
   Plus,
   Sun,
@@ -25,6 +26,7 @@ import { listShifts, type Shift } from "@/lib/shifts";
 import { listObligations, type Obligation, isOverdue } from "@/lib/obligations";
 import { listPlaces, type Place } from "@/lib/places";
 import { listContacts, type Contact } from "@/lib/contacts";
+import { buildChargeMessage, buildWhatsAppUrl, normalizeBrazilianPhone } from "@/lib/contacts/whatsapp";
 import { cn } from "cn";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input, Select, FinancialStatusBadge } from "@/components/ui/primitives";
@@ -40,6 +42,9 @@ const formatDate = (value: string) =>
   new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`));
 const bahiaTodayIso = () =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(new Date());
+// Dias corridos entre a data prevista (ISO) e hoje em Bahia, em UTC puro para não depender do fuso local.
+const daysSinceIso = (isoDate: string) =>
+  Math.round((Date.parse(`${bahiaTodayIso()}T00:00:00Z`) - Date.parse(`${isoDate}T00:00:00Z`)) / 86_400_000);
 
 type Filter = "todos" | "atrasados" | "a-vencer" | "pagos";
 
@@ -48,6 +53,7 @@ type Row = {
   obligation: Obligation;
   placeName: string;
   responsible: string;
+  whatsappPhone: string | null;
   expected: number;
   received: number;
   balance: number;
@@ -132,6 +138,7 @@ export default function PaymentsPage() {
   const rows = useMemo<Row[]>(() => {
     const placeNames = new Map(places.map((p) => [p.id, p.nome]));
     const contactNames = new Map(contacts.map((c) => [c.id, c.nome]));
+    const contactPhones = new Map(contacts.map((c) => [c.id, normalizeBrazilianPhone(c.telefone)]));
 
     return shifts
       .filter((s) => s.status === "realizado" && matchesShift(s, period, placeId))
@@ -151,6 +158,9 @@ export default function PaymentsPage() {
             responsible: obligation.responsavel_contact_id
               ? `Contato · ${contactNames.get(obligation.responsavel_contact_id) ?? "não informado"}`
               : `Local · ${placeNames.get(obligation.responsavel_place_id ?? "") ?? "não informado"}`,
+            whatsappPhone: obligation.responsavel_contact_id
+              ? contactPhones.get(obligation.responsavel_contact_id) ?? null
+              : null,
             expected,
             received: Math.max(0, expected - balance),
             balance,
@@ -620,8 +630,20 @@ export default function PaymentsPage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {visible.map((row) => {
-              const { shift, obligation, placeName, responsible, expected, received, balance, isOverdue: overdue } = row;
+              const { shift, obligation, placeName, responsible, whatsappPhone, expected, received, balance, isOverdue: overdue } = row;
               const isPaid = balance === 0;
+              const chargeUrl =
+                overdue && whatsappPhone
+                  ? buildWhatsAppUrl(
+                      whatsappPhone,
+                      buildChargeMessage({
+                        placeName,
+                        shiftDate: shift.data,
+                        balance,
+                        daysOverdue: daysSinceIso(obligation.data_prevista),
+                      }),
+                    )
+                  : null;
 
               return (
                 <article
@@ -701,13 +723,26 @@ export default function PaymentsPage() {
                         </p>
                       </div>
 
-                      <Link
-                        className="inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-primary hover:underline"
-                        href={`/calendario/plantao/${shift.id}`}
-                      >
-                        <span>Ver plantão</span>
-                        <ArrowUpRight className="size-4" />
-                      </Link>
+                      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+                        {chargeUrl && (
+                          <a
+                            className="inline-flex min-h-[44px] min-w-[44px] items-center gap-1.5 rounded-md text-sm font-semibold text-emerald-700 transition-colors hover:underline dark:text-emerald-400"
+                            href={chargeUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <MessageCircle className="size-4 shrink-0" aria-hidden="true" />
+                            <span>Cobrar no WhatsApp</span>
+                          </a>
+                        )}
+                        <Link
+                          className="inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-primary hover:underline"
+                          href={`/calendario/plantao/${shift.id}`}
+                        >
+                          <span>Ver plantão</span>
+                          <ArrowUpRight className="size-4" />
+                        </Link>
+                      </div>
                     </div>
 
                     {/* Registered Payments History */}
