@@ -273,19 +273,19 @@ export function Dashboard() {
               Explorar sozinho
             </button>
             <div className="max-w-2xl pr-24">
-              <p className="text-xs font-semibold uppercase tracking-wider text-primary">Primeiro passo · 1 de 2</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-primary">Primeiro passo</p>
               <h2 id="first-value-title" className="mt-1.5 text-xl font-bold tracking-tight text-foreground">
                 Vamos registrar seu primeiro plantão?
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                Comece cadastrando o hospital ou local onde você trabalha. Em seguida, informe um plantão para acompanhar o valor previsto e o saldo a receber.
+                Lance o plantão e crie o local ali mesmo, sem trocar de tela. Se quiser, lance também os plantões dos últimos 3 meses e veja quanto você tem a receber.
               </p>
               <Link
-                href="/locais"
+                href="/calendario?novo=1"
                 className={cn(buttonVariants({ variant: "default", size: "default" }), "mt-4 min-h-[44px] rounded-xl")}
               >
                 <Hospital className="mr-2 size-4" />
-                Cadastrar primeiro local
+                Lançar meu primeiro plantão
               </Link>
             </div>
           </section>

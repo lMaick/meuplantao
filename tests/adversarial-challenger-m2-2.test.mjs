@@ -575,14 +575,15 @@ describe("Empirical Stress-Testing: EmptyState Primitives & CTA Reachability", (
   test("[CH-M2-13] Calendar page empty states provide valid navigation actions", () => {
     const calendarPageSource = fs.readFileSync("src/app/calendario/page.tsx", "utf8");
 
-    // Zero places state
+    // Zero places: no longer a dead-end EmptyState; the calendar renders and the
+    // shift form creates the first place inline (primeiro-uso).
     assert.ok(
-      calendarPageSource.includes('title="Cadastre seu primeiro local"'),
-      "Calendar page must render rich EmptyState when 0 places exist"
+      !calendarPageSource.includes('title="Cadastre seu primeiro local"'),
+      "Calendar page must not block the calendar behind a /locais EmptyState when 0 places exist"
     );
     assert.ok(
-      calendarPageSource.includes('href="/locais"'),
-      "Zero places EmptyState must direct user to /locais"
+      !/places\.length\s*===\s*0/.test(calendarPageSource),
+      "Calendar page must render ShiftCalendar even without places"
     );
 
     // Error state

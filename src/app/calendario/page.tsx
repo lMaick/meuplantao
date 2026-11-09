@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AlertCircle, MapPin, Plus } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { ShiftCalendar } from "@/components/shifts/shift-calendar";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { CalendarSkeleton } from "@/components/ui/skeletons";
 import { EmptyState } from "@/components/ui/empty-state";
 import { listPlaces, type Place } from "@/lib/places";
@@ -53,35 +53,6 @@ export default function CalendarPage() {
             <Button onClick={() => void load()} variant="default">
               Tentar novamente
             </Button>
-          }
-        />
-      </main>
-    );
-  }
-
-  if (data.places.length === 0) {
-    return (
-      <main className="mx-auto max-w-xl px-4 py-12 sm:px-6">
-        <EmptyState
-          icon={MapPin}
-          title="Cadastre seu primeiro local"
-          description="Para criar um plantão, primeiro informe onde você trabalha. Depois, volte ao calendário para escolher a data e o horário."
-          action={
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Link
-                href="/locais"
-                className={buttonVariants({ variant: "default" })}
-              >
-                <Plus className="size-4" />
-                Cadastrar local de trabalho
-              </Link>
-              <Link
-                href="/dashboard"
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Voltar ao resumo
-              </Link>
-            </div>
           }
         />
       </main>

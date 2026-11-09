@@ -29,6 +29,8 @@ import { BulkCreateSession, MAX_BULK_DATES, type BulkFailure } from "@/lib/shift
 import { resolveRealizedDefaults } from "@/lib/shifts/place-defaults";
 import { listObligations, type Obligation } from "@/lib/obligations";
 import type { Place } from "@/lib/places";
+import { InlinePlaceForm } from "@/components/shifts/inline-place-form";
+import { InlineContactForm } from "@/components/shifts/inline-contact-form";
 import { listContacts, type Contact } from "@/lib/contacts";
 
 const months = [
@@ -79,7 +81,7 @@ const iso = (d: Date) => {
 
 export function ShiftCalendar({
   initialShifts,
-  places,
+  places: initialPlaces,
   initialOpen = false,
 }: {
   initialShifts: Shift[];
@@ -91,6 +93,8 @@ export function ShiftCalendar({
   const [cursor, setCursor] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const [selected, setSelected] = useState(iso(today));
   const [shifts, setShifts] = useState(initialShifts);
+  // Locais criados dentro do formulário entram aqui sem recarregar a página.
+  const [places, setPlaces] = useState(initialPlaces);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [obligations, setObligations] = useState<Obligation[]>([]);
   const [filter, setFilter] = useState<ShiftStatus | "todos">("todos");
@@ -163,6 +167,14 @@ export function ShiftCalendar({
     .filter((s) => s.data === selected)
     .sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
 
+  function addPlace(place: Place) {
+    setPlaces((list) => (list.some((p) => p.id === place.id) ? list : [...list, place].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))));
+  }
+
+  function addContact(contact: Contact) {
+    setContacts((list) => (list.some((c) => c.id === contact.id) ? list : [...list, contact]));
+  }
+
   const name = (id: string) => places.find((p) => p.id === id)?.nome ?? "Local não encontrado";
 
   async function runBulk(session: BulkCreateSession<Shift>, input: ShiftSaveInput, dates?: string[]) {
@@ -234,6 +246,10 @@ export function ShiftCalendar({
       (value === null || !Number.isFinite(value) || value < 0 || !dueDate || !validResponsible)
     ) {
       throw new Error("Plantão realizado exige valor, data prevista e responsável.");
+    }
+
+    if (!places.some((place) => place.id === input.place_id)) {
+      throw new Error("Escolha ou salve o local do plantão antes de continuar.");
     }
 
     const isNew = !editing;
@@ -646,6 +662,8 @@ export function ShiftCalendar({
           obligation={editing ? obligations.find((item) => item.shift_id === editing.id) : undefined}
           places={places}
           contacts={contacts}
+          onPlaceCreated={addPlace}
+          onContactCreated={addContact}
           date={selected}
           draft={editing ? null : draft}
           retry={editing ? null : bulkRetry}
@@ -663,6 +681,8 @@ function Form({
   obligation,
   places,
   contacts,
+  onPlaceCreated,
+  onContactCreated,
   date,
   draft,
   retry,
@@ -674,6 +694,8 @@ function Form({
   obligation?: Obligation;
   places: Place[];
   contacts: Contact[];
+  onPlaceCreated: (place: Place) => void;
+  onContactCreated: (contact: Contact) => void;
   date: string;
   draft: ShiftDraft | null;
   retry: BulkRetry | null;
@@ -707,6 +729,9 @@ function Form({
     return defaultValue === null || defaultValue === undefined ? "" : String(defaultValue);
   });
   const [dueDate, setDueDate] = useState(obligation?.data_prevista ?? "");
+  const [addingPlace, setAddingPlace] = useState(false);
+  const [addingContact, setAddingContact] = useState(false);
+  const showPlaceForm = places.length === 0 || addingPlace;
   const [repeatOpen, setRepeatOpen] = useState(false);
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const canRepeat = isNewShift && status === "agendado";
@@ -725,6 +750,22 @@ function Form({
     if (!isNewShift || valor.trim() !== "") return;
     const suggested = places.find((p) => p.id === nextPlaceId)?.valor_padrao;
     if (suggested !== null && suggested !== undefined) setValor(String(suggested));
+  }
+
+  function handlePlaceCreated(place: Place) {
+    onPlaceCreated(place);
+    setPlaceId(place.id);
+    setAddingPlace(false);
+    if (isNewShift && valor.trim() === "" && place.valor_padrao !== null && place.valor_padrao !== undefined) {
+      setValor(String(place.valor_padrao));
+    }
+  }
+
+  function handleContactCreated(contact: Contact) {
+    onContactCreated(contact);
+    setResponsibleType("contato");
+    setResponsibleId(contact.id);
+    setAddingContact(false);
   }
 
   function applyRealizedDefaults() {
@@ -833,33 +874,41 @@ function Form({
                 Informe o local e o horário do plantão.
               </p>
             </div>
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Local</span>
-            {places.length === 0 ? (
-              <div className="space-y-1">
-                <p className="text-xs text-destructive">Nenhum local cadastrado.</p>
-                <Link
-                  href="/locais"
-                  className="inline-block text-xs font-semibold text-primary underline"
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-place-select">Local</label>
+            {places.length > 0 && (
+              <div className="flex items-start gap-2">
+                <Select name="place_id"
+                  id="shift-place-select"
+                  autoFocus
+                  required
+                  value={placeId}
+                  onChange={(event) => handlePlaceChange(event.target.value)}
                 >
-                  Cadastrar local agora
-                </Link>
+                  {places.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome}
+                    </option>
+                  ))}
+                </Select>
+                {!addingPlace && (
+                  <button
+                    type="button"
+                    onClick={() => setAddingPlace(true)}
+                    className="inline-flex min-h-[44px] min-w-[44px] shrink-0 cursor-pointer touch-manipulation items-center rounded-lg px-2 text-sm font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    + Novo local
+                  </button>
+                )}
               </div>
-            ) : (
-              <Select name="place_id"
-                autoFocus
-                required
-                value={placeId}
-                onChange={(event) => handlePlaceChange(event.target.value)}
-              >
-                {places.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nome}
-                  </option>
-                ))}
-              </Select>
             )}
-          </label>
+            {showPlaceForm && (
+              <InlinePlaceForm
+                onCreated={handlePlaceCreated}
+                onCancel={places.length > 0 ? () => setAddingPlace(false) : undefined}
+              />
+            )}
+          </div>
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
             <span>Data</span>
@@ -937,8 +986,10 @@ function Form({
               value={responsibleType}
               required
               onChange={(event) => {
-                setResponsibleType(event.target.value as "" | "local" | "contato");
+                const nextType = event.target.value as "" | "local" | "contato";
+                setResponsibleType(nextType);
                 setResponsibleId("");
+                setAddingContact(nextType === "contato" && contacts.length === 0);
               }}
             >
               <option value="">Selecione...</option>
@@ -974,6 +1025,22 @@ function Form({
               ))}
             </Select>
           </label>
+
+          {!addingContact ? (
+            <button
+              type="button"
+              onClick={() => {
+                setResponsibleType("contato");
+                setResponsibleId("");
+                setAddingContact(true);
+              }}
+              className="inline-flex min-h-[44px] w-fit cursor-pointer touch-manipulation items-center rounded-lg px-2 text-sm font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              + Novo pagador
+            </button>
+          ) : (
+            <InlineContactForm onCreated={handleContactCreated} onCancel={() => setAddingContact(false)} />
+          )}
             </div>
           )}
 
