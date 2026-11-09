@@ -75,14 +75,14 @@ test("MAI-160: allowlist PUBLIC_CONTENT_PATHS exata e classificação antes do A
   // Allowlists existentes intactas: conteúdo público é lista separada.
   assert.deepEqual(
     [...MACHINE_TO_MACHINE_PATHS].sort(),
-    ["/api/csp-report", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
+    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
     "allowlist M2M exata, sem ampliação",
   );
   assert.deepEqual([...PUBLIC_SEO_PATHS], ["/sitemap.xml"], "allowlist SEO pública exata: só /sitemap.xml");
   assert.deepEqual(
     [...PUBLIC_CONTENT_PATHS].sort(),
-    ["/", "/privacidade", "/suporte", "/termos"].sort(),
-    "allowlist de conteúdo público exata: só /, /privacidade, /termos, /suporte",
+    ["/", "/descadastrar", "/privacidade", "/suporte", "/termos"].sort(),
+    "allowlist de conteúdo público exata: só /, /privacidade, /termos, /suporte, /descadastrar",
   );
 
   for (const path of ["/", "/privacidade", "/termos", "/suporte"]) {
@@ -150,6 +150,12 @@ test("MAI-160: near-match e rotas privadas continuam passando pelo Auth e proteg
     "//suporte",
     "/api/privacidade",
     "/pt/privacidade",
+    "/descadastrar/",
+    "/descadastrar-extra",
+    "/api/cron",
+    "/api/cron/email-alerts/extra",
+    "/api/email",
+    "/api/email/unsubscribe/extra",
   ];
   for (const path of nearMatches) {
     assert.equal(isPublicContentRoute(path), false, `${path} NÃO deve ser conteúdo público`);
