@@ -54,7 +54,7 @@ test("MAI-151: rotas M2M chegam ao handler SEM chamar auth.getUser", async () =>
   assert.ok(!sessionSource.includes('startsWith("/api")'), "sem bypass genérico /api/* na sessão");
   assert.deepEqual(
     [...MACHINE_TO_MACHINE_PATHS].sort(),
-    ["/api/csp-report", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
+    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
     "allowlist M2M exata, sem ampliação",
   );
 

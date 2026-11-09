@@ -27,6 +27,10 @@ export const MACHINE_TO_MACHINE_PATHS = [
   "/api/webhooks/mercadopago",
   "/api/webhooks/mercadopago/ipn",
   "/api/csp-report",
+  // Avisos por e-mail: o cron é autenticado por `Authorization: Bearer CRON_SECRET`
+  // (fail-closed no handler) e o descadastro por token opaco no POST (RFC 8058).
+  "/api/cron/email-alerts",
+  "/api/email/unsubscribe",
 ] as const;
 
 /**
@@ -53,7 +57,7 @@ export function isPublicSeoRoute(pathname: string): boolean {
   return (PUBLIC_SEO_PATHS as readonly string[]).includes(pathname);
 }
 
-export const PUBLIC_CONTENT_PATHS = ["/", "/privacidade", "/termos", "/suporte"] as const;
+export const PUBLIC_CONTENT_PATHS = ["/", "/privacidade", "/termos", "/suporte", "/descadastrar"] as const;
 
 /**
  * MAI-160: páginas públicas de conteúdo servidas sem sessão (não precisam de
