@@ -250,7 +250,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
             <div>
               <p className="font-semibold">
                 {trial.isExpired
-                  ? "Seu período de teste gratuito de 14 dias encerrou."
+                  ? "Seu período de teste gratuito de 30 dias encerrou."
                   : `Você tem ${trial.daysRemaining} ${
                       trial.daysRemaining === 1 ? "dia restante" : "dias restantes"
                     } de teste gratuito.`}

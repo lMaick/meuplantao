@@ -38,7 +38,7 @@ function compliantSecurityMocks(options = {}) {
     effectiveColumnPrivs: c.effectiveColumnPrivs || [],
   };
 
-  const contractVersion = options.contractVersion !== undefined ? options.contractVersion : "1.0.0";
+  const contractVersion = options.contractVersion !== undefined ? options.contractVersion : "1.1.0";
   const contractMissingTable = options.contractMissingTable === true;
   const contractMissingRow = options.contractMissingRow === true;
 
@@ -569,7 +569,7 @@ test("smoke-test-schema: node-postgres direct pg_proc verification (7 mandatory 
           if (mockOptions.contractMissingRow) {
             return { rows: [] };
           }
-          const version = mockOptions.contractVersion !== undefined ? mockOptions.contractVersion : "1.0.0";
+          const version = mockOptions.contractVersion !== undefined ? mockOptions.contractVersion : "1.1.0";
           return {
             rows: [
               {

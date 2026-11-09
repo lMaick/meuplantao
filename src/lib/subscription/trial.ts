@@ -1,6 +1,6 @@
 import type { TrialInfo } from "./types";
 
-export const TRIAL_DURATION_DAYS = 14;
+export const TRIAL_DURATION_DAYS = 30;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Preço mensal do plano Pro (R$) — cada pagamento aprovado adiciona vigência. */
@@ -164,7 +164,7 @@ export function calculateTrial(
   }
 
   // Sem current_period_end válido e futuro, NÃO inventa vigência Pro artificialmente.
-  // O acesso segue o ciclo natural de trial da conta (ativo se < 14 dias, expirado se >= 14 dias).
+  // O acesso segue o ciclo natural de trial da conta (ativo se < 30 dias, expirado se >= 30 dias).
   return buildFromDates(createdAt, now, null);
 }
 

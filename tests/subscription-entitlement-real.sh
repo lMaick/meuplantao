@@ -40,9 +40,9 @@ delete from auth.users where id in ('$USER_A', '$USER_B');
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
 values ('$USER_A', 'authenticated', 'authenticated', 'user-a-trial@example.test', 'fixture', now(), now() - interval '5 days', now());
 
--- Usuário B: criado há 30 dias (Trial expirado)
+-- Usuário B: criado há 40 dias (Trial expirado)
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
-values ('$USER_B', 'authenticated', 'authenticated', 'user-b-pro@example.test', 'fixture', now(), now() - interval '30 days', now());
+values ('$USER_B', 'authenticated', 'authenticated', 'user-b-pro@example.test', 'fixture', now(), now() - interval '40 days', now());
 
 -- Locais
 insert into public.places (id, user_id, nome) values ('$PLACE_A', '$USER_A', 'Hospital A');
@@ -73,11 +73,11 @@ test "$(psql "$DATABASE_URL" -Atqc "select count(*) from public.shifts where id 
 echo "✔ Cenário A aprovado."
 
 # ------------------------------------------------------------------------------
-# Cenário B: Usuário com 15 dias, sem assinatura -> RPC rejeita com 42501
+# Cenário B: Usuário com 40 dias, sem assinatura -> RPC rejeita com 42501
 # ------------------------------------------------------------------------------
-echo "==> Testando Cenário B: usuário com 15 dias sem assinatura é rejeitado..."
+echo "==> Testando Cenário B: usuário com 40 dias sem assinatura é rejeitado..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
-update auth.users set created_at = now() - interval '15 days' where id = '$USER_A';
+update auth.users set created_at = now() - interval '40 days' where id = '$USER_A';
 SQL
 
 if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose <<SQL >"$failure_log" 2>&1

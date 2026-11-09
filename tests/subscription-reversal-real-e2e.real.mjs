@@ -118,7 +118,7 @@ async function createTestUser(suffix) {
   const email = `sub-rev-e2e-${suffix}@test.local`;
   await pgQuery(
     `INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
-     VALUES ($1, 'authenticated', 'authenticated', $2, 'fixture-hash', now(), now() - interval '20 days', now())
+     VALUES ($1, 'authenticated', 'authenticated', $2, 'fixture-hash', now(), now() - interval '40 days', now())
      ON CONFLICT (id) DO NOTHING`,
     [userId, email],
   );
@@ -332,7 +332,7 @@ test("5. chargeback de usuario distinto nao altera entitlement (ownership)", asy
   const userBAlt = "00000000-0000-4000-8000-000000000115";
   await pgQuery(
     `INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
-     VALUES ($1, 'authenticated', 'authenticated', $2, 'fixture-hash', now(), now() - interval '20 days', now())
+     VALUES ($1, 'authenticated', 'authenticated', $2, 'fixture-hash', now(), now() - interval '40 days', now())
      ON CONFLICT (id) DO NOTHING`,
     [userBAlt, "sub-rev-e2e-r105b@test.local"],
   );

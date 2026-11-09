@@ -91,7 +91,7 @@ export function PaywallModal({ open, onClose }: PaywallModalProps) {
         </div>
 
         <h2 id="paywall-title" className="mt-4 text-xl font-bold tracking-tight">
-          Seu período de teste de 14 dias encerrou
+          Seu período de teste de 30 dias encerrou
         </h2>
         <p id="paywall-description" className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
           Seu histórico e relatórios continuam disponíveis para leitura. Para criar ou editar
