@@ -97,6 +97,8 @@ export default function PaymentsPage() {
   const [modalDate, setModalDate] = useState(() => bahiaTodayIso());
   const [modalError, setModalError] = useState("");
   const [modalSaving, setModalSaving] = useState(false);
+  // Trava síncrona: dois toques seguidos em "Confirmar" não podem gerar dois pagamentos.
+  const modalSubmittingRef = useRef(false);
   const autoOpenedRef = useRef(false);
 
   // Inline general form state (for backward compatibility & accessibility)
@@ -210,6 +212,18 @@ export default function PaymentsPage() {
 
   const selectedInline = rows.find(({ shift }) => shift.id === inlineShiftId);
   const inlineRemaining = selectedInline?.balance ?? 0;
+  const inlineAmountValue = Number(inlineAmount);
+  const inlineAmountMissing = inlineAmount.trim() === "" || !Number.isFinite(inlineAmountValue) || inlineAmountValue <= 0;
+  const inlineButtonDisabled =
+    inlineSaving || !selectedInline || inlineRemaining === 0 || inlineAmountMissing || !inlineDate;
+  // O que falta para habilitar o "Registrar" (nunca regra financeira: só orientação).
+  const inlineMissingHint = !selectedInline
+    ? "Escolha o plantão com saldo em aberto para registrar o pagamento."
+    : inlineRemaining === 0
+      ? "Este plantão não tem saldo em aberto."
+      : inlineAmountMissing || !inlineDate
+        ? "Informe o valor e a data do pagamento."
+        : "";
   const registered = payments.filter((p) => p.status === "registrado");
 
   useEffect(() => {
@@ -243,7 +257,7 @@ export default function PaymentsPage() {
 
   async function handleModalSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!modalRow) return;
+    if (!modalRow || modalSubmittingRef.current) return;
 
     setModalError("");
     const value = Number(modalAmount);
@@ -268,6 +282,7 @@ export default function PaymentsPage() {
       return;
     }
 
+    modalSubmittingRef.current = true;
     setModalSaving(true);
     try {
       await createPayment({
@@ -285,6 +300,7 @@ export default function PaymentsPage() {
     } catch (e: unknown) {
       setModalError(e instanceof Error ? e.message : "Não foi possível registrar o pagamento.");
     } finally {
+      modalSubmittingRef.current = false;
       setModalSaving(false);
     }
   }
@@ -526,11 +542,19 @@ export default function PaymentsPage() {
           <Button
             type="submit"
             className="h-11 min-h-[44px] px-6 font-medium"
-            disabled={inlineSaving || !selectedInline || inlineRemaining === 0}
+            disabled={inlineButtonDisabled}
+            aria-describedby="inline-submit-hint"
           >
             {inlineSaving ? "Salvando..." : "Registrar"}
           </Button>
         </form>
+        <p
+          id="inline-submit-hint"
+          aria-live="polite"
+          className={cn("mt-2 text-sm text-muted-foreground", !(inlineButtonDisabled && inlineMissingHint) && "sr-only")}
+        >
+          {inlineButtonDisabled ? inlineMissingHint : ""}
+        </p>
         {inlineError && (
           <p role="alert" className="mt-3 text-sm font-medium text-destructive">
             {inlineError}

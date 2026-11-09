@@ -32,6 +32,8 @@ import type { Place } from "@/lib/places";
 import { InlinePlaceForm } from "@/components/shifts/inline-place-form";
 import { InlineContactForm } from "@/components/shifts/inline-contact-form";
 import { listContacts, type Contact } from "@/lib/contacts";
+import { isShiftFormDirty, type ShiftFormSnapshot } from "@/lib/shifts/form-dirty";
+import { useBackGuard } from "@/lib/shifts/use-back-guard";
 
 const months = [
   "Janeiro",
@@ -380,7 +382,7 @@ export function ShiftCalendar({
                     type="button"
                     onClick={() => setSelected(date)}
                     aria-label={`${day.getDate()} de ${months[day.getMonth()]}${
-                      dayShifts.length > 0 ? `, ${dayShifts.length} plantões` : ""
+                      dayShifts.length > 0 ? `, ${dayShifts.length} ${dayShifts.length === 1 ? "plantão" : "plantões"}` : ""
                     }`}
                     aria-pressed={isSelected}
                     className={cn(
@@ -686,7 +688,7 @@ function Form({
   date,
   draft,
   retry,
-  close,
+  close: discardAndClose,
   save,
   remove,
 }: {
@@ -705,6 +707,8 @@ function Form({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
   const initialResponsibleType = obligation?.responsavel_contact_id
     ? "contato"
     : obligation?.responsavel_place_id
@@ -720,6 +724,8 @@ function Form({
   );
   const isNewShift = !shift;
   const [placeId, setPlaceId] = useState(shift?.place_id ?? draft?.place_id ?? places[0]?.id ?? "");
+  const [horaInicio, setHoraInicio] = useState(shift?.hora_inicio ?? draft?.hora_inicio ?? "");
+  const [horaFim, setHoraFim] = useState(shift?.hora_fim ?? draft?.hora_fim ?? "");
   const [dataValue, setDataValue] = useState(shift?.data ?? (draft ? "" : date));
   const [valor, setValor] = useState(() => {
     const existing = obligation?.valor_devido ?? shift?.valor_previsto ?? draft?.valor_previsto;
@@ -736,6 +742,42 @@ function Form({
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const canRepeat = isNewShift && status === "agendado";
   const locked = retry !== null;
+
+  const currentSnapshot: ShiftFormSnapshot = {
+    placeId,
+    data: dataValue,
+    horaInicio,
+    horaFim,
+    valor,
+    status,
+    responsibleType,
+    responsibleId,
+    dueDate,
+    extraDates,
+  };
+  const [initialSnapshot] = useState<ShiftFormSnapshot>(() => currentSnapshot);
+  const dirty = isShiftFormDirty(initialSnapshot, currentSnapshot, {
+    hasBulkRetry: retry !== null,
+    hasOpenSubform: addingContact || (addingPlace && places.length > 0),
+  });
+
+  // Fechar/Escape/clique fora/voltar: com alterações, pede confirmação antes de descartar.
+  function close() {
+    if (busy) return;
+    if (dirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    discardAndClose();
+  }
+
+  useBackGuard(dirty, () => {
+    if (!busy) setConfirmDiscard(true);
+  });
+
+  useEffect(() => {
+    if (confirmDiscard) keepEditingRef.current?.focus();
+  }, [confirmDiscard]);
   const bulkLabel = retry
     ? `Reenviar ${retry.failed.length} pendente${retry.failed.length > 1 ? "s" : ""}`
     : canRepeat && extraDates.length > 0
@@ -811,13 +853,22 @@ function Form({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-xs sm:items-center">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-xs sm:items-center"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) close();
+      }}
+    >
       <form
         role="dialog"
         aria-modal="true"
         aria-label={shift ? "Editar plantão" : "Novo plantão"}
         onKeyDown={(event) => {
-          if (event.key === "Escape" && !busy) close();
+          if (event.key === "Escape" && !busy) {
+            event.stopPropagation();
+            if (confirmDiscard) setConfirmDiscard(false);
+            else close();
+          }
           if (event.key === "Tab") {
             const controls = Array.from(
               event.currentTarget.querySelectorAll<HTMLElement>(
@@ -910,34 +961,39 @@ function Form({
             )}
           </div>
 
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Data</span>
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-data">Data</label>
             <Input name="data" type="date"
+              id="shift-data"
               required
               value={dataValue}
               onChange={(event) => setDataValue(event.target.value)}
             />
-          </label>
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <label className="grid gap-1.5 text-sm font-medium text-foreground">
-              <span>Início</span>
+            <div className="grid gap-1.5 text-sm font-medium text-foreground">
+              <label htmlFor="shift-hora-inicio">Início</label>
               <Input
                 name="hora_inicio"
                 type="time"
+                id="shift-hora-inicio"
                 required
-                defaultValue={shift?.hora_inicio ?? draft?.hora_inicio}
+                value={horaInicio}
+                onChange={(event) => setHoraInicio(event.target.value)}
               />
-            </label>
-            <label className="grid gap-1.5 text-sm font-medium text-foreground">
-              <span>Fim</span>
+            </div>
+            <div className="grid gap-1.5 text-sm font-medium text-foreground">
+              <label htmlFor="shift-hora-fim">Fim</label>
               <Input
                 name="hora_fim"
                 type="time"
+                id="shift-hora-fim"
                 required
-                defaultValue={shift?.hora_fim ?? draft?.hora_fim}
+                value={horaFim}
+                onChange={(event) => setHoraFim(event.target.value)}
               />
-            </label>
+            </div>
           </div>
 
           </div>
@@ -950,34 +1006,36 @@ function Form({
               </p>
             </div>
 
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Valor do plantão (R$)</span>
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-valor">Valor do plantão (R$)</label>
             <Input
               name="valor_previsto"
               type="number"
+              id="shift-valor"
               min="0"
               step="0.01"
               placeholder="0,00"
               value={valor}
               onChange={(event) => setValor(event.target.value)}
             />
-          </label>
+          </div>
 
           {status === "realizado" && (
             <div className="grid gap-4 rounded-xl border border-border/70 bg-muted/20 p-3.5 sm:p-4">
               <p className="text-xs leading-relaxed text-muted-foreground">
                 Preencha estes dados para acompanhar o recebimento deste plantão.
               </p>
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Quando você espera receber?</span>
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-data-prevista">Data prevista: quando você espera receber?</label>
             <Input
               name="data_prevista"
               type="date"
+              id="shift-data-prevista"
               required
               value={dueDate}
               onChange={(event) => setDueDate(event.target.value)}
             />
-          </label>
+          </div>
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
             <span>Tipo de responsável</span>
@@ -1233,6 +1291,38 @@ function Form({
           </p>
         )}
 
+        {confirmDiscard && (
+          <div
+            role="alert"
+            className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-4 animate-in fade-in duration-200 motion-reduce:animate-none"
+          >
+            <p className="text-sm font-semibold text-destructive">Descartar alterações?</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              O que você preencheu neste formulário será perdido.
+            </p>
+            <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={busy}
+                onClick={discardAndClose}
+                className="min-h-[44px] w-full sm:w-auto"
+              >
+                Descartar
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                ref={keepEditingRef}
+                onClick={() => setConfirmDiscard(false)}
+                className="min-h-[44px] w-full sm:w-auto"
+              >
+                Continuar editando
+              </Button>
+            </div>
+          </div>
+        )}
+
         <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:items-center sm:justify-between">
           {shift ? (
             <Button
@@ -1413,7 +1503,7 @@ function RepeatDatesPicker({
         <span aria-live="polite">
           {selected.length === 0
             ? "Toque nos dias para repetir este plantão."
-            : `${selected.length} de ${max} datas extras${atLimit ? " (limite atingido)" : ""}`}
+            : `${selected.length} ${selected.length === 1 ? "data extra marcada" : "datas extras marcadas"} · máximo de ${max}`}
         </span>
         {selected.length > 0 && (
           <button
