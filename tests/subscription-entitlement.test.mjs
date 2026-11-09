@@ -8,7 +8,13 @@ const MIGRATION_PATH = path.resolve(
   "supabase/migrations/20260920120000_subscription_entitlement_boundary.sql",
 );
 
+const FIRST_USE_MIGRATION_PATH = path.resolve(
+  process.cwd(),
+  "supabase/migrations/20261109120000_first_use_foundation.sql",
+);
+
 const migrationSql = fs.readFileSync(MIGRATION_PATH, "utf8");
+const firstUseMigrationSql = fs.readFileSync(FIRST_USE_MIGRATION_PATH, "utf8");
 
 describe("Database Migration: subscription_entitlement_boundary.sql", () => {
   test("1. Migration exists and defines has_active_entitlement as SECURITY DEFINER", () => {
@@ -42,9 +48,9 @@ describe("Database Migration: subscription_entitlement_boundary.sql", () => {
       /v_caller_uid is not null and p_user_id is not null and p_user_id <> v_caller_uid/i,
       "Must prevent authenticated user from checking another user's entitlement (Scenario E)",
     );
-    // Trial: 14 dias a partir de auth.users.created_at
+    // Trial: 30 dias a partir de auth.users.created_at (regra atual, migration 20261109120000)
     assert.match(migrationSql, /from auth\.users/i, "Must read created_at from auth.users");
-    assert.match(migrationSql, /v_created_at \+ interval '14 days'/i, "Must evaluate 14 days interval");
+    assert.match(firstUseMigrationSql, /v_created_at \+ interval '30 days'/i, "Must evaluate 30 days interval");
     // Pro: subscriptions.current_period_end > now()
     assert.match(migrationSql, /from public\.subscriptions/i, "Must read current_period_end from subscriptions");
     assert.match(
@@ -117,10 +123,10 @@ class SupabaseEntitlementBoundaryEngine {
       return false;
     }
 
-    // 1. Período de trial: 14 dias a partir de auth.users.created_at
+    // 1. Período de trial: 30 dias a partir de auth.users.created_at
     const user = this.users.get(vUserId);
     if (user && user.created_at) {
-      const trialEnd = new Date(user.created_at.getTime() + 14 * 24 * 60 * 60 * 1000);
+      const trialEnd = new Date(user.created_at.getTime() + 30 * 24 * 60 * 60 * 1000);
       if (now.getTime() < trialEnd.getTime()) {
         return true;
       }
@@ -260,10 +266,10 @@ describe("Entitlement Boundary: Cenários Obrigatórios (A a F)", () => {
     assert.equal(shift.valor_previsto, 1200);
   });
 
-  test("Cenário B: usuário com 15 dias de conta, sem assinatura -> RPC rejeita", () => {
+  test("Cenário B: usuário com 40 dias de conta, sem assinatura -> RPC rejeita", () => {
     const engine = new SupabaseEntitlementBoundaryEngine();
-    const created15DaysAgo = new Date(NOW.getTime() - 15 * MS_PER_DAY);
-    engine.addUser(USER_A, created15DaysAgo);
+    const created40DaysAgo = new Date(NOW.getTime() - 40 * MS_PER_DAY);
+    engine.addUser(USER_A, created40DaysAgo);
 
     // Entitlement expirado
     assert.equal(engine.hasActiveEntitlement(USER_A, USER_A, NOW), false);
@@ -376,11 +382,11 @@ describe("Entitlement Boundary: Cenários Obrigatórios (A a F)", () => {
   test("Cenário E: usuário A nunca consegue usar entitlement de usuário B", () => {
     const engine = new SupabaseEntitlementBoundaryEngine();
 
-    // Usuário A: 30 dias de conta, sem assinatura (expirado)
-    engine.addUser(USER_A, new Date(NOW.getTime() - 30 * MS_PER_DAY));
+    // Usuário A: 40 dias de conta, sem assinatura (expirado)
+    engine.addUser(USER_A, new Date(NOW.getTime() - 40 * MS_PER_DAY));
 
     // Usuário B: Pro ativo com 20 dias restantes
-    engine.addUser(USER_B, new Date(NOW.getTime() - 30 * MS_PER_DAY));
+    engine.addUser(USER_B, new Date(NOW.getTime() - 40 * MS_PER_DAY));
     engine.setSubscription(USER_B, {
       status: "active",
       currentPeriodEnd: new Date(NOW.getTime() + 20 * MS_PER_DAY),
@@ -453,8 +459,8 @@ describe("Entitlement Boundary: Cenários Obrigatórios (A a F)", () => {
   test("Cenário F: leitura do histórico continua funcionando após expiração", () => {
     const engine = new SupabaseEntitlementBoundaryEngine();
 
-    // Usuário A criou um plantão enquanto estava no trial (dia 5)
-    const t0 = new Date(NOW.getTime() - 25 * MS_PER_DAY);
+    // Usuário A criou um plantão enquanto estava no trial (dia 2 de 30)
+    const t0 = new Date(NOW.getTime() - 35 * MS_PER_DAY);
     engine.addUser(USER_A, t0);
 
     const duringTrial = new Date(t0.getTime() + 2 * MS_PER_DAY);
@@ -470,7 +476,7 @@ describe("Entitlement Boundary: Cenários Obrigatórios (A a F)", () => {
       duringTrial,
     );
 
-    // Agora, 25 dias depois, a conta expirou
+    // Agora, 35 dias depois da criação, a conta expirou
     assert.equal(engine.hasActiveEntitlement(USER_A, USER_A, NOW), false);
 
     // Tentativa de criar novo plantão é bloqueada
@@ -496,25 +502,25 @@ describe("Entitlement Boundary: Cenários Obrigatórios (A a F)", () => {
     assert.equal(userShifts[0].place_id, "place-antigo");
   });
 
-  test("Fronteiras temporais precisas: 13 dias 23h59 vs 14 dias exatos", () => {
+  test("Fronteiras temporais precisas: 29 dias 23h vs 30 dias exatos", () => {
     const engine = new SupabaseEntitlementBoundaryEngine();
 
-    // 13 dias e 23 horas -> ainda no trial (< 14 dias)
+    // 29 dias e 23 horas -> ainda no trial (< 30 dias)
     const userActive = "user-active-boundary";
-    const created13d23h = new Date(NOW.getTime() - (13 * MS_PER_DAY + 23 * 60 * 60 * 1000));
-    engine.addUser(userActive, created13d23h);
+    const created29d23h = new Date(NOW.getTime() - (29 * MS_PER_DAY + 23 * 60 * 60 * 1000));
+    engine.addUser(userActive, created29d23h);
     assert.equal(engine.hasActiveEntitlement(userActive, userActive, NOW), true);
 
-    // 14 dias exatos -> expirado (regra: menos de 14 dias)
+    // 30 dias exatos -> expirado (regra: menos de 30 dias)
     const userExpired = "user-expired-boundary";
-    const created14d = new Date(NOW.getTime() - 14 * MS_PER_DAY);
-    engine.addUser(userExpired, created14d);
+    const created30d = new Date(NOW.getTime() - 30 * MS_PER_DAY);
+    engine.addUser(userExpired, created30d);
     assert.equal(engine.hasActiveEntitlement(userExpired, userExpired, NOW), false);
   });
 
   test("Entitlement boundary também protege INSERT e UPDATE diretos na tabela shifts", () => {
     const engine = new SupabaseEntitlementBoundaryEngine();
-    engine.addUser(USER_A, new Date(NOW.getTime() - 20 * MS_PER_DAY)); // Expirado
+    engine.addUser(USER_A, new Date(NOW.getTime() - 40 * MS_PER_DAY)); // Expirado
 
     // INSERT direto bloqueado pela RLS policy shifts_insert_own
     assert.throws(

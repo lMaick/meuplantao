@@ -118,7 +118,7 @@ test("schema-contract: EXPECTED_SCHEMA_CONTRACT_VERSION is valid SemVer", () => 
   assert.strictEqual(typeof EXPECTED_SCHEMA_CONTRACT_VERSION, "string");
   const parsed = parseSemver(EXPECTED_SCHEMA_CONTRACT_VERSION);
   assert.ok(parsed, "EXPECTED_SCHEMA_CONTRACT_VERSION must parse cleanly as semver");
-  assert.strictEqual(parsed.raw, "1.0.0");
+  assert.strictEqual(parsed.raw, "1.1.0");
 });
 
 test("schema-contract: parseSemver strictly accepts MAJOR.MINOR.PATCH and rejects malformed versions", () => {
@@ -193,13 +193,13 @@ test("schema-contract: checkSchemaContractViaPg detects correct, outdated, missi
   const dbUrl = "postgresql://postgres:secret@127.0.0.1:5432/test";
 
   // Case A: Correct version -> PASS
-  const mocksCorrect = compliantCatalogMocks({ contractVersion: "1.0.0" });
+  const mocksCorrect = compliantCatalogMocks({ contractVersion: "1.1.0" });
   const checkCorrect = await checkSchemaContractViaPg(dbUrl, {
     contractQueryFn: mocksCorrect.contractQueryFn,
   });
   assert.strictEqual(checkCorrect.ok, true);
   assert.strictEqual(checkCorrect.status, CONTRACT_STATUS.CORRECT);
-  assert.strictEqual(checkCorrect.installedVersion, "1.0.0");
+  assert.strictEqual(checkCorrect.installedVersion, "1.1.0");
 
   // Case B: Outdated version -> FAIL (status OUTDATED)
   const mocksOutdated = compliantCatalogMocks({ contractVersion: "0.9.0" });
@@ -251,7 +251,7 @@ test("schema-contract: verifyProductionSchema gate fails closed on contract defe
   const Client = createProcClient();
 
   // 1. Strict mode with correct contract -> ok: true
-  const correctMocks = compliantCatalogMocks({ contractVersion: "1.0.0" });
+  const correctMocks = compliantCatalogMocks({ contractVersion: "1.1.0" });
   const resPass = await verifyProductionSchema({
     env: {
       VERCEL_ENV: "production",
@@ -360,7 +360,7 @@ test("schema-contract: checkSchemaContractViaRest checks REST API when service_r
   // HTTP 200 with valid version
   const fetch200 = async () => ({
     status: 200,
-    json: async () => [{ contract_version: "1.0.0" }],
+    json: async () => [{ contract_version: "1.1.0" }],
   });
   const res200 = await checkSchemaContractViaRest("https://test.supabase.co", "service-key", { fetchFn: fetch200 });
   assert.strictEqual(res200.ok, true);

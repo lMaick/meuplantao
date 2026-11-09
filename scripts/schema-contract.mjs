@@ -25,7 +25,7 @@ const { Client: PgClient } = pg;
  * Expected schema contract version required by the application runtime.
  * This value MUST be bumped only when migrations alter schema or RPC semantics.
  */
-export const EXPECTED_SCHEMA_CONTRACT_VERSION = "1.0.0";
+export const EXPECTED_SCHEMA_CONTRACT_VERSION = "1.1.0";
 
 export const CONTRACT_STATUS = {
   CORRECT: "CORRECT",

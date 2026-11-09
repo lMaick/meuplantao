@@ -21,7 +21,7 @@ describe("MAI-126: Paywall pos-trial + estado global reativo", () => {
     });
 
     test("trial expirado sem Pro bloqueia criar/editar", () => {
-      const created = new Date(NOW.getTime() - 20 * 24 * 60 * 60 * 1000).toISOString();
+      const created = new Date(NOW.getTime() - 40 * 24 * 60 * 60 * 1000).toISOString();
       const trial = calculateTrial(created, null, NOW);
       assert.equal(trial.isExpired, true);
       assert.equal(trial.isActive, false);
