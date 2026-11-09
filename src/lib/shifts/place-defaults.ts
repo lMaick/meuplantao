@@ -1,5 +1,3 @@
-import { addDaysToIso } from "@/lib/dashboard/alerts";
-
 export type PlaceDefaults = {
   id: string;
   valor_padrao: number | null;
@@ -23,7 +21,10 @@ export type RealizedDefaults = {
 
 export function dueDateFromTerm(shiftDateIso: string, prazoDias: number | null): string | null {
   if (prazoDias === null || !Number.isInteger(prazoDias) || prazoDias < 0) return null;
-  return addDaysToIso(shiftDateIso, prazoDias);
+  // Meio-dia UTC: soma de dias de calendário, imune a fuso e horário de verão.
+  const date = new Date(`${shiftDateIso}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + prazoDias);
+  return date.toISOString().slice(0, 10);
 }
 
 /**
