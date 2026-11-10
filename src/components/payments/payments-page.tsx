@@ -34,7 +34,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PaymentsSkeleton } from "@/components/ui/skeletons";
 import { buildExtratoCsv, downloadExtratoCsv, extratoFilename, type ExtratoRow } from "@/lib/exports/extrato-csv";
 import { FinanceFilters } from "@/components/finance/finance-filters";
-import { ALL_PERIODS, ALL_PLACES, currentMonthValue, matchesShift } from "@/lib/finance-filters";
+import { ALL_PERIODS, ALL_PLACES, matchesShift } from "@/lib/finance-filters";
 import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -108,7 +108,7 @@ export default function PaymentsPage() {
   const [inlineError, setInlineError] = useState("");
   const [inlineSaving, setInlineSaving] = useState(false);
 
-  const period = userPeriod ?? paramPeriod ?? currentMonthValue();
+  const period = userPeriod ?? paramPeriod ?? ALL_PERIODS;
   const placeId = userPlaceId ?? paramPlaceId ?? ALL_PLACES;
   const filter = userFilter ?? paramFilter ?? "todos";
 

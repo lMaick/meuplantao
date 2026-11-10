@@ -29,7 +29,7 @@ import { DashboardSkeleton } from "@/components/ui/skeletons";
 import { FinanceFilters } from "@/components/finance/finance-filters";
 import {
   ALL_PLACES,
-  currentMonthValue,
+  ALL_PERIODS,
   matchesPeriod,
   matchesPlace,
   matchesShift,
@@ -53,7 +53,7 @@ export function Dashboard() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [period, setPeriod] = useState<string>(() => currentMonthValue());
+  const [period, setPeriod] = useState<string>(ALL_PERIODS);
   const [placeId, setPlaceId] = useState<string>(ALL_PLACES);
   const [onboardingReady, setOnboardingReady] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
