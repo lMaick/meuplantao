@@ -26,6 +26,7 @@ import { cn } from "cn";
 import { removeShift, saveShiftWithObligation, type Shift, type ShiftStatus } from "@/lib/shifts";
 import { ShiftCreationIntent, keyForShiftSave, newIdempotencyKey } from "@/lib/shifts/idempotency";
 import { BulkCreateSession, MAX_BULK_DATES, type BulkFailure } from "@/lib/shifts/bulk-create";
+import { applyPendingPlace, isAvailablePlace } from "@/lib/shifts/pending-place";
 import { resolveRealizedDefaults } from "@/lib/shifts/place-defaults";
 import { listObligations, type Obligation } from "@/lib/obligations";
 import type { Place } from "@/lib/places";
@@ -213,7 +214,7 @@ export function ShiftCalendar({
     setEditing(false);
   }
 
-  async function save(data: FormData, extraDates: string[] = []) {
+  async function save(data: FormData, extraDates: string[] = [], pendingPlace?: Place | null) {
     const retrySession = bulkRef.current;
     if (bulkRetry && retrySession?.isActive) {
       // Reenvio: só as datas pendentes, com as mesmas chaves e o mesmo conteúdo.
@@ -229,7 +230,7 @@ export function ShiftCalendar({
 
     const validResponsible =
       responsibleType === "local"
-        ? places.some((place) => place.id === responsibleId)
+        ? isAvailablePlace(responsibleId, places, pendingPlace)
         : responsibleType === "contato"
         ? contacts.some((contact) => contact.id === responsibleId)
         : false;
@@ -250,7 +251,7 @@ export function ShiftCalendar({
       throw new Error("Plantão realizado exige valor, data prevista e responsável.");
     }
 
-    if (!places.some((place) => place.id === input.place_id)) {
+    if (!isAvailablePlace(input.place_id, places, pendingPlace)) {
       throw new Error("Escolha ou salve o local do plantão antes de continuar.");
     }
 
@@ -702,7 +703,7 @@ function Form({
   draft: ShiftDraft | null;
   retry: BulkRetry | null;
   close: () => void;
-  save: (data: FormData, extraDates?: string[]) => Promise<void>;
+  save: (data: FormData, extraDates?: string[], pendingPlace?: Place | null) => Promise<void>;
   remove: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -739,6 +740,7 @@ function Form({
   const [addingPlace, setAddingPlace] = useState(false);
   const [addingContact, setAddingContact] = useState(false);
   const showPlaceForm = places.length === 0 || addingPlace;
+  const pendingPlaceWillPay = showPlaceForm && !responsibleType && !responsibleId;
   const [repeatOpen, setRepeatOpen] = useState(false);
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const canRepeat = isNewShift && status === "agendado";
@@ -894,16 +896,16 @@ function Form({
             setConfirmCancel(true);
             return;
           }
-          const form = event.currentTarget;
+          // Capture antes de busy desabilitar o fieldset durante a criacao do local.
+          const data = new FormData(event.currentTarget);
           void run(async () => {
             const submitPendingPlace = submitPendingPlaceRef.current;
             const pendingPlace = await submitPendingPlace?.();
             if (submitPendingPlace && !pendingPlace) {
               throw new Error("Não foi possível salvar o local. Confira os dados e tente novamente.");
             }
-            const data = new FormData(form);
-            if (pendingPlace) data.set("place_id", pendingPlace.id);
-            await save(data, canRepeat ? extraDates : []);
+            if (pendingPlace) applyPendingPlace(data, pendingPlace);
+            await save(data, canRepeat ? extraDates : [], pendingPlace);
           });
         }}
         className="max-h-[90dvh] overflow-y-auto w-full max-w-md rounded-t-2xl border border-border bg-card p-5 sm:p-6 shadow-xl text-card-foreground sm:rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]"
@@ -975,7 +977,6 @@ function Form({
             <label htmlFor="shift-data">Data</label>
             <Input name="data" type="date"
               id="shift-data"
-              aria-label="Data do plantão"
               required
               value={dataValue}
               onChange={(event) => setDataValue(event.target.value)}
@@ -989,7 +990,6 @@ function Form({
                 name="hora_inicio"
                 type="time"
                 id="shift-hora-inicio"
-                aria-label="Horário de início do plantão"
                 required
                 value={horaInicio}
                 onChange={(event) => setHoraInicio(event.target.value)}
@@ -1001,7 +1001,6 @@ function Form({
                 name="hora_fim"
                 type="time"
                 id="shift-hora-fim"
-                aria-label="Horário de término do plantão"
                 required
                 value={horaFim}
                 onChange={(event) => setHoraFim(event.target.value)}
@@ -1055,7 +1054,7 @@ function Form({
             <Select
               name="responsavel_tipo"
               value={responsibleType}
-              required
+              required={!pendingPlaceWillPay}
               onChange={(event) => {
                 const nextType = event.target.value as "" | "local" | "contato";
                 setResponsibleType(nextType);
@@ -1077,7 +1076,7 @@ function Form({
             <Select
               name="responsavel_id"
               value={responsibleId}
-              required
+              required={!pendingPlaceWillPay}
               disabled={!responsibleType}
               onChange={(event) => setResponsibleId(event.target.value)}
             >

@@ -30,7 +30,6 @@ export function InlinePlaceForm({
   const submitOnce = useRef(createSubmitOnce((operation: () => Promise<Place | null>) => operation()));
 
   const submit = useCallback(async () => {
-    if (busy) return null;
     const trimmed = nome.trim();
     if (!trimmed) {
       setError("Informe o nome do local.");
@@ -73,7 +72,7 @@ export function InlinePlaceForm({
         setBusy(false);
       }
     });
-  }, [busy, nome, valor, prazo, onCreated]);
+  }, [nome, valor, prazo, onCreated]);
 
   useEffect(() => {
     onSubmitReady?.(submit);
