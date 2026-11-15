@@ -21,7 +21,7 @@ export function LandingHeader({ isLoggedIn }: LandingHeaderProps) {
           </div>
           <div className="flex flex-col leading-none">
             <span className="text-lg font-bold tracking-tight text-foreground">MeuPlantão</span>
-            <span className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider">Gestão Médica</span>
+            <span className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider">Gestão de plantões</span>
           </div>
         </Link>
 

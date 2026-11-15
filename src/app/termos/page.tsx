@@ -90,12 +90,20 @@ export default function TermosPage() {
           </Link>{" "}
           ou envie um e-mail para{" "}
           <a
-            href="mailto:suporte@meuplantao.app"
+            href="mailto:contato@meuplantao.pro"
             className="font-medium text-foreground underline underline-offset-4"
           >
-            suporte@meuplantao.app
+            contato@meuplantao.pro
           </a>
           .
+        </p>
+      </LegalSection>
+      <LegalSection title="Responsável pelo serviço">
+        <p>
+          MeuPlantão — desenvolvido e operado por Maick Silva Campos ·{" "}
+          <a href="mailto:contato@meuplantao.pro" className="font-medium text-foreground underline underline-offset-4">
+            contato@meuplantao.pro
+          </a>{" "}· Brasil
         </p>
       </LegalSection>
     </PublicPage>

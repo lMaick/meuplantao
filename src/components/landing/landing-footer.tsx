@@ -71,8 +71,9 @@ export function LandingFooter() {
           </div>
         </div>
 
-        <div className="mt-6 text-center text-[11px] text-slate-400">
-          © {currentYear} MeuPlantão. Todos os direitos reservados. Feito com rigor para profissionais de saúde.
+        <div className="mt-6 space-y-2 text-center text-[11px] text-slate-400">
+          <p>© {currentYear} MeuPlantão. Todos os direitos reservados. Feito com rigor para profissionais de saúde.</p>
+          <p>MeuPlantão — desenvolvido e operado por Maick Silva Campos · <a href="mailto:contato@meuplantao.pro" className="underline underline-offset-4 hover:text-white">contato@meuplantao.pro</a> · Brasil</p>
         </div>
       </div>
     </footer>

@@ -15,7 +15,7 @@ export default function SuportePage() {
   return (
     <PublicPage
       title="Suporte e Feedback"
-      intro="Estamos aqui para ajudar. Envie sua dúvida, relate uma instabilidade ou compartilhe sugestões para aprimorarmos a sua experiência médica."
+      intro="Estamos aqui para ajudar. Envie sua dúvida, relate uma instabilidade ou compartilhe sugestões para aprimorarmos o MeuPlantão para profissionais de saúde."
     >
       <LegalSection title="Orientações importantes de segurança">
         <p>
@@ -34,7 +34,7 @@ export default function SuportePage() {
           Envie sua mensagem diretamente
         </h2>
         <p className="text-sm text-muted-foreground">
-          Preencha os campos abaixo para abrir a mensagem pronta em seu aplicativo de e-mail:
+          Preencha os campos abaixo. Sua mensagem será enviada diretamente para nossa equipe:
         </p>
         <SupportForm />
       </section>
@@ -44,10 +44,10 @@ export default function SuportePage() {
           Se preferir, você também pode enviar uma mensagem diretamente através do seu cliente de
           correio para:{" "}
           <a
-            href="mailto:suporte@meuplantao.app"
+            href="mailto:contato@meuplantao.pro"
             className="font-medium text-foreground underline underline-offset-4"
           >
-            suporte@meuplantao.app
+            contato@meuplantao.pro
           </a>
           .
         </p>

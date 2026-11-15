@@ -40,9 +40,9 @@ const features = [
   },
   {
     icon: Lock,
-    title: "Segurança e Isolamento RLS",
+    title: "Seus dados protegidos por conta",
     description:
-      "Banco de dados com isolamento por usuário (Row Level Security) e controles de acesso. Seus registros ficam associados apenas à sua conta.",
+      "Controles de acesso protegem seus registros, que ficam associados apenas à sua conta.",
   },
 ];
 

@@ -46,7 +46,7 @@ export default function PrivacidadePage() {
         </p>
         <p>
           O isolamento dos seus registros é garantido no banco de dados via políticas estritas de Row
-          Level Security (RLS). O MeuPlantão <strong>não comercializa</strong> seus dados em hipótese
+          políticas de acesso restritas. O MeuPlantão <strong>não comercializa</strong> seus dados em hipótese
           alguma e não utiliza cookies ou rastreadores de terceiros para publicidade comportamental.
         </p>
       </LegalSection>
@@ -77,12 +77,20 @@ export default function PrivacidadePage() {
           </Link>{" "}
           ou pelo e-mail{" "}
           <a
-            href="mailto:suporte@meuplantao.app"
+            href="mailto:contato@meuplantao.pro"
             className="font-medium text-foreground underline underline-offset-4"
           >
-            suporte@meuplantao.app
+            contato@meuplantao.pro
           </a>
           .
+        </p>
+      </LegalSection>
+      <LegalSection title="Responsável pelo serviço">
+        <p>
+          MeuPlantão — desenvolvido e operado por Maick Silva Campos ·{" "}
+          <a href="mailto:contato@meuplantao.pro" className="font-medium text-foreground underline underline-offset-4">
+            contato@meuplantao.pro
+          </a>{" "}· Brasil
         </p>
       </LegalSection>
     </PublicPage>
