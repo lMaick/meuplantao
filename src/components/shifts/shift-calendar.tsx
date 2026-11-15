@@ -26,6 +26,7 @@ import { cn } from "cn";
 import { removeShift, saveShiftWithObligation, type Shift, type ShiftStatus } from "@/lib/shifts";
 import { ShiftCreationIntent, keyForShiftSave, newIdempotencyKey } from "@/lib/shifts/idempotency";
 import { BulkCreateSession, MAX_BULK_DATES, type BulkFailure } from "@/lib/shifts/bulk-create";
+import { applyPendingPlace, isAvailablePlace } from "@/lib/shifts/pending-place";
 import { resolveRealizedDefaults } from "@/lib/shifts/place-defaults";
 import { listObligations, type Obligation } from "@/lib/obligations";
 import type { Place } from "@/lib/places";
@@ -213,7 +214,7 @@ export function ShiftCalendar({
     setEditing(false);
   }
 
-  async function save(data: FormData, extraDates: string[] = []) {
+  async function save(data: FormData, extraDates: string[] = [], pendingPlace?: Place | null) {
     const retrySession = bulkRef.current;
     if (bulkRetry && retrySession?.isActive) {
       // Reenvio: só as datas pendentes, com as mesmas chaves e o mesmo conteúdo.
@@ -229,7 +230,7 @@ export function ShiftCalendar({
 
     const validResponsible =
       responsibleType === "local"
-        ? places.some((place) => place.id === responsibleId)
+        ? isAvailablePlace(responsibleId, places, pendingPlace)
         : responsibleType === "contato"
         ? contacts.some((contact) => contact.id === responsibleId)
         : false;
@@ -250,7 +251,7 @@ export function ShiftCalendar({
       throw new Error("Plantão realizado exige valor, data prevista e responsável.");
     }
 
-    if (!places.some((place) => place.id === input.place_id)) {
+    if (!isAvailablePlace(input.place_id, places, pendingPlace)) {
       throw new Error("Escolha ou salve o local do plantão antes de continuar.");
     }
 
@@ -702,13 +703,14 @@ function Form({
   draft: ShiftDraft | null;
   retry: BulkRetry | null;
   close: () => void;
-  save: (data: FormData, extraDates?: string[]) => Promise<void>;
+  save: (data: FormData, extraDates?: string[], pendingPlace?: Place | null) => Promise<void>;
   remove: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const keepEditingRef = useRef<HTMLButtonElement>(null);
+  const submitPendingPlaceRef = useRef<(() => Promise<Place | null>) | null>(null);
   const initialResponsibleType = obligation?.responsavel_contact_id
     ? "contato"
     : obligation?.responsavel_place_id
@@ -738,6 +740,7 @@ function Form({
   const [addingPlace, setAddingPlace] = useState(false);
   const [addingContact, setAddingContact] = useState(false);
   const showPlaceForm = places.length === 0 || addingPlace;
+  const pendingPlaceWillPay = showPlaceForm && !responsibleType && !responsibleId;
   const [repeatOpen, setRepeatOpen] = useState(false);
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const canRepeat = isNewShift && status === "agendado";
@@ -801,6 +804,10 @@ function Form({
     if (isNewShift && valor.trim() === "" && place.valor_padrao !== null && place.valor_padrao !== undefined) {
       setValor(String(place.valor_padrao));
     }
+    if (status === "realizado" && !responsibleType && !responsibleId) {
+      setResponsibleType("local");
+      setResponsibleId(place.id);
+    }
   }
 
   function handleContactCreated(contact: Contact) {
@@ -822,13 +829,8 @@ function Form({
     if (valor.trim() === "" && suggestion.valor !== null) setValor(String(suggestion.valor));
     if (!dueDate && validDate && suggestion.dataPrevista) setDueDate(suggestion.dataPrevista);
     if (!responsibleType && !responsibleId) {
-      if (suggestion.responsavelTipo === "contato" && contacts.some((c) => c.id === suggestion.responsavelId)) {
-        setResponsibleType("contato");
-        setResponsibleId(suggestion.responsavelId);
-      } else {
-        setResponsibleType("local");
-        setResponsibleId(place.id);
-      }
+      setResponsibleType("local");
+      setResponsibleId(place.id);
     }
   }
 
@@ -894,8 +896,17 @@ function Form({
             setConfirmCancel(true);
             return;
           }
+          // Capture antes de busy desabilitar o fieldset durante a criacao do local.
           const data = new FormData(event.currentTarget);
-          void run(() => save(data, canRepeat ? extraDates : []));
+          void run(async () => {
+            const submitPendingPlace = submitPendingPlaceRef.current;
+            const pendingPlace = await submitPendingPlace?.();
+            if (submitPendingPlace && !pendingPlace) {
+              throw new Error("Não foi possível salvar o local. Confira os dados e tente novamente.");
+            }
+            if (pendingPlace) applyPendingPlace(data, pendingPlace);
+            await save(data, canRepeat ? extraDates : [], pendingPlace);
+          });
         }}
         className="max-h-[90dvh] overflow-y-auto w-full max-w-md rounded-t-2xl border border-border bg-card p-5 sm:p-6 shadow-xl text-card-foreground sm:rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]"
       >
@@ -956,6 +967,7 @@ function Form({
             {showPlaceForm && (
               <InlinePlaceForm
                 onCreated={handlePlaceCreated}
+                onSubmitReady={(submit) => { submitPendingPlaceRef.current = submit; }}
                 onCancel={places.length > 0 ? () => setAddingPlace(false) : undefined}
               />
             )}
@@ -1038,11 +1050,11 @@ function Form({
           </div>
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Tipo de responsável</span>
+            <span>Quem deve pagar?</span>
             <Select
               name="responsavel_tipo"
               value={responsibleType}
-              required
+              required={!pendingPlaceWillPay}
               onChange={(event) => {
                 const nextType = event.target.value as "" | "local" | "contato";
                 setResponsibleType(nextType);
@@ -1064,7 +1076,7 @@ function Form({
             <Select
               name="responsavel_id"
               value={responsibleId}
-              required
+              required={!pendingPlaceWillPay}
               disabled={!responsibleType}
               onChange={(event) => setResponsibleId(event.target.value)}
             >
@@ -1391,7 +1403,7 @@ function Form({
                     disabled={busy}
                     className="min-h-[44px] w-full sm:w-auto font-semibold"
                   >
-                    {busy ? "Salvando..." : "Salvar alterações"}
+                    {busy ? "Salvando..." : isNewShift ? "Cadastrar plantão" : "Salvar alterações"}
                   </Button>
                 )}
               </>
