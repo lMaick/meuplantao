@@ -709,6 +709,7 @@ function Form({
   const [error, setError] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const keepEditingRef = useRef<HTMLButtonElement>(null);
+  const submitPendingPlaceRef = useRef<(() => Promise<Place | null>) | null>(null);
   const initialResponsibleType = obligation?.responsavel_contact_id
     ? "contato"
     : obligation?.responsavel_place_id
@@ -801,6 +802,10 @@ function Form({
     if (isNewShift && valor.trim() === "" && place.valor_padrao !== null && place.valor_padrao !== undefined) {
       setValor(String(place.valor_padrao));
     }
+    if (status === "realizado" && !responsibleType && !responsibleId) {
+      setResponsibleType("local");
+      setResponsibleId(place.id);
+    }
   }
 
   function handleContactCreated(contact: Contact) {
@@ -822,13 +827,8 @@ function Form({
     if (valor.trim() === "" && suggestion.valor !== null) setValor(String(suggestion.valor));
     if (!dueDate && validDate && suggestion.dataPrevista) setDueDate(suggestion.dataPrevista);
     if (!responsibleType && !responsibleId) {
-      if (suggestion.responsavelTipo === "contato" && contacts.some((c) => c.id === suggestion.responsavelId)) {
-        setResponsibleType("contato");
-        setResponsibleId(suggestion.responsavelId);
-      } else {
-        setResponsibleType("local");
-        setResponsibleId(place.id);
-      }
+      setResponsibleType("local");
+      setResponsibleId(place.id);
     }
   }
 
@@ -894,8 +894,17 @@ function Form({
             setConfirmCancel(true);
             return;
           }
-          const data = new FormData(event.currentTarget);
-          void run(() => save(data, canRepeat ? extraDates : []));
+          const form = event.currentTarget;
+          void run(async () => {
+            const submitPendingPlace = submitPendingPlaceRef.current;
+            const pendingPlace = await submitPendingPlace?.();
+            if (submitPendingPlace && !pendingPlace) {
+              throw new Error("Não foi possível salvar o local. Confira os dados e tente novamente.");
+            }
+            const data = new FormData(form);
+            if (pendingPlace) data.set("place_id", pendingPlace.id);
+            await save(data, canRepeat ? extraDates : []);
+          });
         }}
         className="max-h-[90dvh] overflow-y-auto w-full max-w-md rounded-t-2xl border border-border bg-card p-5 sm:p-6 shadow-xl text-card-foreground sm:rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]"
       >
@@ -956,6 +965,7 @@ function Form({
             {showPlaceForm && (
               <InlinePlaceForm
                 onCreated={handlePlaceCreated}
+                onSubmitReady={(submit) => { submitPendingPlaceRef.current = submit; }}
                 onCancel={places.length > 0 ? () => setAddingPlace(false) : undefined}
               />
             )}
@@ -965,6 +975,7 @@ function Form({
             <label htmlFor="shift-data">Data</label>
             <Input name="data" type="date"
               id="shift-data"
+              aria-label="Data do plantão"
               required
               value={dataValue}
               onChange={(event) => setDataValue(event.target.value)}
@@ -978,6 +989,7 @@ function Form({
                 name="hora_inicio"
                 type="time"
                 id="shift-hora-inicio"
+                aria-label="Horário de início do plantão"
                 required
                 value={horaInicio}
                 onChange={(event) => setHoraInicio(event.target.value)}
@@ -989,6 +1001,7 @@ function Form({
                 name="hora_fim"
                 type="time"
                 id="shift-hora-fim"
+                aria-label="Horário de término do plantão"
                 required
                 value={horaFim}
                 onChange={(event) => setHoraFim(event.target.value)}
@@ -1038,7 +1051,7 @@ function Form({
           </div>
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Tipo de responsável</span>
+            <span>Quem deve pagar?</span>
             <Select
               name="responsavel_tipo"
               value={responsibleType}
@@ -1391,7 +1404,7 @@ function Form({
                     disabled={busy}
                     className="min-h-[44px] w-full sm:w-auto font-semibold"
                   >
-                    {busy ? "Salvando..." : "Salvar alterações"}
+                    {busy ? "Salvando..." : isNewShift ? "Cadastrar plantão" : "Salvar alterações"}
                   </Button>
                 )}
               </>

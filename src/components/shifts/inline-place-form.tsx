@@ -1,9 +1,10 @@
 "use client";
 
-import { useId, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/primitives";
 import { createPlace, type Place } from "@/lib/places";
+import { createSubmitOnce } from "@/lib/places/submit-once";
 
 /**
  * Campos embutidos para criar um local sem sair do formulário de plantão.
@@ -13,10 +14,12 @@ import { createPlace, type Place } from "@/lib/places";
 export function InlinePlaceForm({
   onCreated,
   onCancel,
+  onSubmitReady,
 }: {
   onCreated: (place: Place) => void;
   /** Sem `onCancel` (nenhum local ainda) os campos não podem ser fechados. */
   onCancel?: () => void;
+  onSubmitReady?: (submit: (() => Promise<Place | null>) | null) => void;
 }) {
   const uid = useId();
   const [nome, setNome] = useState("");
@@ -24,13 +27,14 @@ export function InlinePlaceForm({
   const [prazo, setPrazo] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const submitOnce = useRef(createSubmitOnce((operation: () => Promise<Place | null>) => operation()));
 
-  async function submit() {
-    if (busy) return;
+  const submit = useCallback(async () => {
+    if (busy) return null;
     const trimmed = nome.trim();
     if (!trimmed) {
       setError("Informe o nome do local.");
-      return;
+      return null;
     }
     const rawValor = valor.trim().replace(",", ".");
     let valorPadrao: number | null = null;
@@ -38,7 +42,7 @@ export function InlinePlaceForm({
       valorPadrao = Number(rawValor);
       if (!Number.isFinite(valorPadrao) || valorPadrao < 0) {
         setError("O valor padrão deve ser zero ou maior.");
-        return;
+        return null;
       }
     }
     const rawPrazo = prazo.trim();
@@ -47,24 +51,34 @@ export function InlinePlaceForm({
       prazoDias = Number(rawPrazo);
       if (!Number.isInteger(prazoDias) || prazoDias < 0 || prazoDias > 365) {
         setError("O prazo deve ser um número inteiro de 0 a 365 dias.");
-        return;
+        return null;
       }
     }
     setBusy(true);
     setError("");
-    try {
-      const place = await createPlace({
+    return submitOnce.current(async () => {
+      try {
+        const place = await createPlace({
         nome: trimmed,
         endereco: null,
         valor_padrao: valorPadrao,
         prazo_recebimento_dias: prazoDias,
       });
-      onCreated(place);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Não foi possível criar o local. Tente novamente.");
-      setBusy(false);
-    }
-  }
+        onCreated(place);
+        return place;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Não foi possível criar o local. Tente novamente.");
+        return null;
+      } finally {
+        setBusy(false);
+      }
+    });
+  }, [busy, nome, valor, prazo, onCreated]);
+
+  useEffect(() => {
+    onSubmitReady?.(submit);
+    return () => onSubmitReady?.(null);
+  }, [onSubmitReady, submit]);
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
