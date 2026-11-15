@@ -81,7 +81,7 @@ test("MAI-155: GET /sitemap.xml anônimo chega ao handler SEM sessão e SEM 307/
   }
 });
 
-test("MAI-155: só a rota exata /sitemap.xml é pública; vizinhas e privadas continuam protegidas", async () => {
+test("MAI-155: sitemap exato é público, vizinhas desconhecidas chegam ao Next e rotas privadas continuam protegidas", async () => {
   globalThis.__mockUser = null;
 
   const lookalikes = [
@@ -94,12 +94,8 @@ test("MAI-155: só a rota exata /sitemap.xml é pública; vizinhas e privadas co
   for (const path of lookalikes) {
     globalThis.__getUserCalls = 0;
     const response = await updateSession(createReq(`http://localhost${path}`));
-    assert.equal(response.status, 307, `Rota ${path} deve redirecionar com status 307`);
-    assert.match(
-      response.headers.get("location") || "",
-      new RegExp(`^http://localhost/login/?\\?next=${encodeURIComponent(path)}`),
-      `Rota ${path} deve redirecionar para /login com param next`,
-    );
+    assert.equal(response.status, 200, `Rota desconhecida ${path} deve chegar ao Next`);
+    assert.equal(response.headers.get("location"), null, `Rota desconhecida ${path} não deve redirecionar`);
   }
   assert.equal(isPublicSeoRoute("/sitemap"), false);
   assert.equal(isPublicSeoRoute("/sitemap.xml/"), false);

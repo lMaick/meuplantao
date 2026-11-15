@@ -154,7 +154,7 @@ test("Sem sessão: GET /api/csp-report chega ao handler (não redireciona)", asy
   assert.equal(response.headers.get("location"), null, "NÃO deve redirecionar para /login");
 });
 
-test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenticação", async () => {
+test("Sem sessão: rotas privadas exigem autenticação e URLs desconhecidas chegam ao Next", async () => {
   globalThis.__mockUser = null;
 
   const privatePaths = [
@@ -165,8 +165,6 @@ test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenti
     "/api/mercadopago/verify",
     "/api/mercadopago/checkout",
     "/api/mercadopago/sync",
-    "/api/webhooks/mercadopago/fake",
-    "/api/webhooks/mercadopago-other",
   ];
 
   for (const path of privatePaths) {
@@ -179,5 +177,11 @@ test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenti
       new RegExp(`^http://localhost/login\\?next=${encodeURIComponent(path)}`),
       `Rota ${path} deve redirecionar para /login com param next`,
     );
+  }
+
+  for (const path of ["/api/webhooks/mercadopago/fake", "/api/webhooks/mercadopago-other"]) {
+    const response = await updateSession(createReq(`http://localhost${path}`));
+    assert.equal(response.status, 200, `Rota desconhecida ${path} deve chegar ao Next`);
+    assert.equal(response.headers.get("location"), null, `${path} não deve redirecionar`);
   }
 });

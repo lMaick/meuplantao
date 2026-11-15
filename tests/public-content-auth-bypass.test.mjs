@@ -136,7 +136,7 @@ test("MAI-160: autenticado em conteúdo público não regride (200, sem Auth no 
   globalThis.__mockUser = null;
 });
 
-test("MAI-160: near-match e rotas privadas continuam passando pelo Auth e protegidas", async () => {
+test("MAI-160: near-match desconhecido chega ao Next e rotas privadas continuam protegidas", async () => {
   const nearMatches = [
     "/privacidade/",
     "/privacidade-extra",
@@ -161,14 +161,10 @@ test("MAI-160: near-match e rotas privadas continuam passando pelo Auth e proteg
     assert.equal(isPublicContentRoute(path), false, `${path} NÃO deve ser conteúdo público`);
     resetCounters();
     const response = await updateSession(createReq(`http://localhost${path}`));
-    assert.equal(response.status, 307, `Rota ${path} deve redirecionar para login`);
-    assert.match(
-      response.headers.get("location") || "",
-      new RegExp(`^http://localhost/login/?\\?next=${encodeURIComponent(path)}`),
-      `Rota ${path} deve redirecionar para /login com param next`,
-    );
-    assert.ok(globalThis.__getUserCalls >= 1, `Rota ${path} deve consultar auth.getUser`);
-    assert.ok(globalThis.__clientCalls >= 1, `Rota ${path} deve criar client Supabase`);
+    assert.equal(response.status, 200, `Rota desconhecida ${path} deve chegar ao Next`);
+    assert.equal(response.headers.get("location"), null, `Rota desconhecida ${path} não deve redirecionar`);
+    assert.equal(globalThis.__getUserCalls, 0, `Rota desconhecida ${path} não deve consultar auth.getUser`);
+    assert.equal(globalThis.__clientCalls, 0, `Rota desconhecida ${path} não deve criar client Supabase`);
   }
 
   const privatePaths = [

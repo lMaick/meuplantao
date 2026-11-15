@@ -76,6 +76,24 @@ export function isPublicContentRoute(pathname: string): boolean {
   return (PUBLIC_CONTENT_PATHS as readonly string[]).includes(pathname);
 }
 
+const PROTECTED_ROUTE_PREFIXES = [
+  "/alertas",
+  "/assinatura",
+  "/calendario",
+  "/configuracoes",
+  "/contatos",
+  "/dashboard",
+  "/historico",
+  "/locais",
+  "/pagamentos",
+  "/perfil",
+  "/api/mercadopago",
+] as const;
+
+function isProtectedRoute(pathname: string): boolean {
+  return PROTECTED_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
 export async function updateSession(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   // MAI-151: fast-path M2M ANTES de qualquer Supabase Auth. Retorna
@@ -99,6 +117,14 @@ export async function updateSession(request: NextRequest) {
   if (isPublicContentRoute(pathname)) {
     return NextResponse.next({ request });
   }
+  const isAuthEntryPage = pathname === "/login" || pathname === "/cadastro" || pathname === "/esqueci-senha";
+  const isSessionFlowRoute = isAuthEntryPage || pathname === "/redefinir-senha" || pathname === "/auth/callback";
+  // Rotas desconhecidas devem chegar ao Next para renderizar not-found.tsx.
+  // Só as áreas privadas explicitamente listadas exigem sessão; as páginas de
+  // entrada de Auth continuam passando pela checagem para redirecionar usuários logados.
+  if (!isProtectedRoute(pathname) && !isSessionFlowRoute) {
+    return NextResponse.next({ request });
+  }
   const config = getSupabaseConfig();
   if (!config) {
     return new NextResponse(`<!doctype html>
@@ -118,7 +144,6 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isLandingPage = pathname === "/";
-  const isAuthEntryPage = pathname === "/login" || pathname === "/cadastro" || pathname === "/esqueci-senha";
   const isPublicLegalOrSupport = pathname === "/privacidade" || pathname === "/termos" || pathname === "/suporte";
   const isPasswordResetPage = pathname === "/redefinir-senha";
   const isPublicAuthCallback = pathname === "/auth/callback";
