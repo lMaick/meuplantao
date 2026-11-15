@@ -34,15 +34,17 @@ export function SupportForm() {
       return;
     }
 
-    const result = (await response.json().catch(() => null)) as { error?: string } | null;
-    if (!response.ok) {
-      setState("error");
-      setErrorMessage(result?.error || "Não foi possível enviar agora. Tente novamente.");
+    const result = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+    if (response.ok && result?.ok === true) {
+      setState("sent");
+      formElement.reset();
       return;
     }
 
-    setState("sent");
-    formElement.reset();
+    setState("error");
+    const message = result?.error?.trim() || "Não foi possível confirmar o envio.";
+    const fallback = "Se o problema continuar, escreva para contato@meuplantao.pro.";
+    setErrorMessage(message.includes("contato@meuplantao.pro") ? message : `${message} ${fallback}`);
   }
 
   return (

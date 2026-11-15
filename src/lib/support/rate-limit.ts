@@ -1,5 +1,6 @@
 const WINDOW_MS = 15 * 60 * 1000;
 const MAX_SUBMISSIONS = 5;
+// Best-effort por instância: este Map não compartilha contadores entre workers serverless.
 const entries = new Map<string, { count: number; resetAt: number }>();
 
 export function allowSupportSubmission(key: string, now = Date.now()): boolean {

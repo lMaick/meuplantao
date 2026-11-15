@@ -348,6 +348,7 @@ export function initializeSentryIfNeeded(): void {
       environment: process.env.VERCEL_ENV || process.env.NODE_ENV || "development",
       release: process.env.VERCEL_GIT_COMMIT_SHA || process.env.NEXT_PUBLIC_APP_VERSION || undefined,
       tracesSampleRate: 0.1,
+      sendDefaultPii: false,
       beforeSend(event) {
         return sanitizeSentryEvent(event);
       },

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 const { validateSupportSubmission } = await import("../src/lib/support/validation.ts");
 const { allowSupportSubmission, resetSupportRateLimitForTesting } = await import("../src/lib/support/rate-limit.ts");
@@ -39,4 +40,10 @@ test("support rate limit allows five messages per key and resets after the windo
   assert.equal(allowSupportSubmission("client-b", 1000), true);
   assert.equal(allowSupportSubmission("client-a", 901_001), true);
   resetSupportRateLimitForTesting();
+});
+
+test("support form confirms only an explicit successful JSON response and gives a contact fallback", () => {
+  const source = readFileSync(new URL("../src/components/support-form.tsx", import.meta.url), "utf8");
+  assert.ok(source.includes("if (response.ok && result?.ok === true)"));
+  assert.ok(source.includes("escreva para contato@meuplantao.pro"));
 });

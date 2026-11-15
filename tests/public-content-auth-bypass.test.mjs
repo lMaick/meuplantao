@@ -75,7 +75,7 @@ test("MAI-160: allowlist PUBLIC_CONTENT_PATHS exata e classificação antes do A
   // Allowlists existentes intactas: conteúdo público é lista separada.
   assert.deepEqual(
     [...MACHINE_TO_MACHINE_PATHS].sort(),
-    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
+    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/support", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
     "allowlist M2M exata, sem ampliação",
   );
   assert.deepEqual([...PUBLIC_SEO_PATHS], ["/sitemap.xml"], "allowlist SEO pública exata: só /sitemap.xml");

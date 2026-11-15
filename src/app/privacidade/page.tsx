@@ -45,8 +45,8 @@ export default function PrivacidadePage() {
           como o Sentry).
         </p>
         <p>
-          O isolamento dos seus registros é garantido no banco de dados via políticas estritas de Row
-          políticas de acesso restritas. O MeuPlantão <strong>não comercializa</strong> seus dados em hipótese
+          O isolamento dos seus registros é garantido no banco de dados por regras de acesso restritas.
+          O MeuPlantão <strong>não comercializa</strong> seus dados em hipótese
           alguma e não utiliza cookies ou rastreadores de terceiros para publicidade comportamental.
         </p>
       </LegalSection>

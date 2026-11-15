@@ -31,14 +31,17 @@ export const MACHINE_TO_MACHINE_PATHS = [
   // (fail-closed no handler) e o descadastro por token opaco no POST (RFC 8058).
   "/api/cron/email-alerts",
   "/api/email/unsubscribe",
+  // Formulário público de suporte; rate limit, honeypot e validação vivem no handler.
+  "/api/support",
 ] as const;
 
 /**
- * MAI-151: rotas machine-to-machine (webhooks Mercado Pago + relatório CSP).
- * Chamadores server-to-server/browser-beacon sem sessão Supabase. A
+ * MAI-151: rotas sem sessão Supabase (webhooks/M2M, relatório CSP e formulário
+ * público de suporte). A
  * autenticação/autorização vive nos handlers (HMAC x-signature, consulta
- * autenticada Mercado Pago, idempotência, rate limit, sanitização) — nunca
- * em cookie de sessão. Comparação exata: sem prefixo genérico `/api/*`.
+ * autenticada Mercado Pago, idempotência, rate limit, honeypot, validação e
+ * sanitização) — nunca em cookie de sessão. Comparação exata: sem prefixo
+ * genérico `/api/*`.
  */
 export function isMachineToMachineRoute(pathname: string): boolean {
   return (MACHINE_TO_MACHINE_PATHS as readonly string[]).includes(pathname);
