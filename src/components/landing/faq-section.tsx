@@ -37,7 +37,7 @@ const faqs: FaqItem[] = [
   {
     question: "Meus dados financeiros e de plantões estão seguros?",
     answer:
-      "Seus registros ficam associados apenas à sua conta e protegidos por políticas de Row Level Security (RLS) e controles de acesso em banco Postgres. Os Termos e a Política de Privacidade detalham responsabilidades, limitações e como exercer seus direitos.",
+      "Seus registros ficam associados apenas à sua conta e protegidos por controles de acesso. Os Termos e a Política de Privacidade detalham responsabilidades, limitações e como exercer seus direitos.",
   },
 ];
 
