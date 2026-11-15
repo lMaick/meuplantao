@@ -54,7 +54,7 @@ test("MAI-151: rotas M2M chegam ao handler SEM chamar auth.getUser", async () =>
   assert.ok(!sessionSource.includes('startsWith("/api")'), "sem bypass genérico /api/* na sessão");
   assert.deepEqual(
     [...MACHINE_TO_MACHINE_PATHS].sort(),
-    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
+    ["/api/cron/email-alerts", "/api/csp-report", "/api/email/unsubscribe", "/api/support", "/api/webhooks/mercadopago", "/api/webhooks/mercadopago/ipn"].sort(),
     "allowlist M2M exata, sem ampliação",
   );
 
@@ -64,6 +64,7 @@ test("MAI-151: rotas M2M chegam ao handler SEM chamar auth.getUser", async () =>
     ["http://localhost/api/webhooks/mercadopago/ipn", "POST"],
     ["http://localhost/api/csp-report", "POST"],
     ["http://localhost/api/csp-report", "GET"],
+    ["http://localhost/api/support", "POST"],
   ];
   for (const [url, method] of m2mRequests) {
     globalThis.__mockUser = null;
@@ -96,6 +97,16 @@ test("MAI-151: rotas M2M chegam ao handler SEM chamar auth.getUser", async () =>
   const privateResponse = await updateSession(createReq("http://localhost/dashboard"));
   assert.equal(privateResponse.status, 307);
   assert.ok(globalThis.__getUserCalls >= 1, "rota privada deve consultar auth.getUser");
+});
+
+test("Sem sessão: POST /api/support chega ao handler sem consultar Auth", async () => {
+  globalThis.__mockUser = null;
+  globalThis.__getUserCalls = 0;
+  const response = await updateSession(createReq("http://localhost/api/support", "POST"));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("location"), null);
+  assert.equal(globalThis.__getUserCalls, 0);
+  assert.equal(isMachineToMachineRoute("/api/support"), true);
 });
 
 test("Sem sessão: POST /api/webhooks/mercadopago chega ao handler (não redireciona)", async () => {
@@ -143,7 +154,7 @@ test("Sem sessão: GET /api/csp-report chega ao handler (não redireciona)", asy
   assert.equal(response.headers.get("location"), null, "NÃO deve redirecionar para /login");
 });
 
-test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenticação", async () => {
+test("Sem sessão: rotas privadas exigem autenticação e URLs desconhecidas chegam ao Next", async () => {
   globalThis.__mockUser = null;
 
   const privatePaths = [
@@ -154,8 +165,6 @@ test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenti
     "/api/mercadopago/verify",
     "/api/mercadopago/checkout",
     "/api/mercadopago/sync",
-    "/api/webhooks/mercadopago/fake",
-    "/api/webhooks/mercadopago-other",
   ];
 
   for (const path of privatePaths) {
@@ -168,5 +177,11 @@ test("Sem sessão: rotas privadas ou não autorizadas continuam exigindo autenti
       new RegExp(`^http://localhost/login\\?next=${encodeURIComponent(path)}`),
       `Rota ${path} deve redirecionar para /login com param next`,
     );
+  }
+
+  for (const path of ["/api/webhooks/mercadopago/fake", "/api/webhooks/mercadopago-other"]) {
+    const response = await updateSession(createReq(`http://localhost${path}`));
+    assert.equal(response.status, 200, `Rota desconhecida ${path} deve chegar ao Next`);
+    assert.equal(response.headers.get("location"), null, `${path} não deve redirecionar`);
   }
 });
