@@ -41,7 +41,8 @@ export const PRICING_V2_CATALOG_VERSION = "2026-v2";
 /**
  * Corte do preço novo (server-side é a autoridade; o cliente só espelha para exibir).
  * Contas com auth.users.created_at >= corte usam o catálogo v2; as anteriores seguem na v1.
- * AJUSTAR para o instante em que este PR entrar em produção, antes do merge.
+ * PROVISÓRIO: NÃO FAZER MERGE antes de ajustar. Regra: corte = hora do merge + 1h (sempre
+ * DEPOIS do deploy), para o erro só poder favorecer o cliente (viu 19,90 e fica em 12,90).
  */
 export const PRICING_V2_CUTOFF_AT = "2026-11-17T03:00:00.000Z";
 export const SUPPORTED_CURRENCY = "BRL" as const;

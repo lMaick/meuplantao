@@ -167,3 +167,8 @@ test("pagamento sem cotação com valor fora de qualquer catálogo é amount_mis
   assert.equal(known.valid, false);
   assert.equal(known.reason, "unlinked_payment_requires_review");
 });
+
+test("landing mostra sempre o preço mensal do catálogo v2, sem depender de data", async () => {
+  const { getLandingMonthlyPriceLabel } = await import("../src/lib/subscription/landing-price.ts");
+  assert.equal(getLandingMonthlyPriceLabel(), "R$ 19,90");
+});
