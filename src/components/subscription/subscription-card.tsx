@@ -38,7 +38,8 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [feedbackType, setFeedbackType] = useState<"info" | "success" | "error">("info");
   const [selectedMonths, setSelectedMonths] = useState<SubscriptionMonths>(1);
-  const selectedPeriod = getSubscriptionPeriod(selectedMonths) ?? getSubscriptionPeriod(1)!;
+  const catalogVersion = trial?.catalogVersion;
+  const selectedPeriod = getSubscriptionPeriod(selectedMonths, catalogVersion) ?? getSubscriptionPeriod(1, catalogVersion)!;
 
   useEffect(() => {
     if (payment !== "success" || !paymentId) return;
@@ -282,7 +283,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
 
           <div className="flex items-baseline gap-1 bg-background/80 px-4 py-2.5 rounded-xl border border-border/60 shadow-2xs">
             <span className="text-xs font-semibold text-muted-foreground">R$</span>
-            <span data-default-price="12,90" className="text-3xl font-extrabold text-foreground font-mono tracking-tight">
+            <span data-default-price={getSubscriptionPeriod(1, catalogVersion)!.price.toFixed(2).replace(".", ",")} className="text-3xl font-extrabold text-foreground font-mono tracking-tight">
               {selectedPeriod.price.toFixed(2).replace(".", ",")}
             </span>
             <span className="text-xs font-medium text-muted-foreground">/ {selectedPeriod.label.toLowerCase()}</span>
@@ -320,7 +321,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
           </div>
         </div>
 
-        <PlanPeriodSelector value={selectedMonths} onChange={setSelectedMonths} disabled={isProcessing || isSyncing} />
+        <PlanPeriodSelector value={selectedMonths} onChange={setSelectedMonths} catalogVersion={catalogVersion} disabled={isProcessing || isSyncing} />
 
         <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
           Compra avulsa pré-paga: você paga apenas pelo período selecionado. Sem renovação automática e

@@ -36,6 +36,14 @@ export function paymentBelongsToUser(
 
 // ─── Catálogo Canônico de Assinaturas (MAI-137) ──────────────────────────────
 export const DEFAULT_CATALOG_VERSION = "2026-v1";
+// Catálogo v2: preço novo do Pro, só para contas criadas a partir do corte.
+export const PRICING_V2_CATALOG_VERSION = "2026-v2";
+/**
+ * Corte do preço novo (server-side é a autoridade; o cliente só espelha para exibir).
+ * Contas com auth.users.created_at >= corte usam o catálogo v2; as anteriores seguem na v1.
+ * AJUSTAR para o instante em que este PR entrar em produção, antes do merge.
+ */
+export const PRICING_V2_CUTOFF_AT = "2026-11-17T03:00:00.000Z";
 export const SUPPORTED_CURRENCY = "BRL" as const;
 
 export const SUBSCRIPTION_PERIODS = [1, 3, 6, 12] as const;
@@ -55,7 +63,7 @@ export interface CanonicalPlan {
   readonly catalogVersion: string;
 }
 
-export const CANONICAL_PLANS: readonly CanonicalPlan[] = [
+const LEGACY_PLANS: readonly CanonicalPlan[] = [
   {
     id: "meuplantao-pro-1",
     planKey: "pro",
@@ -107,6 +115,33 @@ export const CANONICAL_PLANS: readonly CanonicalPlan[] = [
     catalogVersion: DEFAULT_CATALOG_VERSION,
   },
 ] as const;
+
+const PRICING_V2_PLANS: readonly CanonicalPlan[] = [
+  { id: "meuplantao-pro-1", planKey: "pro", months: 1, label: "Mensal", price: 19.9, priceCents: 1990, currency: SUPPORTED_CURRENCY, validityDays: 30, monthlyEquivalent: 19.9, catalogVersion: PRICING_V2_CATALOG_VERSION },
+  { id: "meuplantao-pro-3", planKey: "pro", months: 3, label: "Trimestral", price: 59.7, priceCents: 5970, currency: SUPPORTED_CURRENCY, validityDays: 90, monthlyEquivalent: 19.9, catalogVersion: PRICING_V2_CATALOG_VERSION },
+  { id: "meuplantao-pro-6", planKey: "pro", months: 6, label: "Semestral", price: 107.9, priceCents: 10790, currency: SUPPORTED_CURRENCY, validityDays: 180, monthlyEquivalent: 17.98, catalogVersion: PRICING_V2_CATALOG_VERSION },
+  { id: "meuplantao-pro-12", planKey: "pro", months: 12, label: "Anual", price: 179.9, priceCents: 17990, currency: SUPPORTED_CURRENCY, validityDays: 365, monthlyEquivalent: 14.99, badge: "Melhor valor", catalogVersion: PRICING_V2_CATALOG_VERSION },
+] as const;
+
+// v1 primeiro: buscas sem versão explícita continuam resolvendo o catálogo antigo.
+export const CANONICAL_PLANS: readonly CanonicalPlan[] = [...LEGACY_PLANS, ...PRICING_V2_PLANS];
+
+/** Versão do catálogo decidida pela data de criação da conta (nunca por parâmetro do navegador). */
+export function getCatalogVersionForAccount(
+  accountCreatedAt: string | Date | null | undefined,
+  cutoffAt: string | Date = PRICING_V2_CUTOFF_AT,
+): string {
+  if (!accountCreatedAt) return DEFAULT_CATALOG_VERSION;
+  const created = new Date(accountCreatedAt).getTime();
+  const cutoff = new Date(cutoffAt).getTime();
+  if (Number.isNaN(created) || Number.isNaN(cutoff)) return DEFAULT_CATALOG_VERSION;
+  return created >= cutoff ? PRICING_V2_CATALOG_VERSION : DEFAULT_CATALOG_VERSION;
+}
+
+export function getCatalogPlans(version: string): readonly CanonicalPlan[] {
+  const plans = CANONICAL_PLANS.filter((plan) => plan.catalogVersion === version);
+  return plans.length > 0 ? plans : LEGACY_PLANS;
+}
 
 export function getCanonicalPlanByMonths(months: number, version = DEFAULT_CATALOG_VERSION): CanonicalPlan | undefined {
   return CANONICAL_PLANS.find((plan) => plan.months === months && plan.catalogVersion === version)
@@ -399,7 +434,7 @@ export async function validatePaymentBeforeGrantingPro(
       };
     }
 
-    if (paymentCents !== canonicalPlan.priceCents) {
+    if (!CANONICAL_PLANS.some((plan) => plan.months === canonicalPlan.months && plan.priceCents === paymentCents)) {
       return {
         valid: false,
         quarantine: true,
@@ -524,7 +559,7 @@ export async function validatePaymentBeforeGrantingPro(
     };
   }
 
-  const canonicalByPlan = checkoutRow.plan_id ? getCanonicalPlanById(String(checkoutRow.plan_id)) : undefined;
+  const canonicalByPlan = checkoutRow.plan_id ? getCanonicalPlanById(String(checkoutRow.plan_id), String(checkoutRow.catalog_version || DEFAULT_CATALOG_VERSION)) : undefined;
   const months = (Number(checkoutRow.months) || canonicalByPlan?.months || 1) as SubscriptionMonths;
   const validityDays = Number(checkoutRow.validity_days) || canonicalByPlan?.validityDays || getValidityDays(months);
 
@@ -538,7 +573,7 @@ export async function validatePaymentBeforeGrantingPro(
     amountCents: expectedCents,
     currency: "BRL",
     checkoutId: String(checkoutRow.id),
-    catalogVersion: String(checkoutRow.catalog_version || "2026-v1"),
+    catalogVersion: String(checkoutRow.catalog_version || DEFAULT_CATALOG_VERSION),
     isLegacy: false,
   };
 }

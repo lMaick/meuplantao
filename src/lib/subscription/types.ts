@@ -1,5 +1,6 @@
 import {
-  CANONICAL_PLANS,
+  DEFAULT_CATALOG_VERSION,
+  getCatalogPlans,
   SUBSCRIPTION_PERIODS,
   type CanonicalPlan,
   type SubscriptionMonths,
@@ -10,10 +11,15 @@ export type SubscriptionStatus = "trialing" | "expired" | "active";
 export { SUBSCRIPTION_PERIODS, type SubscriptionMonths };
 export type SubscriptionPeriod = CanonicalPlan;
 
-export const SUBSCRIPTION_PERIODS_CONFIG: readonly SubscriptionPeriod[] = CANONICAL_PLANS;
+export const SUBSCRIPTION_PERIODS_CONFIG: readonly SubscriptionPeriod[] = getCatalogPlans(DEFAULT_CATALOG_VERSION);
 
-export function getSubscriptionPeriod(months: number): SubscriptionPeriod | undefined {
-  return CANONICAL_PLANS.find((period) => period.months === months);
+/** Períodos exibidos para a versão de catálogo da conta (cosmético: o servidor cobra pela própria regra). */
+export function getSubscriptionPeriods(catalogVersion?: string): readonly SubscriptionPeriod[] {
+  return getCatalogPlans(catalogVersion ?? DEFAULT_CATALOG_VERSION);
+}
+
+export function getSubscriptionPeriod(months: number, catalogVersion?: string): SubscriptionPeriod | undefined {
+  return getSubscriptionPeriods(catalogVersion).find((period) => period.months === months);
 }
 
 export function addSubscriptionValidity(start: Date, validityDays: number): Date {
@@ -36,4 +42,6 @@ export interface TrialInfo {
   proDaysRemaining: number;
   /** Data limite ISO da vigência Pro. Null quando sem Pro ativa. */
   proEndsAt: string | null;
+  /** Catálogo de preços da conta (derivado de created_at). Ausente = catálogo antigo. */
+  catalogVersion?: string;
 }
