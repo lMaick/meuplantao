@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
+import { getLandingMonthlyPriceLabel } from "@/lib/subscription/landing-price";
 
 const benefits = [
   "Controle de plantões e repasses",
@@ -8,6 +9,7 @@ const benefits = [
 ];
 
 export function PricingSection() {
+  const landingMonthlyPrice = getLandingMonthlyPriceLabel();
   return (
     <section id="preco" className="border-b border-border/80 bg-slate-950 py-16 text-white md:py-24">
       <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
@@ -33,7 +35,7 @@ export function PricingSection() {
           <div className="rounded-2xl border border-emerald-400/40 bg-white p-6 text-slate-900 shadow-xl sm:p-8 md:min-w-80">
             <p className="text-sm font-semibold text-slate-600">Plano mensal (compra avulsa pré-paga)</p>
             <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-5xl font-extrabold tracking-tight">R$ 12,90</span>
+              <span className="text-5xl font-extrabold tracking-tight">{landingMonthlyPrice}</span>
               <span className="text-sm text-slate-500">/mês</span>
             </div>
             <p className="mt-2 text-sm font-semibold text-emerald-700">30 dias grátis para testar, sem cartão.</p>

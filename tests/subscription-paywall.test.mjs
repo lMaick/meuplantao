@@ -46,7 +46,8 @@ describe("MAI-126: Paywall pos-trial + estado global reativo", () => {
     test("componente existe com copy, CTA R$ 12,90 e modo leitura", () => {
       const src = read("src/components/subscription/paywall-modal.tsx");
       assert.match(src, /Trial expirado|período de teste/i);
-      assert.match(src, /12,90/);
+      assert.match(src, /monthlyPrice/);
+      assert.match(src, /getSubscriptionPeriod\(1, trial\?\.catalogVersion\)/);
       assert.match(src, /Assinar MeuPlantão Pro/);
       assert.match(src, /modo leitura|Continuar em modo leitura/i);
       assert.match(src, /role="dialog"/);

@@ -241,7 +241,8 @@ describe("MAI-118: Subscription & 30-Day Trial System", () => {
       );
 
       // Price check
-      assert.ok(cardSource.includes("12,90"), "Must display price 12,90");
+      // Preço vem do catálogo da conta (v1 12,90 / v2 19,90), não de texto fixo.
+      assert.ok(cardSource.includes("getSubscriptionPeriod(1, catalogVersion)"), "Must display catalog price for the account");
       assert.ok(cardSource.includes("MeuPlantão Pro"), "Must display plan title MeuPlantão Pro");
 
       // Benefits checks

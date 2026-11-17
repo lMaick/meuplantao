@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useId, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { getCatalogVersionForAccount } from "@/lib/mercadopago/payments";
 import { calculateTrial } from "./trial";
 import type { TrialInfo } from "./types";
 import { useSubscriptionContext } from "./subscription-provider";
@@ -50,9 +51,10 @@ export function useSubscription(): SubscriptionState {
       setError(null);
       const { userId: currentUserId, createdAt, subscription } = await fetchMySubscription();
       setUserId(currentUserId);
-      setTrial(
-        calculateTrial(createdAt, subscription?.status, new Date(), subscription?.current_period_end),
-      );
+      setTrial({
+        ...calculateTrial(createdAt, subscription?.status, new Date(), subscription?.current_period_end),
+        catalogVersion: getCatalogVersionForAccount(createdAt),
+      });
     } catch (err) {
       const normalized = err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura");
       // MAI-143: mesma regra do provider — falha de autenticação (ausente ou JWT

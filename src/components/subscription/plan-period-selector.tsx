@@ -2,22 +2,23 @@
 
 import { Check } from "lucide-react";
 import { cn } from "cn";
-import { SUBSCRIPTION_PERIODS_CONFIG, type SubscriptionMonths } from "@/lib/subscription/types";
+import { getSubscriptionPeriods, type SubscriptionMonths } from "@/lib/subscription/types";
 
 interface PlanPeriodSelectorProps {
   value: SubscriptionMonths;
   onChange: (months: SubscriptionMonths) => void;
   disabled?: boolean;
+  catalogVersion?: string;
 }
 
 const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 
-export function PlanPeriodSelector({ value, onChange, disabled = false }: PlanPeriodSelectorProps) {
+export function PlanPeriodSelector({ value, onChange, disabled = false, catalogVersion }: PlanPeriodSelectorProps) {
   return (
     <fieldset className="mt-6 space-y-3" disabled={disabled}>
       <legend className="text-sm font-semibold text-foreground">Escolha seu período de contratação</legend>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" role="radiogroup" aria-label="Período de contratação">
-        {SUBSCRIPTION_PERIODS_CONFIG.map((period) => {
+        {getSubscriptionPeriods(catalogVersion).map((period) => {
           const selected = period.months === value;
           return (
             <label
