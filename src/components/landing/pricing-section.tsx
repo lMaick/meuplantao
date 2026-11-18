@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 const benefits = [
   "Controle de plantões e repasses",
@@ -8,8 +11,16 @@ const benefits = [
 ];
 
 export function PricingSection() {
+  const isTwa = useIsTwa();
+
+  if (isTwa) return null;
+
   return (
-    <section id="preco" className="border-b border-border/80 bg-slate-950 py-16 text-white md:py-24">
+    <section
+      id="preco"
+      data-twa-hide="true"
+      className="border-b border-border/80 bg-slate-950 py-16 text-white md:py-24"
+    >
       <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
         <div className="grid items-center gap-10 md:grid-cols-[1fr_auto] md:gap-16">
           <div>
