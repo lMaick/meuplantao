@@ -55,7 +55,7 @@ export function HeroSection() {
 
         {/* Trust Badges */}
         <div className="mt-12 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-xs font-medium text-muted-foreground">
-          <div className="flex items-center gap-1.5">
+          <div data-twa-hide="true" className="flex items-center gap-1.5">
             <CheckCircle2 className="size-4 text-emerald-600" />
             <span>Sem cartão no cadastro</span>
           </div>

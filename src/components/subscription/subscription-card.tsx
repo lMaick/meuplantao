@@ -22,6 +22,7 @@ import {
   type SyncPayload,
 } from "@/lib/subscription";
 import { getSubscriptionPeriod, type SubscriptionMonths } from "@/lib/subscription/types";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 import { PlanPeriodSelector } from "./plan-period-selector";
 import { cn } from "cn";
 
@@ -32,6 +33,7 @@ interface SubscriptionCardProps {
 }
 
 export function SubscriptionCard({ className, payment, paymentId }: SubscriptionCardProps) {
+  const isTwa = useIsTwa();
   const { trial, isLoading, refresh } = useSubscription();
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -41,7 +43,7 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
   const selectedPeriod = getSubscriptionPeriod(selectedMonths) ?? getSubscriptionPeriod(1)!;
 
   useEffect(() => {
-    if (payment !== "success" || !paymentId) return;
+    if (isTwa || payment !== "success" || !paymentId) return;
 
     let cancelled = false;
     const verifyPayment = async () => {
@@ -75,9 +77,10 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
     return () => {
       cancelled = true;
     };
-  }, [payment, paymentId, refresh]);
+  }, [isTwa, payment, paymentId, refresh]);
 
   const handleSubscribe = async () => {
+    if (isTwa) return;
     setIsProcessing(true);
     setFeedbackMessage(null);
 
@@ -154,8 +157,134 @@ export function SubscriptionCard({ className, payment, paymentId }: Subscription
 
   const isWarning = trial ? trial.daysRemaining <= 3 && trial.isTrialing : false;
 
+  if (isTwa) {
+    return (
+      <Card className={cn("overflow-hidden border-border/90 bg-card p-6 shadow-sm", className)}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-border/70 pb-5">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight text-foreground">
+              Acesso da Conta
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Consulte a situação de acesso da sua conta e acompanhe seus plantões.
+            </p>
+          </div>
+
+          {trial && (
+            <div className="shrink-0">
+              {trial.isActive ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-800 dark:text-emerald-300 border border-emerald-500/30">
+                  <Sparkles className="size-3.5" />
+                  Acesso Ativo
+                </span>
+              ) : trial.isExpired ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground border border-border">
+                  <Clock className="size-3.5" />
+                  Modo leitura
+                </span>
+              ) : (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold border",
+                    isWarning
+                      ? "bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/30"
+                      : "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-500/30",
+                  )}
+                >
+                  <Clock className="size-3.5" />
+                  {trial.daysRemaining === 1
+                    ? "1 dia restante de avaliação"
+                    : `${trial.daysRemaining} dias restantes de avaliação`}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {trial?.isActive && (
+          <div className="mt-5 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-sm text-emerald-900 dark:text-emerald-200">
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <div>
+                <p className="font-semibold">
+                  {trial.proDaysRemaining > 0 && (trial.proEndsAt ?? trial.currentPeriodEnd)
+                    ? `Acesso completo ativo — ${trial.proDaysRemaining === 1 ? "1 dia restante" : `${trial.proDaysRemaining} dias restantes`} (até ${new Date((trial.proEndsAt ?? trial.currentPeriodEnd) as string).toLocaleDateString("pt-BR", { timeZone: "America/Bahia" })})`
+                    : "Acesso completo ativo"}
+                </p>
+                <p className="mt-0.5 text-xs opacity-90">
+                  Todos os recursos de gestão de plantões, locais, contatos e recebimentos estão liberados.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {trial && !trial.isActive && (
+          <div
+            className={cn(
+              "mt-5 rounded-xl p-4 text-sm border",
+              trial.isExpired
+                ? "bg-muted/40 border-border text-foreground"
+                : isWarning
+                ? "bg-amber-500/10 border-amber-500/25 text-amber-900 dark:text-amber-200"
+                : "bg-emerald-500/10 border-emerald-500/25 text-emerald-900 dark:text-emerald-200",
+            )}
+          >
+            <div className="flex items-start gap-3">
+              <Clock
+                className={cn(
+                  "size-5 shrink-0 mt-0.5",
+                  trial.isExpired
+                    ? "text-muted-foreground"
+                    : isWarning
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-emerald-600 dark:text-emerald-400",
+                )}
+              />
+              <div>
+                <p className="font-semibold">
+                  {trial.isExpired
+                    ? "Seu período de avaliação gratuita de 30 dias encerrou."
+                    : `Você tem ${trial.daysRemaining} ${
+                        trial.daysRemaining === 1 ? "dia restante" : "dias restantes"
+                      } de avaliação gratuita.`}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {trial.isExpired
+                    ? "Seu histórico, plantões registrados e saldos a receber permanecem disponíveis em modo leitura."
+                    : "Aproveite os recursos do aplicativo durante o seu período de avaliação."}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          <div className="flex items-start gap-2.5">
+            <CheckCircle2 className="size-4.5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+            <span className="text-xs sm:text-sm text-foreground">
+              <strong>Controle organizado</strong> de plantões, locais e contatos
+            </span>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <CheckCircle2 className="size-4.5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+            <span className="text-xs sm:text-sm text-foreground">
+              <strong>Alertas automáticos</strong> de atrasos e conciliação
+            </span>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <CheckCircle2 className="size-4.5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+            <span className="text-xs sm:text-sm text-foreground">
+              <strong>Extratos detalhados</strong> e exportação em CSV (RFC 4180)
+            </span>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
   return (
-    <Card className={cn("overflow-hidden border-border/90 bg-card p-6 shadow-sm", className)}>
+    <Card data-twa-hide="true" className={cn("overflow-hidden border-border/90 bg-card p-6 shadow-sm", className)}>
       {/* Header section */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-border/70 pb-5">
         <div>

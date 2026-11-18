@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { PageHeader } from "@/components/ui/page-header";
 import { SubscriptionCard } from "@/components/subscription";
+import { SubscriptionPageHeader } from "./subscription-page-header";
 
 export const metadata: Metadata = {
   title: "Assinatura & Planos | MeuPlantão",
@@ -14,10 +14,7 @@ export const metadata: Metadata = {
 export default function SubscriptionPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-5 py-6">
-      <PageHeader
-        title="Assinatura & Planos"
-        description="Conheça os planos e garanta a gestão completa dos seus plantões e repasses."
-      />
+      <SubscriptionPageHeader />
 
       <SubscriptionCard />
     </div>

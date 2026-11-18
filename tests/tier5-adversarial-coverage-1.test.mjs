@@ -111,6 +111,9 @@ function loadTsxModule(relativeFilePath) {
       if (id === "@/lib/accessibility/use-focus-trap") {
         return { useFocusTrap: () => {} };
       }
+      if (id === "@/lib/twa/use-is-twa" || id === "@/lib/twa") {
+        return { useIsTwa: () => false };
+      }
       return require(id);
     },
     exports: {},

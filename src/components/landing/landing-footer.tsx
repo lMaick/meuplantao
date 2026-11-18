@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import { Activity, ArrowRight } from "lucide-react";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 export function LandingFooter() {
+  const isTwa = useIsTwa();
   const currentYear = new Date().getFullYear();
 
   return (
@@ -56,9 +60,11 @@ export function LandingFooter() {
             <Link href="#calculadora" className="hover:text-white transition-colors">
               Calculadora
             </Link>
-            <Link href="#preco" className="hover:text-white transition-colors">
-              Preço
-            </Link>
+            {!isTwa && (
+              <Link href="#preco" data-twa-hide="true" className="hover:text-white transition-colors">
+                Preço
+              </Link>
+            )}
             <Link href="/privacidade" className="hover:text-white transition-colors">
               Privacidade
             </Link>
