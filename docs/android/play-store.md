@@ -35,7 +35,7 @@ Aplicativos distribuídos na Google Play que vendem acesso ou recursos digitais 
 
 ### Fase 1 — Sem compra dentro do app Android (implementada)
 - O Web App Manifest (`src/app/manifest.ts`) define `start_url: "/?origem=twa"` e `display: "standalone"`.
-- Ao detectar `?origem=twa` (no `src/middleware.ts` ou no bootstrap cliente) ou referrer `android-app://`, o app grava o cookie `mp_origem=twa` (validade de 1 ano) e marca `html[data-twa="true"]` antes da primeira pintura (sem flash visual).
+- Ao detectar `?origem=twa` (no `src/middleware.ts` ou no bootstrap cliente) ou referrer exato `android-app://pro.meuplantao.app` (com ou sem `/` final, sem aceitar outros pacotes Android como Instagram ou Gmail), o app grava o cookie `mp_origem=twa` (validade de 1 ano) e marca `html[data-twa="true"]` antes da primeira pintura (sem flash visual).
 - **Dentro da TWA (`isTwa === true`):**
   - Esconde botões de assinar/estender plano, seletor de períodos, preços, checkout do paywall, atalhos para `/assinatura` e qualquer menção ou direcionamento a Mercado Pago, Pix ou pagamento externo (tanto na landing quanto nas telas autenticadas).
   - **Quem já possui assinatura Pro ativa** ou está em **período de avaliação gratuita** entra e utiliza todos os recursos normalmente.

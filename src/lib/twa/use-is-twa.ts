@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import {
+  isAndroidTwaReferrer,
   isTwaContext,
   TWA_COOKIE_MAX_AGE,
   TWA_COOKIE_NAME,
@@ -38,7 +39,7 @@ function readClientIsTwa(): boolean {
     if (document.documentElement.dataset.twa !== "true") {
       document.documentElement.dataset.twa = "true";
     }
-    if (originParam === "twa") {
+    if (originParam === "twa" || isAndroidTwaReferrer(document.referrer)) {
       document.cookie = `${TWA_COOKIE_NAME}=${TWA_QUERY_VALUE}; path=/; max-age=${TWA_COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
     }
   }

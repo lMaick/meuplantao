@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import vm from "node:vm";
 import { registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
@@ -151,7 +152,25 @@ describe("PWA Base + Modo TWA Play Store (Fase 1)", () => {
   });
 
   describe("Detecção da TWA e persistência em cookie", () => {
-    test("isTwaContext reconhece ?origem=twa, cookie mp_origem=twa e referrer android-app://", () => {
+    function runBootstrapInVm({ search = "", cookie = "", referrer = "", protocol = "https:" }) {
+      const dataset = {};
+      const doc = {
+        cookie,
+        referrer,
+        documentElement: { dataset },
+      };
+      const win = {
+        location: { search, protocol },
+      };
+      vm.runInNewContext(buildTwaBootstrapScript(), {
+        window: win,
+        document: doc,
+        URLSearchParams,
+      });
+      return { cookie: doc.cookie, twaDataset: dataset.twa };
+    }
+
+    test("isTwaContext reconhece apenas ?origem=twa, cookie mp_origem=twa e referrer exato android-app://pro.meuplantao.app", () => {
       assert.equal(ANDROID_PACKAGE_NAME, "pro.meuplantao.app");
       assert.equal(TWA_QUERY_PARAM, "origem");
       assert.equal(TWA_QUERY_VALUE, "twa");
@@ -163,8 +182,35 @@ describe("PWA Base + Modo TWA Play Store (Fase 1)", () => {
 
       assert.equal(parseCookieValue("foo=1; mp_origem=twa; bar=2"), "twa");
       assert.equal(parseCookieValue("foo=1; bar=2"), null);
+
+      // Positivos: apenas o pacote oficial pro.meuplantao.app (com ou sem "/")
+      assert.equal(isAndroidTwaReferrer("android-app://pro.meuplantao.app"), true);
       assert.equal(isAndroidTwaReferrer("android-app://pro.meuplantao.app/"), true);
-      assert.equal(isAndroidTwaReferrer("https://meuplantao.pro/"), false);
+      assert.equal(isAndroidTwaReferrer("ANDROID-APP://PRO.MEUPLANTAO.APP/"), true);
+
+      // Negativos obrigatórios: Instagram, Gmail, pacote forjado e web comum NUNCA viram TWA
+      const nonTwaReferrers = [
+        "android-app://com.instagram.android",
+        "android-app://com.instagram.android/",
+        "android-app://com.google.android.gm",
+        "android-app://pro.meuplantao.app.fake",
+        "android-app://pro.meuplantao.app.fake/",
+        "https://meuplantao.pro/",
+      ];
+      for (const ref of nonTwaReferrers) {
+        assert.equal(isAndroidTwaReferrer(ref), false, `${ref} não pode ser tratado como referrer TWA`);
+        assert.equal(isTwaContext({ referrer: ref }), false, `isTwaContext deve retornar false para ${ref}`);
+        const boot = runBootstrapInVm({ referrer: ref });
+        assert.equal(boot.twaDataset, undefined, `bootstrap não pode marcar data-twa para ${ref}`);
+        assert.equal(boot.cookie, "", `bootstrap não pode gravar cookie mp_origem para ${ref}`);
+      }
+
+      // Bootstrap positivo para o pacote oficial
+      for (const validRef of ["android-app://pro.meuplantao.app", "android-app://pro.meuplantao.app/"]) {
+        const bootOk = runBootstrapInVm({ referrer: validRef });
+        assert.equal(bootOk.twaDataset, "true", `bootstrap deve marcar data-twa para ${validRef}`);
+        assert.match(bootOk.cookie, /mp_origem=twa/, `bootstrap deve gravar cookie para ${validRef}`);
+      }
 
       // 1. Entrada inicial pelo manifest (/?origem=twa)
       assert.equal(isTwaContext({ searchParams: new URLSearchParams("origem=twa") }), true);
@@ -172,6 +218,7 @@ describe("PWA Base + Modo TWA Play Store (Fase 1)", () => {
       assert.equal(isTwaContext({ cookieHeader: `${TWA_COOKIE_NAME}=twa` }), true);
       // 3. Referrer nativo da TWA
       assert.equal(isTwaContext({ referrer: "android-app://pro.meuplantao.app" }), true);
+      assert.equal(isTwaContext({ referrer: "android-app://pro.meuplantao.app/" }), true);
       // 4. Navegador comum fora da TWA
       assert.equal(
         isTwaContext({
@@ -193,6 +240,7 @@ describe("PWA Base + Modo TWA Play Store (Fase 1)", () => {
       const bootstrap = buildTwaBootstrapScript();
       assert.ok(bootstrap.includes(TWA_COOKIE_NAME));
       assert.ok(bootstrap.includes("dataset.twa"));
+      assert.ok(bootstrap.includes("android-app://pro.meuplantao.app"));
     });
 
     test("middleware transforma ?origem=twa em cookie mp_origem=twa sem alterar requisições web normais", async () => {
