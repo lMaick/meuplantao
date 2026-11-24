@@ -51,14 +51,10 @@ const { NextRequest } = await import("next/server.js");
 const manifestModule = await import("../src/app/manifest.ts");
 const {
   ANDROID_PACKAGE_NAME,
-  TWA_COOKIE_NAME,
   TWA_QUERY_PARAM,
   TWA_QUERY_VALUE,
+  TWA_SESSION_KEY,
   buildTwaBootstrapScript,
-  isAndroidTwaReferrer,
-  isTwaContext,
-  parseCookieValue,
-  resolveTwaOriginParam,
 } = await import("../src/lib/twa/index.ts");
 const { middleware } = await import("../src/middleware.ts");
 const { calculateTrial, canCreateShift } = await import("../src/lib/subscription/trial.ts");
@@ -77,12 +73,12 @@ function readPngDimensions(absPath) {
 
 describe("PWA Base + Modo TWA Play Store (Fase 1)", () => {
   describe("Web App Manifest e ícones", () => {
-    test("manifest.ts exporta MeuPlantão, cores da marca, standalone e start_url /?origem=twa", () => {
+    test("manifest.ts exporta MeuPlantão, cores da marca, standalone e start_url sem marca de TWA", () => {
       const manifest = manifestModule.default();
       assert.equal(manifest.name, "MeuPlantão");
       assert.equal(manifest.short_name, "MeuPlantão");
       assert.equal(manifest.display, "standalone");
-      assert.equal(manifest.start_url, "/?origem=twa");
+      assert.equal(manifest.start_url, "/", "quem salva o site na tela inicial não pode virar TWA");
       assert.equal(manifest.background_color, "#F7FAF9");
       assert.equal(manifest.theme_color, "#008A4B");
       assert.equal(manifest.lang, "pt-BR");
@@ -151,130 +147,102 @@ describe("PWA Base + Modo TWA Play Store (Fase 1)", () => {
     });
   });
 
-  describe("Detecção da TWA e persistência em cookie", () => {
-    function runBootstrapInVm({ search = "", cookie = "", referrer = "", protocol = "https:" }) {
-      const dataset = {};
-      const doc = {
-        cookie,
-        referrer,
-        documentElement: { dataset },
+  describe("Detecção da TWA restrita à aba do app", () => {
+    function createSessionStorage(initial = {}) {
+      const data = new Map(Object.entries(initial));
+      return {
+        data,
+        getItem: (key) => data.get(key) ?? null,
+        setItem: (key, value) => data.set(key, String(value)),
+        removeItem: (key) => data.delete(key),
       };
-      const win = {
-        location: { search, protocol },
-      };
-      vm.runInNewContext(buildTwaBootstrapScript(), {
-        window: win,
-        document: doc,
-        URLSearchParams,
-      });
-      return { cookie: doc.cookie, twaDataset: dataset.twa };
     }
 
-    test("isTwaContext reconhece apenas ?origem=twa, cookie mp_origem=twa e referrer exato android-app://pro.meuplantao.app", () => {
+    function runBootstrapInVm({ search = "", referrer = "", cookie = "", session = createSessionStorage() }) {
+      const dataset = {};
+      const doc = { cookie, referrer, documentElement: { dataset } };
+      const win = {
+        location: { search, protocol: "https:" },
+        get sessionStorage() {
+          if (session === "blocked") throw new Error("SecurityError");
+          return session;
+        },
+      };
+      vm.runInNewContext(buildTwaBootstrapScript(), { window: win, document: doc, URLSearchParams });
+      return { twa: dataset.twa, cookie: doc.cookie, session };
+    }
+
+    test("marca a TWA por ?origem=twa e pelo referrer exato do pacote", () => {
       assert.equal(ANDROID_PACKAGE_NAME, "pro.meuplantao.app");
       assert.equal(TWA_QUERY_PARAM, "origem");
       assert.equal(TWA_QUERY_VALUE, "twa");
 
-      assert.equal(resolveTwaOriginParam(new URLSearchParams("origem=twa")), "twa");
-      assert.equal(resolveTwaOriginParam(new URLSearchParams("origem=TWA")), "twa");
-      assert.equal(resolveTwaOriginParam(new URLSearchParams("origem=web")), "web");
-      assert.equal(resolveTwaOriginParam(new URLSearchParams("")), null);
+      for (const input of [
+        { search: "?origem=twa" },
+        { search: "?origem=TWA" },
+        { referrer: "android-app://pro.meuplantao.app" },
+        { referrer: "android-app://pro.meuplantao.app/" },
+        { referrer: "ANDROID-APP://PRO.MEUPLANTAO.APP/" },
+      ]) {
+        const boot = runBootstrapInVm(input);
+        assert.equal(boot.twa, "true", JSON.stringify(input));
+        assert.equal(boot.session.data.get(TWA_SESSION_KEY), "twa", JSON.stringify(input));
+      }
+    });
 
-      assert.equal(parseCookieValue("foo=1; mp_origem=twa; bar=2"), "twa");
-      assert.equal(parseCookieValue("foo=1; bar=2"), null);
-
-      // Positivos: apenas o pacote oficial pro.meuplantao.app (com ou sem "/")
-      assert.equal(isAndroidTwaReferrer("android-app://pro.meuplantao.app"), true);
-      assert.equal(isAndroidTwaReferrer("android-app://pro.meuplantao.app/"), true);
-      assert.equal(isAndroidTwaReferrer("ANDROID-APP://PRO.MEUPLANTAO.APP/"), true);
-
-      // Negativos obrigatórios: Instagram, Gmail, pacote forjado e web comum NUNCA viram TWA
-      const nonTwaReferrers = [
+    test("Instagram, Gmail, pacote forjado e web comum nunca viram TWA", () => {
+      for (const referrer of [
+        "",
         "android-app://com.instagram.android",
         "android-app://com.instagram.android/",
         "android-app://com.google.android.gm",
         "android-app://pro.meuplantao.app.fake",
         "android-app://pro.meuplantao.app.fake/",
         "https://meuplantao.pro/",
-      ];
-      for (const ref of nonTwaReferrers) {
-        assert.equal(isAndroidTwaReferrer(ref), false, `${ref} não pode ser tratado como referrer TWA`);
-        assert.equal(isTwaContext({ referrer: ref }), false, `isTwaContext deve retornar false para ${ref}`);
-        const boot = runBootstrapInVm({ referrer: ref });
-        assert.equal(boot.twaDataset, undefined, `bootstrap não pode marcar data-twa para ${ref}`);
-        assert.equal(boot.cookie, "", `bootstrap não pode gravar cookie mp_origem para ${ref}`);
+        "https://www.google.com/",
+      ]) {
+        const boot = runBootstrapInVm({ referrer });
+        assert.equal(boot.twa, undefined, `${referrer} não pode virar TWA`);
+        assert.equal(boot.session.data.size, 0, `${referrer} não pode gravar marca`);
       }
-
-      // Bootstrap positivo para o pacote oficial
-      for (const validRef of ["android-app://pro.meuplantao.app", "android-app://pro.meuplantao.app/"]) {
-        const bootOk = runBootstrapInVm({ referrer: validRef });
-        assert.equal(bootOk.twaDataset, "true", `bootstrap deve marcar data-twa para ${validRef}`);
-        assert.match(bootOk.cookie, /mp_origem=twa/, `bootstrap deve gravar cookie para ${validRef}`);
-      }
-
-      // 1. Entrada inicial pelo manifest (/?origem=twa)
-      assert.equal(isTwaContext({ searchParams: new URLSearchParams("origem=twa") }), true);
-      // 2. Navegação subsequente com cookie persistido
-      assert.equal(isTwaContext({ cookieHeader: `${TWA_COOKIE_NAME}=twa` }), true);
-      // 3. Referrer nativo da TWA
-      assert.equal(isTwaContext({ referrer: "android-app://pro.meuplantao.app" }), true);
-      assert.equal(isTwaContext({ referrer: "android-app://pro.meuplantao.app/" }), true);
-      // 4. Navegador comum fora da TWA
-      assert.equal(
-        isTwaContext({
-          searchParams: new URLSearchParams(""),
-          cookieHeader: "other=1",
-          referrer: "https://www.google.com/",
-        }),
-        false,
-      );
-      // 5. Override explícito ?origem=web limpa modo TWA
-      assert.equal(
-        isTwaContext({
-          searchParams: new URLSearchParams("origem=web"),
-          cookieHeader: `${TWA_COOKIE_NAME}=twa`,
-        }),
-        false,
-      );
-
-      const bootstrap = buildTwaBootstrapScript();
-      assert.ok(bootstrap.includes(TWA_COOKIE_NAME));
-      assert.ok(bootstrap.includes("dataset.twa"));
-      assert.ok(bootstrap.includes("android-app://pro.meuplantao.app"));
     });
 
-    test("middleware transforma ?origem=twa em cookie mp_origem=twa sem alterar requisições web normais", async () => {
+    test("navegação seguinte na mesma aba (ex.: volta do login) continua em modo TWA", () => {
+      const session = createSessionStorage();
+      runBootstrapInVm({ search: "?origem=twa", session });
+      const next = runBootstrapInVm({ referrer: "https://accounts.google.com/", session });
+      assert.equal(next.twa, "true");
+    });
+
+    test("regressão: usar o app não esconde preço no Chrome do mesmo aparelho", () => {
+      // A TWA e o Chrome dividem cookies; sessionStorage é de cada aba.
+      const app = runBootstrapInVm({ search: "?origem=twa" });
+      assert.equal(app.twa, "true");
+      assert.equal(app.cookie, "", "nenhum cookie pode ser gravado");
+
+      const chromeTab = runBootstrapInVm({ cookie: app.cookie });
+      assert.equal(chromeTab.twa, undefined, "nova aba do Chrome vê preço e checkout");
+
+      // Cookie gravado por versão de prévia anterior é ignorado
+      assert.equal(runBootstrapInVm({ cookie: "mp_origem=twa" }).twa, undefined);
+    });
+
+    test("?origem=web limpa a marca e armazenamento bloqueado não quebra a página", () => {
+      const session = createSessionStorage({ [TWA_SESSION_KEY]: "twa" });
+      assert.equal(runBootstrapInVm({ search: "?origem=web", session }).twa, undefined);
+      assert.equal(session.data.size, 0);
+
+      assert.equal(runBootstrapInVm({ search: "?origem=twa", session: "blocked" }).twa, "true");
+      assert.equal(runBootstrapInVm({ session: "blocked" }).twa, undefined);
+    });
+
+    test("servidor e cliente não usam cookie nem localStorage para marcar a TWA", async () => {
       globalThis.__twaTestMockUser = null;
-
-      // Visita pela TWA (/?origem=twa) grava cookie
-      const twaRes = await middleware(new NextRequest("http://localhost/?origem=twa"));
-      assert.equal(twaRes.status, 200);
-      const setCookie = twaRes.headers.get("set-cookie") ?? "";
-      assert.match(setCookie, /mp_origem=twa/);
-      assert.match(setCookie, /Path=\//i);
-      assert.match(setCookie, /Max-Age=31536000/i);
-
-      // Visita normal no navegador NÃO grava cookie mp_origem
-      const webRes = await middleware(new NextRequest("http://localhost/"));
-      assert.equal(webRes.status, 200);
-      assert.ok(!(webRes.headers.get("set-cookie") ?? "").includes("mp_origem="));
-
-      // ?origem=web limpa o cookie
-      const clearRes = await middleware(
-        new NextRequest("http://localhost/?origem=web", {
-          headers: { cookie: "mp_origem=twa" },
-        }),
-      );
-      assert.match(clearRes.headers.get("set-cookie") ?? "", /Max-Age=0/i);
-
-      // Mesmo em redirect (usuário logado em /login?origem=twa -> /dashboard), preserva o cookie
-      globalThis.__twaTestMockUser = { id: "user-pro-1" };
-      try {
-        const redirectRes = await middleware(new NextRequest("http://localhost/login?origem=twa"));
-        assert.equal(redirectRes.status, 307);
-        assert.match(redirectRes.headers.get("set-cookie") ?? "", /mp_origem=twa/);
-      } finally {
-        globalThis.__twaTestMockUser = null;
+      const res = await middleware(new NextRequest("http://localhost/?origem=twa"));
+      assert.equal(res.status, 200);
+      assert.ok(!(res.headers.get("set-cookie") ?? "").includes("mp_origem"));
+      for (const file of ["src/middleware.ts", "src/lib/twa/index.ts", "src/lib/twa/use-is-twa.ts"]) {
+        assert.doesNotMatch(read(file), /document\.cookie|localStorage\.|cookies\.set\(/, file);
       }
     });
   });

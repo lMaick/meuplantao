@@ -9,7 +9,10 @@ export default function manifest(): MetadataRoute.Manifest {
       "Organize seus plantões, locais de trabalho e pagamentos. Acompanhe valores a receber, saldo e atrasos em um só lugar.",
     lang: "pt-BR",
     dir: "ltr",
-    start_url: "/?origem=twa",
+    // Sem `origem=twa`: este manifest também serve a quem salva o site na tela
+    // inicial (Android e iPhone), que deve continuar vendo preço e checkout.
+    // A URL inicial da TWA é definida no projeto Android.
+    start_url: "/",
     scope: "/",
     display: "standalone",
     orientation: "portrait",

@@ -34,8 +34,9 @@ O aplicativo Android do **MeuPlantão** utiliza **TWA (Trusted Web Activity)** g
 Aplicativos distribuídos na Google Play que vendem acesso ou recursos digitais dentro do Android devem utilizar o **Google Play Billing**. Exibir checkout externo (Mercado Pago, Pix ou cartão fora do Play Billing), preços para contratação externa ou textos/links direcionando o usuário a assinar pelo navegador é motivo de rejeição pelas políticas de Pagamentos da Google Play.
 
 ### Fase 1 — Sem compra dentro do app Android (implementada)
-- O Web App Manifest (`src/app/manifest.ts`) define `start_url: "/?origem=twa"` e `display: "standalone"`.
-- Ao detectar `?origem=twa` (no `src/middleware.ts` ou no bootstrap cliente) ou referrer exato `android-app://pro.meuplantao.app` (com ou sem `/` final, sem aceitar outros pacotes Android como Instagram ou Gmail), o app grava o cookie `mp_origem=twa` (validade de 1 ano) e marca `html[data-twa="true"]` antes da primeira pintura (sem flash visual).
+- O Web App Manifest (`src/app/manifest.ts`) define `start_url: "/"` e `display: "standalone"`. Ele **não** leva `origem=twa`, porque também serve a quem salva o site na tela inicial (Android e iPhone), que deve continuar vendo preço e checkout.
+- A URL inicial da TWA (`/?origem=twa`) é definida no projeto Android (`startUrl` do `twa-manifest.json` do Bubblewrap, na etapa 2).
+- Um script no `<head>` detecta `?origem=twa` ou referrer exato `android-app://pro.meuplantao.app` (com ou sem `/` final, sem aceitar outros pacotes Android como Instagram ou Gmail) e marca `html[data-twa="true"]` antes da primeira pintura (sem flash visual). A marca fica em `sessionStorage`, só naquela aba: **nunca em cookie ou `localStorage`**, porque a TWA divide esses dados com o Chrome do aparelho e o site comum ficaria sem preço e checkout.
 - **Dentro da TWA (`isTwa === true`):**
   - Esconde botões de assinar/estender plano, seletor de períodos, preços, checkout do paywall, atalhos para `/assinatura` e qualquer menção ou direcionamento a Mercado Pago, Pix ou pagamento externo (tanto na landing quanto nas telas autenticadas).
   - **Quem já possui assinatura Pro ativa** ou está em **período de avaliação gratuita** entra e utiliza todos os recursos normalmente.
@@ -52,6 +53,6 @@ Aplicativos distribuídos na Google Play que vendem acesso ou recursos digitais 
 
 ## 4. Ordem de Entrega
 
-1. **Base PWA e Modo TWA Fase 1 (este PR):** `src/app/manifest.ts`, ícones `192`, `512` e `maskable` gerados de `public/brand/meuplantao-calendar-icon.svg`, página `/offline` + Service Worker de fallback offline seguro (sem cachear rotas autenticadas ou `/api/*`), detecção `origem=twa` via cookie e ocultação completa de compra/preço externo na TWA, com testes automatizados.
+1. **Base PWA e Modo TWA Fase 1 (este PR):** `src/app/manifest.ts`, ícones `192`, `512` e `maskable` gerados de `public/brand/meuplantao-calendar-icon.svg`, página `/offline` + Service Worker de fallback offline seguro (sem cachear rotas autenticadas ou `/api/*`), detecção `origem=twa` por aba e ocultação completa de compra/preço externo na TWA, com testes automatizados.
 2. **Projeto TWA Android:** geração da pasta `android/` via Bubblewrap, publicação de `public/.well-known/assetlinks.json` com o SHA-256 da chave aprovada e build local do pacote `.aab` (sem envio automático à loja).
 3. **Ficha da Google Play Store:** preparação de textos, capturas de tela, classificação indicativa, referência à Política de Privacidade (`/privacidade`) e preenchimento guiado do formulário de Segurança de Dados (*Data Safety*) para submissão humana pelo responsável.

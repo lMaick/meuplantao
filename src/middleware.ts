@@ -1,13 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isMachineToMachineRoute, isPublicContentRoute, isPublicSeoRoute, updateSession } from "@/lib/auth/session";
 import { getHstsValue, HSTS_HEADER, shouldSendHsts } from "@/lib/security/hsts";
-import {
-  getClearTwaCookieOptions,
-  getTwaCookieOptions,
-  resolveTwaOriginParam,
-  TWA_COOKIE_NAME,
-  TWA_QUERY_VALUE,
-} from "@/lib/twa";
 
 function requestHost(request: NextRequest): string {
   return (
@@ -25,13 +18,6 @@ function requestProto(request: NextRequest): string {
 }
 
 export async function middleware(request: NextRequest) {
-  const twaOrigin = resolveTwaOriginParam(request.nextUrl.searchParams);
-  if (twaOrigin === "twa") {
-    request.cookies.set(TWA_COOKIE_NAME, TWA_QUERY_VALUE);
-  } else if (twaOrigin === "web") {
-    request.cookies.delete(TWA_COOKIE_NAME);
-  }
-
   // MAI-151: classificação M2M ANTES de qualquer Supabase Auth. Rotas
   // machine-to-machine (/api/webhooks/mercadopago, .../ipn, /api/csp-report)
   // pulam updateSession/auth.getUser por não terem sessão; o wrapper de
@@ -51,14 +37,6 @@ export async function middleware(request: NextRequest) {
     isPublicContentRoute(request.nextUrl.pathname)
       ? NextResponse.next({ request })
       : await updateSession(request);
-
-  const isHttps = requestProto(request).replace(/:$/, "").toLowerCase() === "https";
-  if (twaOrigin === "twa") {
-    response.cookies.set(TWA_COOKIE_NAME, TWA_QUERY_VALUE, getTwaCookieOptions(isHttps));
-  } else if (twaOrigin === "web") {
-    response.cookies.set(TWA_COOKIE_NAME, "", getClearTwaCookieOptions(isHttps));
-  }
-
   // MAI-146: HSTS somente no host de produção via HTTPS. Localhost, preview
   // (*.vercel.app), staging e HTTP nunca recebem o header; o redirect
   // HTTP→HTTPS é papel da Vercel/edge. `next.config.ts` propositalmente NÃO
