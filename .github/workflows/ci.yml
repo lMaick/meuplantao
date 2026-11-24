@@ -137,6 +137,7 @@ jobs:
           bash tests/subscription-entitlement-real.sh "supabase/migrations/20260920120000_subscription_entitlement_boundary.sql"
           bash tests/shifts-direct-write-prohibition-real.sh "supabase/migrations/20260920140000_shifts_direct_write_prohibition.sql"
           npx --yes supabase@2.117.0 db reset --local --no-seed
+          psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -q -o /dev/null -f tests/account-deletion-real.sql
           export NEXT_PUBLIC_SUPABASE_URL="${API_URL}"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}"
           NEXT_PUBLIC_SUPABASE_URL="${API_URL}" NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}" SUPABASE_SERVICE_ROLE_KEY="${SERVICE_ROLE_KEY}" DATABASE_URL="${DB_URL}" node scripts/smoke-test-schema.mjs

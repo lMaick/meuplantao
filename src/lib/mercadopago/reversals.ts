@@ -82,6 +82,28 @@ export async function reconcileMercadoPagoReversal(
     getSupabaseRpcTimeout("financial"),
   );
 
+  // Titular excluiu a conta: o estorno atualiza só o recibo anônimo. Sem isto, o
+  // Mercado Pago repetiria a notificação por não existir mais o usuário.
+  if (error?.code === "23503") {
+    const { error: receiptError } = await admin
+      .from("deleted_account_receipts")
+      .update({ status: reversalStatus, reversed_at: new Date().toISOString() })
+      .eq("mercadopago_payment_id", paymentId);
+    if (!receiptError) {
+      return {
+        reversed: true,
+        already_reversed: false,
+        not_found: false,
+        ownership_mismatch: false,
+        contributed: false,
+        current_period_end: null,
+        status: "expired",
+        active_payments: 0,
+        validity_days_removed: 0,
+      };
+    }
+  }
+
   if (error) {
     captureFinancialRpcError(error, {
       rpcName: "reconcile_mercadopago_reversal",

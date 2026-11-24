@@ -43,6 +43,10 @@ Aplicativos distribuídos na Google Play que vendem acesso ou recursos digitais 
   - Contas com período de avaliação encerrado permanecem em **modo leitura** para consulta de histórico, locais e recebimentos, sem oferta de pagamento externo.
 - **Fora da TWA (navegador comum):** nenhuma alteração — o site mantém integralmente o fluxo atual de contratação via Mercado Pago.
 
+### Exclusão de conta (exigência da Play)
+- Caminho no app: Perfil → Excluir conta. Link da ficha (*Data Safety*): `https://meuplantao.pro/excluir-conta`, que funciona sem o app instalado.
+- Apaga na hora, numa única transação (RPC `delete_account`). Fica só o recibo anônimo da assinatura (`deleted_account_receipts`).
+
 ### Fase 2 — Venda nativa no Android (futura, sob demanda)
 - Quando houver decisão comercial de vender diretamente dentro do app Android:
   1. Confirmar na documentação oficial vigente do Google Play as regras aplicáveis ao Brasil (incluindo eventuais modalidades de faturamento alternativo / User Choice Billing e comissões).

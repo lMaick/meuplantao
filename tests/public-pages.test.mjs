@@ -165,8 +165,8 @@ test("privacy policy accurately reflects data integrity, technical observability
     "Deve ressalvar que edição/exclusão depende da natureza do dado e regras de integridade"
   );
   assert.ok(
-    normalizedPrivacy.includes("Solicitações relacionadas à exclusão da conta e dos dados associados podem ser feitas pelo suporte"),
-    "Deve indicar que exclusão ampla de conta pode ser solicitada via suporte"
+    normalizedPrivacy.includes("Você pode excluir sua conta e os dados associados a qualquer momento"),
+    "Deve indicar que o titular pode excluir a própria conta"
   );
   assert.ok(
     normalizedPrivacy.includes("necessidades legítimas de integridade, segurança e retenção"),
