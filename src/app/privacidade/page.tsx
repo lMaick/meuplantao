@@ -66,8 +66,20 @@ export default function PrivacidadePage() {
       <LegalSection title="4. Direitos do titular e integridade dos dados">
         <p>
           Você pode visualizar seus registros e, conforme a natureza do dado e as regras de
-          integridade aplicáveis, editar, cancelar ou excluir informações pela interface. Solicitações
-          relacionadas à exclusão da conta e dos dados associados podem ser feitas pelo suporte,
+          integridade aplicáveis, editar, cancelar ou excluir informações pela interface.
+        </p>
+        <p>
+          Você pode excluir sua conta e os dados associados a qualquer momento em{" "}
+          <Link href="/excluir-conta" className="font-medium text-foreground underline underline-offset-4">
+            Excluir conta
+          </Link>
+          . A exclusão é imediata e definitiva. Se houve pagamento de assinatura, mantemos apenas o
+          recibo (valor, data, período, situação e número do pagamento), sem nome nem e-mail, para
+          obrigações fiscais e contestações de pagamento. Cópias de segurança e registros técnicos
+          podem guardar dados por um período limitado até serem substituídos.
+        </p>
+        <p>
+          Se não conseguir entrar na conta, peça a exclusão pelo suporte. Os pedidos são atendidos
           observadas as necessidades legítimas de integridade, segurança e retenção.
         </p>
         <p>

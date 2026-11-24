@@ -38,7 +38,7 @@ function compliantSecurityMocks(options = {}) {
     effectiveColumnPrivs: c.effectiveColumnPrivs || [],
   };
 
-  const contractVersion = options.contractVersion !== undefined ? options.contractVersion : "1.1.0";
+  const contractVersion = options.contractVersion !== undefined ? options.contractVersion : "1.2.0";
   const contractMissingTable = options.contractMissingTable === true;
   const contractMissingRow = options.contractMissingRow === true;
 

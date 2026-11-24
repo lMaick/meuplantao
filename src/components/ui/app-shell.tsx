@@ -164,6 +164,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
       "/termos",
       "/suporte",
       "/descadastrar",
+      "/excluir-conta",
     ].includes(pathname)
   ) {
     return <>{children}</>;
