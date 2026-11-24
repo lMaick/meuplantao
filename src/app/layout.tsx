@@ -5,6 +5,10 @@ import "./globals.css";
 import { getSiteUrl } from "../lib/seo/site-url";
 import { AppShell } from "@/components/ui/app-shell";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { ServiceWorkerRegister } from "@/components/pwa/service-worker-register";
+import { buildTwaBootstrapScript } from "@/lib/twa";
+
+const twaBootstrapScript = buildTwaBootstrapScript();
 
 const themeScript = `(() => {
   try {
@@ -53,8 +57,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: twaBootstrapScript }} />
       </head>
       <body className="min-h-full flex flex-col">
+        <ServiceWorkerRegister />
         <ThemeProvider>
           <AppShell>{children}</AppShell>
         </ThemeProvider>

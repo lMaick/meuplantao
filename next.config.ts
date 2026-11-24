@@ -32,6 +32,8 @@ const privateNoIndexPaths = [
   "/perfil/:path*",
   "/configuracoes",
   "/configuracoes/:path*",
+  "/offline",
+  "/offline/:path*",
   "/api/:path*",
   "/auth/:path*",
 ];
