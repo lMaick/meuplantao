@@ -9,7 +9,9 @@ import { Card } from "@/components/ui/card";
 import { saveShiftWithObligation, type Shift } from "@/lib/shifts";
 import { listPendingConfirmations } from "@/lib/shifts/pending-confirmation";
 import { resolveRealizedDefaults } from "@/lib/shifts/place-defaults";
+import { PaywallModal } from "@/components/subscription";
 import { canCreateShift, useSubscription } from "@/lib/subscription";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 import type { Place } from "@/lib/places";
 import { cn } from "cn";
 
@@ -27,9 +29,11 @@ type Props = {
 
 export function PendingConfirmation({ shifts, places, todayIso, onSaved }: Props) {
   const router = useRouter();
+  const isTwa = useIsTwa();
   const { trial } = useSubscription();
   const [leaving, setLeaving] = useState<ReadonlySet<string>>(new Set());
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [paywallOpen, setPaywallOpen] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const pending = useMemo(() => listPendingConfirmations(shifts, todayIso), [shifts, todayIso]);
@@ -75,6 +79,10 @@ export function PendingConfirmation({ shifts, places, todayIso, onSaved }: Props
 
   function handleHappened(shift: Shift) {
     if (blocked) {
+      if (isTwa) {
+        setPaywallOpen(true);
+        return;
+      }
       router.push("/assinatura");
       return;
     }
@@ -106,6 +114,10 @@ export function PendingConfirmation({ shifts, places, todayIso, onSaved }: Props
 
   function handleDidNotHappen(shift: Shift) {
     if (blocked) {
+      if (isTwa) {
+        setPaywallOpen(true);
+        return;
+      }
       router.push("/assinatura");
       return;
     }
@@ -238,6 +250,7 @@ export function PendingConfirmation({ shifts, places, todayIso, onSaved }: Props
           </Link>
         )}
       </Card>
+      <PaywallModal open={paywallOpen} onClose={() => setPaywallOpen(false)} />
     </section>
   );
 }
