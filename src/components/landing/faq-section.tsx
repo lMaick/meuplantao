@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { getLandingMonthlyPriceLabel } from "@/lib/subscription/landing-price";
+
+const landingMonthlyPrice = getLandingMonthlyPriceLabel();
 import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 interface FaqItem {
@@ -14,7 +17,7 @@ const faqs: FaqItem[] = [
   {
     question: "Posso conhecer o MeuPlantão antes de assinar?",
     answer:
-      "Sim! Você pode criar sua conta gratuitamente e conhecer o app antes de assinar. O plano completo custa R$ 12,90 por mês, sem precisar cadastrar cartão no primeiro acesso.",
+      `Sim! Você pode criar sua conta gratuitamente e conhecer o app antes de assinar. O plano completo custa ${landingMonthlyPrice} por mês, sem precisar cadastrar cartão no primeiro acesso.`,
     hideInTwa: true,
   },
   {

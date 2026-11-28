@@ -69,7 +69,8 @@ const OTHER_USER_ID = "22222222-2222-4222-8222-222222222222";
 describe("MAI-137: Catálogo Canônico e Validação Financeira Pré-Concessão de Pro", () => {
   // ─── 1. Catálogo Canônico ──────────────────────────────────────────────────
   test("1. Catálogo canônico define 1, 3, 6 e 12 meses com preços, centavos e moeda BRL", () => {
-    assert.equal(CANONICAL_PLANS.length, 4);
+    // 4 da v1 (preço antigo) + 4 da v2 (contas novas, MAI preço Pro).
+    assert.equal(CANONICAL_PLANS.length, 8);
 
     const m1 = getCanonicalPlanByMonths(1);
     assert.ok(m1);

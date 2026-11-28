@@ -21,7 +21,7 @@ import {
 } from "@/lib/mercadopago/http";
 import { captureCheckoutError, captureRateLimitHit } from "@/lib/observability";
 import { createAdminClient, createAuthenticatedClient } from "@/lib/supabase/server";
-import { getCanonicalPlanByMonths } from "@/lib/mercadopago/payments";
+import { getCanonicalPlanByMonths, getCatalogVersionForAccount } from "@/lib/mercadopago/payments";
 
 export const runtime = "nodejs";
 
@@ -199,7 +199,8 @@ export async function POST(request: NextRequest) {
       months = 1;
     }
 
-    const plan = getCanonicalPlanByMonths(months);
+    // Catálogo decidido no servidor pela data de criação da conta; o corpo do pedido só traz `months`.
+    const plan = getCanonicalPlanByMonths(months, getCatalogVersionForAccount(user.created_at));
     if (!plan) return NextResponse.json({ error: "Periodo de assinatura invalido" }, { status: 400 });
 
     const checkoutId = crypto.randomUUID();

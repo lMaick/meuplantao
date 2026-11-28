@@ -11,6 +11,7 @@ import {
   isSubscriptionAuthFailure,
   removeSubscriptionChannel,
 } from "./queries";
+import { getCatalogVersionForAccount } from "@/lib/mercadopago/payments";
 import type { TrialInfo } from "./types";
 
 export interface SubscriptionContextValue {
@@ -43,14 +44,15 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       const { userId: currentUserId, createdAt: userCreatedAt, subscription } =
         await fetchMySubscription();
       setUserId(currentUserId);
-      setTrial(
-        calculateTrial(
+      setTrial({
+        ...calculateTrial(
           userCreatedAt,
           subscription?.status,
           new Date(),
           subscription?.current_period_end,
         ),
-      );
+        catalogVersion: getCatalogVersionForAccount(userCreatedAt),
+      });
     } catch (err) {
       const normalized = err instanceof Error ? err : new Error("Erro ao carregar dados de assinatura");
       // MAI-143 (auditoria): perda/expiração de sessão invalida o estado anterior.

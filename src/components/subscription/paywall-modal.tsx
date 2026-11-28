@@ -6,6 +6,8 @@ import { CheckCircle2, Lock, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useIsTwa } from "@/lib/twa/use-is-twa";
 import { cn } from "cn";
+import { useSubscription } from "@/lib/subscription/use-subscription";
+import { getSubscriptionPeriod } from "@/lib/subscription/types";
 
 interface PaywallModalProps {
   open: boolean;
@@ -21,6 +23,8 @@ export function PaywallModal({ open, onClose }: PaywallModalProps) {
   const isTwa = useIsTwa();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const { trial } = useSubscription();
+  const monthlyPrice = `R$ ${getSubscriptionPeriod(1, trial?.catalogVersion)!.price.toFixed(2).replace(".", ",")}`;
 
   useEffect(() => {
     if (!open) return;
@@ -108,7 +112,7 @@ export function PaywallModal({ open, onClose }: PaywallModalProps) {
           >
             Seu histórico e relatórios continuam disponíveis para leitura. Para criar ou editar
             novos plantões, ative o plano Pro por apenas{" "}
-            <strong className="text-foreground">R$ 12,90/mês</strong>.
+            <strong className="text-foreground">{monthlyPrice}/mês</strong>.
           </p>
         )}
 
@@ -142,7 +146,7 @@ export function PaywallModal({ open, onClose }: PaywallModalProps) {
               className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3 text-sm font-bold text-white shadow-md shadow-emerald-700/20 transition-all hover:from-emerald-500 hover:to-teal-500 active:scale-[0.99]"
             >
               <Sparkles className="size-4" />
-              Assinar MeuPlantão Pro — R$ 12,90/mês
+              Assinar MeuPlantão Pro — {monthlyPrice}/mês
             </Link>
           )}
           <Button
