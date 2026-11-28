@@ -40,7 +40,7 @@ export function matchesShift(shift: { data: string; place_id: string }, period: 
 export function formatPeriodLabel(period: PeriodFilter): string {
   if (period === ALL_PERIODS) return "Todos os periodos";
   const [year, month] = period.split("-").map(Number);
-  const label = new Intl.DateTimeFormat("pt-BR", { month: "short", year: "numeric", timeZone: "America/Bahia" }).format(
+  const label = new Intl.DateTimeFormat("pt-BR", { month: "short", year: "numeric", timeZone: "UTC" }).format(
     new Date(Date.UTC(year, month - 1, 1)),
   );
   return label.replace(".", "");

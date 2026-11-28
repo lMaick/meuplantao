@@ -20,31 +20,11 @@ npm run dev
 
 Veja `PRODUCT.md` para a visão de produto, `AGENTS.md` para as regras e contratos canônicos de desenvolvimento, e `CLAUDE.md` / `GEMINI.md` para as diretrizes específicas de agentes.
 
-## Regras Permanentes de Engenharia & Negócio
+## Fluxo oficial de engenharia
 
-Todo desenvolvimento neste repositório (humano ou por agentes de IA de qualquer modelo) segue obrigatoriamente três pilares contratuais:
+A equipe MeuPlantão Code opera diretamente: **Davi** coordena, **Bruno** implementa, **Nina** corrige, **Iara** revisa e **Téo** testa. Orca e Gravity são opcionais, não pré-requisitos.
 
-1. **Ciclo de Tarefas, Issues e Deploys:**
-    - **Issues no Linear Obrigatórias:** Crie uma issue no Linear (`MAI-XXX`, fonte canônica) para toda tarefa (Correção/Bugfix, Melhoria/Enhancement ou Nova Função/Feature) antes do início do código.
-    - **Branches por Tarefa:** Todo trabalho é feito em branch dedicada a partir de `main` (`feat/mai-XXX-...`, `fix/mai-XXX-...`).
-    - **Deploys via PR:** Todo deploy em produção é gerenciado exclusivamente via Pull Request direcionado para `main` (`gh pr create --base main`).
-    - **Vínculo Issue ↔ PR:** A descrição do PR menciona obrigatoriamente a issue do Linear (`MAI-XXX` + link do card; mais `Fixes #X` quando houver Issue espelho no GitHub).
-    - **Revisão Humana:** Agentes nunca realizam merge em `main` nem deploys diretos — aprovação e merge cabem ao dono (Maick).
-
-2. **Padrão de Interface & Motion Principles (`design-motion-principles`, via submodule `.agents/skills-hub`):**
-   - **Skeleton Screens Obrigatórios:** Toda tela, card, tabela ou painel métrico deve exibir skeleton proporcional no carregamento (zero tela em branco ou layout shift).
-   - **Lazy Loading Universal:** Rotas secundárias, modais complexos, gráficos pesados e imagens (`React.lazy`, `next/dynamic`, `loading="lazy"`).
-   - **Smooth Animation em Todos os Elementos:**
-     - *Entrada:* 180ms a 300ms com springs suaves e easings naturais.
-     - *Saída:* < 200ms, ágil e limpa.
-     - *Carregamento:* Shimmer/pulso sutil e contínuo.
-     - *Progresso:* Interpolação suave em barras e valores numéricos sem saltos secos.
-   - **Ergonomia e Acessibilidade:** Touch targets mínimos de 44x44px, contraste mínimo 4.5:1 (WCAG AA) e suporte estrito a `prefers-reduced-motion: reduce`.
-
-3. **Observabilidade, Qualidade de Código & Pirâmide de Testes (estado atual):**
-    - **Observabilidade:** Sentry SDK (`@sentry/nextjs`, envio só com DSN) + logs estruturados sanitizados (`src/lib/observability/`). Sem APM dedicado instalado (Datadog/NewRelic/OpenTelemetry como serviço são proposta, não requisito).
-    - **Qualidade & Lint:** Arch-contract (DAL estrita em `src/lib/<modulo>/` — ex. assinatura migrada para `src/lib/subscription/queries.ts` em MAI-143/PR #145), ESLint (`eslint-config-next`, `npm run lint` em `src/`), TypeScript estrito e Commits Convencionais manuais. Biome, Commitlint automatizado, Knip e Stryker NÃO estão instalados — não exigir nem bloquear PR por eles.
-    - **Testes:** `npm test` offline (sem serviços externos — regras financeiras, RPCs atômicos, CSP/HSTS, SEO, billing) + testes reais opt-in, nunca produção, em duas categorias: Supabase local isolado e descartável (`test:real`, `test:subscription-real`, `test:subscription-reversal-real`, validadores `tests/*.real.sh`, `db:smoke` com `DATABASE_URL` local) e PostgreSQL 16 local isolado (`test:security-real`, via `pg` direto com guard fail-closed só-local — NÃO usa Supabase local). O schema gate (`prebuild`/`db:verify`) é bypass localmente, mas barreira fail-closed estrita em produção. Playwright com browser e Codecov NÃO estão instalados — não exigir.
+O contrato canônico está em [AGENTS.md](AGENTS.md): rastreamento no Linear quando disponível, isolamento de branches/worktrees, PRs, revisão/testes, proteção de RLS e finanças, segurança e gates de produção. **Apenas o dono faz merge em `main`**; agentes não disparam deploys manuais em produção.
 
 ### Configuração do Supabase
 

@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import { Activity, ArrowRight } from "lucide-react";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 export function LandingFooter() {
+  const isTwa = useIsTwa();
   const currentYear = new Date().getFullYear();
 
   return (
@@ -56,9 +60,11 @@ export function LandingFooter() {
             <Link href="#calculadora" className="hover:text-white transition-colors">
               Calculadora
             </Link>
-            <Link href="#preco" className="hover:text-white transition-colors">
-              Preço
-            </Link>
+            {!isTwa && (
+              <Link href="#preco" data-twa-hide="true" className="hover:text-white transition-colors">
+                Preço
+              </Link>
+            )}
             <Link href="/privacidade" className="hover:text-white transition-colors">
               Privacidade
             </Link>
@@ -71,8 +77,9 @@ export function LandingFooter() {
           </div>
         </div>
 
-        <div className="mt-6 text-center text-[11px] text-slate-400">
-          © {currentYear} MeuPlantão. Todos os direitos reservados. Feito com rigor para profissionais de saúde.
+        <div className="mt-6 space-y-2 text-center text-[11px] text-slate-400">
+          <p>© {currentYear} MeuPlantão. Todos os direitos reservados. Feito com rigor para profissionais de saúde.</p>
+          <p>MeuPlantão — desenvolvido e operado por Maick Silva Campos · <a href="mailto:contato@meuplantao.pro" className="underline underline-offset-4 hover:text-white">contato@meuplantao.pro</a> · Brasil</p>
         </div>
       </div>
     </footer>

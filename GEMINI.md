@@ -1,22 +1,11 @@
 # MeuPlantão — Diretrizes para Gemini & Antigravity
 
-> As regras canônicas do projeto estão em **`AGENTS.md`**. Este arquivo é um ponteiro — leia `AGENTS.md` antes de qualquer tarefa.
+As regras canônicas estão em **[AGENTS.md](AGENTS.md)**. No fluxo principal, **Davi coordena, Bruno implementa, Nina corrige, Iara revisa e Téo testa**, usando a equipe do OpenMausBot. Orca e Gravity são opcionais.
 
-## Resumo dos contratos obrigatórios
+- Davi registra e encaminha mudanças de código, usando Linear quando disponível. Cada editor possui branch e worktree exclusivas, faz commit/push e abre PR; o dono faz o merge.
+- RLS, integridade dos pagamentos, segredos, gates de produção e arquitetura DAL são obrigatórios conforme `AGENTS.md`.
+- Siga Motion Principles e execute os testes de qualidade (`npm test`, `npm run lint`, `npx tsc --noEmit`, `npm run build`), mais os testes reais locais pertinentes.
+- Skills universais residem em `.agents/skills-hub/`; skills específicas em `.agents/skills/`. Não duplique.
+- `orca-worker-protocol` vale somente para workers executados no Orca, nunca como etapa compulsória da equipe.
 
-1. **Ciclo Git & Deploys via PR** — Issue no Linear (`MAI-XXX`) → branch dedicada → commit convencional → `git push` → `gh pr create --base main`. Nunca faça merge ou deploy direto.
-2. **Motion Principles** — Toda interface: skeletons proporcionais, lazy loading, smooth animations (entrada < 300ms, saída < 200ms), `prefers-reduced-motion`, touch targets 44×44px.
-3. **Observabilidade & Testes** — Sentry SDK + logs estruturados (`src/lib/observability/`), arch-contract (DAL em `src/lib/<modulo>/` — assinatura em `src/lib/subscription/queries.ts`, MAI-143), ESLint (`src/`) + `tsc` estrito, `npm test` offline + reais opt-in (Supabase local descartável; `test:security-real` usa Postgres 16 local, não Supabase). Sem Biome/Playwright/Codecov/APM dedicado instalados — não exigir.
-4. **Orquestração (4 Papéis)** — Maick (dono) → Gravity (orquestrador) → Linear (briefing canônico) → Orca (executor). Workers postam relatório completo no Linear e respondem no terminal em 1 linha.
-
-## Skills disponíveis em `.agents/skills/`
-
-Skills exclusivas do MeuPlantão (não presentes no hub universal):
-- `content-calendar` — calendário editorial semanal
-- `linear-orchestrator` — criação e delegação de issues no Linear
-- `marketing-config` — branding, tom de voz e personas
-- `marketing-copywriter` — copy para redes sociais e anúncios
-- `marketing-designer` — criativos visuais para marketing
-- `orca-worker-protocol` — protocolo de entrega do worker
-
-Skills universais (via `.agents/skills-hub/`): `impeccable`, `design-motion-principles`, e 40+ outros.
+Em caso de conflito, siga `AGENTS.md`.

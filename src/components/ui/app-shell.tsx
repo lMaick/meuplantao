@@ -28,6 +28,7 @@ import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { TrialBadge, TrialBadgeMobile, PaywallModal } from "@/components/subscription";
 import { SubscriptionProvider, useSubscription, canCreateShift } from "@/lib/subscription";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 const primary = [
   { href: "/dashboard", label: "Início", short: "Início", icon: House },
@@ -105,6 +106,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const isTwa = useIsTwa();
   const { trial } = useSubscription();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [paywallOpen, setPaywallOpen] = useState(false);
@@ -155,11 +157,14 @@ function AppShellInner({ children }: { children: ReactNode }) {
   if (
     [
       "/",
+      "/offline",
       "/esqueci-senha",
       "/redefinir-senha",
       "/privacidade",
       "/termos",
       "/suporte",
+      "/descadastrar",
+      "/excluir-conta",
     ].includes(pathname)
   ) {
     return <>{children}</>;
@@ -190,7 +195,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
           <Link
             href="/calendario?novo=1"
             onClick={handleNewShift}
-            aria-label={blocked ? "Novo plantão (assinatura necessária)" : "Cadastrar novo plantão"}
+            aria-label={blocked ? (isTwa ? "Novo plantão (modo leitura)" : "Novo plantão (assinatura necessária)") : "Cadastrar novo plantão"}
             className="mb-3 flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-700/20 transition-all hover:from-emerald-500 hover:to-teal-500 hover:shadow-lg focus-visible:outline-ring active:scale-[0.98]"
           >
             <Plus className="size-4 stroke-[2.5]" />
@@ -376,7 +381,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
         <Link
           href="/calendario?novo=1"
           onClick={handleNewShift}
-          aria-label={blocked ? "Novo plantão (assinatura necessária)" : "Cadastrar novo plantão"}
+          aria-label={blocked ? (isTwa ? "Novo plantão (modo leitura)" : "Novo plantão (assinatura necessária)") : "Cadastrar novo plantão"}
           className="group flex h-full min-h-[44px] w-full flex-col items-center justify-center select-none py-1 px-0.5 text-center touch-manipulation transition-colors"
         >
           <span className="grid size-7 place-items-center rounded-full bg-gradient-to-br from-emerald-600 to-teal-700 text-white shadow-md shadow-emerald-500/25 transition-transform group-active:scale-90">

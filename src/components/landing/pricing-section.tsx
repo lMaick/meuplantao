@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 const benefits = [
   "Controle de plantões e repasses",
@@ -8,8 +11,16 @@ const benefits = [
 ];
 
 export function PricingSection() {
+  const isTwa = useIsTwa();
+
+  if (isTwa) return null;
+
   return (
-    <section id="preco" className="border-b border-border/80 bg-slate-950 py-16 text-white md:py-24">
+    <section
+      id="preco"
+      data-twa-hide="true"
+      className="border-b border-border/80 bg-slate-950 py-16 text-white md:py-24"
+    >
       <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
         <div className="grid items-center gap-10 md:grid-cols-[1fr_auto] md:gap-16">
           <div>
@@ -36,7 +47,8 @@ export function PricingSection() {
               <span className="text-5xl font-extrabold tracking-tight">R$ 12,90</span>
               <span className="text-sm text-slate-500">/mês</span>
             </div>
-            <p className="mt-2 text-sm text-slate-600">Cadastro inicial gratuito, sem cartão.</p>
+            <p className="mt-2 text-sm font-semibold text-emerald-700">30 dias grátis para testar, sem cartão.</p>
+            <p className="mt-1 text-xs text-slate-600">Pagamento do plano aceito via Pix.</p>
             <p className="mt-1 text-xs text-slate-500">
               Compra avulsa pré-paga por período fixo. Sem renovação automática. Sem cobranças recorrentes.
             </p>
@@ -44,7 +56,7 @@ export function PricingSection() {
               href="/cadastro"
               className="mt-6 flex h-12 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-6 text-base font-bold text-white shadow-md transition-all hover:bg-emerald-500 hover:shadow-lg active:scale-98"
             >
-              Começar gratuitamente
+              Testar grátis por 30 dias
               <ArrowRight className="size-5" />
             </Link>
           </div>

@@ -37,7 +37,6 @@ export function FinanceFilters({ period, placeId, places, onPeriodChange, onPlac
                 const next = event.target.value;
                 if (isMonthValue(next)) onPeriodChange(next);
               }}
-              aria-label="Selecionar mês e ano"
             />
             <Button
               type="button"

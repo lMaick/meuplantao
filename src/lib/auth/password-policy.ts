@@ -17,7 +17,7 @@ export const PASSWORDS_DONT_MATCH_MESSAGE = "As senhas digitadas não coincidem.
 export const GENERIC_LOGIN_ERROR_MESSAGE = "E-mail ou senha incorretos. Verifique suas credenciais e tente novamente.";
 export const RATE_LIMIT_ERROR_MESSAGE = "Muitas tentativas em sequência. Aguarde alguns instantes antes de tentar novamente.";
 export const SIGNUP_SUCCESS_GENERIC_MESSAGE =
-  "Confira seu e-mail para confirmar a conta, se o cadastro foi aceito. Veja também a pasta de spam. Após confirmar, volte aqui e entre com sua senha. Se já possui conta, tente entrar.";
+  "Agora abra seu e-mail e toque no link de confirmação para ativar sua conta. Não chegou? Confira o spam. Se você já tem conta, é só entrar.";
 export const PASSWORD_SAME_AS_OLD_MESSAGE = "A nova senha deve ser diferente da senha anterior.";
 export const PASSWORD_UPDATE_GENERIC_ERROR_MESSAGE = "Não foi possível atualizar a senha. Tente novamente.";
 export const RECOVERY_SESSION_EXPIRED_MESSAGE = "Sua sessão de recuperação expirou. Solicite um novo link de recuperação.";

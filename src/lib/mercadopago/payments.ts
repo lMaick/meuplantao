@@ -614,7 +614,7 @@ export async function quarantinePayment(
   if (!params.paymentId || typeof admin?.from !== "function") return;
   const sanitized = sanitizePaymentPayload(params.rawPayload || {});
   try {
-    const { error } = await admin.from("subscription_payments_quarantine").insert({
+    const row = {
       mercadopago_payment_id: String(params.paymentId),
       user_id: params.userId,
       checkout_id: params.checkoutId || null,
@@ -625,7 +625,15 @@ export async function quarantinePayment(
       sanitized_payload: sanitized,
       status: "quarantined",
       review_status: "pending_review",
-    });
+    };
+    let { error } = await admin.from("subscription_payments_quarantine").insert(row);
+    // Titular excluiu a conta antes de o pagamento chegar: guarda sem vínculo,
+    // para o dinheiro recebido não ficar sem registro.
+    if (error?.code === "23503") {
+      ({ error } = await admin
+        .from("subscription_payments_quarantine")
+        .insert({ ...row, user_id: null, checkout_id: null, sanitized_payload: {} }));
+    }
     if (error) {
       captureFinancialRpcError(error, {
         rpcName: "quarantinePayment",

@@ -4,15 +4,44 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { Pencil, Plus, Trash2, MapPin, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/primitives";
+import { Input, Select } from "@/components/ui/primitives";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CardSkeleton } from "@/components/ui/skeletons";
+import { listContacts, type Contact } from "@/lib/contacts";
 import { createPlace, listPlaces, removePlace, updatePlace, type Place } from "@/lib/places";
 
-const emptyForm = { nome: "", endereco: "" };
+const emptyForm = { nome: "", endereco: "", valorPadrao: "", prazoDias: "", responsavelContactId: "" };
+
+const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+
+function parseDefaults(form: typeof emptyForm):
+  | { ok: true; valor_padrao: number | null; prazo_recebimento_dias: number | null; responsavel_contact_id: string | null }
+  | { ok: false; message: string } {
+  const rawValor = form.valorPadrao.trim().replace(",", ".");
+  let valor: number | null = null;
+  if (rawValor !== "") {
+    valor = Number(rawValor);
+    if (!Number.isFinite(valor) || valor < 0) return { ok: false, message: "O valor padrão deve ser zero ou maior." };
+  }
+  const rawPrazo = form.prazoDias.trim();
+  let prazo: number | null = null;
+  if (rawPrazo !== "") {
+    prazo = Number(rawPrazo);
+    if (!Number.isInteger(prazo) || prazo < 0 || prazo > 365) {
+      return { ok: false, message: "O prazo de recebimento deve ser um número inteiro de 0 a 365 dias." };
+    }
+  }
+  return {
+    ok: true,
+    valor_padrao: valor,
+    prazo_recebimento_dias: prazo,
+    responsavel_contact_id: form.responsavelContactId || null,
+  };
+}
 
 export default function PlacesPage() {
   const [places, setPlaces] = useState<Place[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -41,6 +70,12 @@ export default function PlacesPage() {
     void Promise.resolve().then(() => {
       if (active) void refresh();
     });
+    // Contatos só alimentam o select opcional; falha aqui não bloqueia a tela.
+    void listContacts()
+      .then((result) => {
+        if (active) setContacts(result);
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
     };
@@ -55,7 +90,16 @@ export default function PlacesPage() {
 
   function startEdit(place: Place) {
     setEditingId(place.id);
-    setForm({ nome: place.nome, endereco: place.endereco ?? "" });
+    setForm({
+      nome: place.nome,
+      endereco: place.endereco ?? "",
+      valorPadrao: place.valor_padrao === null || place.valor_padrao === undefined ? "" : String(place.valor_padrao),
+      prazoDias:
+        place.prazo_recebimento_dias === null || place.prazo_recebimento_dias === undefined
+          ? ""
+          : String(place.prazo_recebimento_dias),
+      responsavelContactId: place.responsavel_contact_id ?? "",
+    });
     setError("");
     setOpen(true);
   }
@@ -71,10 +115,21 @@ export default function PlacesPage() {
       setError("Informe o nome do local.");
       return;
     }
+    const defaults = parseDefaults(form);
+    if (!defaults.ok) {
+      setError(defaults.message);
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const input = { nome, endereco: form.endereco.trim() || null };
+      const input = {
+        nome,
+        endereco: form.endereco.trim() || null,
+        valor_padrao: defaults.valor_padrao,
+        prazo_recebimento_dias: defaults.prazo_recebimento_dias,
+        responsavel_contact_id: defaults.responsavel_contact_id,
+      };
       if (editingId) await updatePlace(editingId, input);
       else await createPlace(input);
       setOpen(false);
@@ -169,6 +224,16 @@ export default function PlacesPage() {
                   ) : (
                     <p className="text-xs text-muted-foreground/70">Endereço não informado</p>
                   )}
+                  {(place.valor_padrao != null || place.prazo_recebimento_dias != null) && (
+                    <p className="truncate text-xs text-muted-foreground">
+                      {[
+                        place.valor_padrao != null ? `Padrão ${brl.format(Number(place.valor_padrao))}` : null,
+                        place.prazo_recebimento_dias != null ? `recebe em ${place.prazo_recebimento_dias} dias` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -212,7 +277,7 @@ export default function PlacesPage() {
             aria-modal="true"
             aria-labelledby="place-form-title"
             tabIndex={-1}
-            className="w-full rounded-t-2xl border border-border bg-card p-6 shadow-xl sm:max-w-md sm:rounded-2xl"
+            className="max-h-[90dvh] w-full overflow-y-auto rounded-t-2xl border border-border bg-card p-6 shadow-xl sm:max-w-md sm:rounded-2xl"
           >
             <div className="mb-5 flex items-center justify-between">
               <h2 id="place-form-title" className="text-xl font-bold tracking-tight text-foreground">
@@ -255,6 +320,59 @@ export default function PlacesPage() {
                   onChange={(e) => setForm({ ...form, endereco: e.target.value })}
                   placeholder="Ex.: Rua das Flores, 100"
                 />
+              </div>
+              <div className="space-y-4 border-t border-border pt-4">
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  Padrões opcionais: preenchem o plantão por você e podem ser alterados a cada lançamento.
+                </p>
+                <div className="space-y-1.5">
+                  <label htmlFor="place-valor-padrao" className="block text-sm font-medium text-foreground">
+                    Valor padrão do plantão (R$)
+                  </label>
+                  <Input
+                    id="place-valor-padrao"
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    placeholder="0,00"
+                    value={form.valorPadrao}
+                    onChange={(e) => setForm({ ...form, valorPadrao: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="place-prazo" className="block text-sm font-medium text-foreground">
+                    Prazo de recebimento (dias)
+                  </label>
+                  <Input
+                    id="place-prazo"
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    max="365"
+                    step="1"
+                    placeholder="Ex.: 30"
+                    value={form.prazoDias}
+                    onChange={(e) => setForm({ ...form, prazoDias: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="place-responsavel" className="block text-sm font-medium text-foreground">
+                    Responsável pelo pagamento
+                  </label>
+                  <Select
+                    id="place-responsavel"
+                    value={form.responsavelContactId}
+                    onChange={(e) => setForm({ ...form, responsavelContactId: e.target.value })}
+                  >
+                    <option value="">O próprio local</option>
+                    {contacts.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nome}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
               </div>
               {error && (
                 <div role="alert" className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">

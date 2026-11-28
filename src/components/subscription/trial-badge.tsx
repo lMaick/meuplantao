@@ -4,12 +4,14 @@ import Link from "next/link";
 import { Sparkles } from "lucide-react";
 import { cn } from "cn";
 import { useSubscription } from "@/lib/subscription";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 /**
  * Desktop sidebar trial badge with countdown and dynamic color tone.
  * Built to strictly stay within the 256px sidebar without horizontal overflow.
  */
 export function TrialBadge({ className }: { className?: string }) {
+  const isTwa = useIsTwa();
   const { trial, isLoading } = useSubscription();
 
   if (isLoading) {
@@ -59,9 +61,25 @@ export function TrialBadge({ className }: { className?: string }) {
   }
 
   if (trial.isExpired) {
+    if (isTwa) {
+      return (
+        <Link
+          href="/configuracoes"
+          className={cn(
+            "group flex w-full max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all duration-200 overflow-hidden",
+            "bg-muted text-muted-foreground hover:bg-muted/80 border border-border active:scale-[0.98]",
+            className
+          )}
+          title="Período de avaliação encerrado. Conta em modo leitura."
+        >
+          <span className="truncate min-w-0 flex-1">Modo leitura</span>
+        </Link>
+      );
+    }
     return (
       <Link
         href="/configuracoes"
+        data-twa-hide="true"
         className={cn(
           "group flex w-full max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all duration-200 overflow-hidden",
           "bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 active:scale-[0.98]",
@@ -94,7 +112,11 @@ export function TrialBadge({ className }: { className?: string }) {
           : "bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-400 border border-emerald-500/25",
         className
       )}
-      title={`Período de teste gratuito: ${trial.daysRemaining} dias restantes. Clique para ver o plano.`}
+      title={
+        isTwa
+          ? `Período de avaliação: ${trial.daysRemaining} dias restantes.`
+          : `Período de teste gratuito: ${trial.daysRemaining} dias restantes. Clique para ver o plano.`
+      }
     >
       <span className="truncate min-w-0 flex-1 font-medium">{badgeLabel}</span>
     </Link>
@@ -105,6 +127,7 @@ export function TrialBadge({ className }: { className?: string }) {
  * Mobile header compact badge with high touch accessibility.
  */
 export function TrialBadgeMobile({ className }: { className?: string }) {
+  const isTwa = useIsTwa();
   const { trial, isLoading } = useSubscription();
 
   if (isLoading) {
@@ -149,9 +172,26 @@ export function TrialBadgeMobile({ className }: { className?: string }) {
   }
 
   if (trial.isExpired) {
+    if (isTwa) {
+      return (
+        <Link
+          href="/configuracoes"
+          className={cn(
+            "inline-flex min-h-[36px] items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition-transform active:scale-95",
+            "bg-muted text-muted-foreground hover:bg-muted/80 border border-border",
+            className
+          )}
+          title="Conta em modo leitura"
+          aria-label="Conta em modo leitura"
+        >
+          <span>Modo leitura</span>
+        </Link>
+      );
+    }
     return (
       <Link
         href="/configuracoes"
+        data-twa-hide="true"
         className={cn(
           "inline-flex min-h-[36px] items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold transition-transform active:scale-95",
           "bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30",
