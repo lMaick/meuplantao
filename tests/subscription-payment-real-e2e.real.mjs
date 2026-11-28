@@ -145,7 +145,7 @@ function fixtureUUID(suffix) {
 
 /**
  * Cria usuário de teste no auth.users via SQL direto (fixture efêmero).
- * O usuário tem 20 dias de vida → trial (14 dias) já expirou, garantindo
+ * O usuário tem 40 dias de vida → trial (30 dias) já expirou, garantindo
  * que a assinatura verificada vem de subscriptions, não do trial.
  */
 async function createTestUser(suffix) {
@@ -154,7 +154,7 @@ async function createTestUser(suffix) {
 
   await pgQuery(
     `INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
-     VALUES ($1, 'authenticated', 'authenticated', $2, 'fixture-hash', now(), now() - interval '20 days', now())
+     VALUES ($1, 'authenticated', 'authenticated', $2, 'fixture-hash', now(), now() - interval '40 days', now())
      ON CONFLICT (id) DO NOTHING`,
     [userId, email],
   );

@@ -77,12 +77,8 @@ describe("Shift Calendar Modal: Status UI & Accessibility Contracts", () => {
       "Secondary button must be labeled 'Fechar'"
     );
 
-    // Primary button must be "Salvar alterações" (with busy indicator)
-    assert.match(
-      calendarSource,
-      />\s*\{busy \? "Salvando\.\.\." : "Salvar alterações"\}\s*<\/Button>/,
-      "Primary button must be labeled 'Salvar alterações'"
-    );
+    // Primary button names creation and editing distinctly.
+    assert.match(calendarSource, /Cadastrar plantão.*Salvar alterações/s);
 
     // Confirmation buttons when cancel confirmation is active
     assert.match(

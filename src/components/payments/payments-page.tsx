@@ -13,6 +13,7 @@ import {
   DollarSign,
   Download,
   FilterX,
+  MessageCircle,
   Moon,
   Plus,
   Sun,
@@ -25,6 +26,7 @@ import { listShifts, type Shift } from "@/lib/shifts";
 import { listObligations, type Obligation, isOverdue } from "@/lib/obligations";
 import { listPlaces, type Place } from "@/lib/places";
 import { listContacts, type Contact } from "@/lib/contacts";
+import { buildChargeMessage, buildWhatsAppUrl, normalizeBrazilianPhone } from "@/lib/contacts/whatsapp";
 import { cn } from "cn";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input, Select, FinancialStatusBadge } from "@/components/ui/primitives";
@@ -32,7 +34,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PaymentsSkeleton } from "@/components/ui/skeletons";
 import { buildExtratoCsv, downloadExtratoCsv, extratoFilename, type ExtratoRow } from "@/lib/exports/extrato-csv";
 import { FinanceFilters } from "@/components/finance/finance-filters";
-import { ALL_PERIODS, ALL_PLACES, currentMonthValue, matchesShift } from "@/lib/finance-filters";
+import { ALL_PERIODS, ALL_PLACES, matchesShift } from "@/lib/finance-filters";
 import { useFocusTrap } from "@/lib/accessibility/use-focus-trap";
 
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -40,6 +42,9 @@ const formatDate = (value: string) =>
   new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`));
 const bahiaTodayIso = () =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bahia" }).format(new Date());
+// Dias corridos entre a data prevista (ISO) e hoje em Bahia, em UTC puro para não depender do fuso local.
+const daysSinceIso = (isoDate: string) =>
+  Math.round((Date.parse(`${bahiaTodayIso()}T00:00:00Z`) - Date.parse(`${isoDate}T00:00:00Z`)) / 86_400_000);
 
 type Filter = "todos" | "atrasados" | "a-vencer" | "pagos";
 
@@ -48,6 +53,7 @@ type Row = {
   obligation: Obligation;
   placeName: string;
   responsible: string;
+  whatsappPhone: string | null;
   expected: number;
   received: number;
   balance: number;
@@ -91,6 +97,8 @@ export default function PaymentsPage() {
   const [modalDate, setModalDate] = useState(() => bahiaTodayIso());
   const [modalError, setModalError] = useState("");
   const [modalSaving, setModalSaving] = useState(false);
+  // Trava síncrona: dois toques seguidos em "Confirmar" não podem gerar dois pagamentos.
+  const modalSubmittingRef = useRef(false);
   const autoOpenedRef = useRef(false);
 
   // Inline general form state (for backward compatibility & accessibility)
@@ -100,7 +108,7 @@ export default function PaymentsPage() {
   const [inlineError, setInlineError] = useState("");
   const [inlineSaving, setInlineSaving] = useState(false);
 
-  const period = userPeriod ?? paramPeriod ?? currentMonthValue();
+  const period = userPeriod ?? paramPeriod ?? ALL_PERIODS;
   const placeId = userPlaceId ?? paramPlaceId ?? ALL_PLACES;
   const filter = userFilter ?? paramFilter ?? "todos";
 
@@ -132,6 +140,7 @@ export default function PaymentsPage() {
   const rows = useMemo<Row[]>(() => {
     const placeNames = new Map(places.map((p) => [p.id, p.nome]));
     const contactNames = new Map(contacts.map((c) => [c.id, c.nome]));
+    const contactPhones = new Map(contacts.map((c) => [c.id, normalizeBrazilianPhone(c.telefone)]));
 
     return shifts
       .filter((s) => s.status === "realizado" && matchesShift(s, period, placeId))
@@ -151,6 +160,9 @@ export default function PaymentsPage() {
             responsible: obligation.responsavel_contact_id
               ? `Contato · ${contactNames.get(obligation.responsavel_contact_id) ?? "não informado"}`
               : `Local · ${placeNames.get(obligation.responsavel_place_id ?? "") ?? "não informado"}`,
+            whatsappPhone: obligation.responsavel_contact_id
+              ? contactPhones.get(obligation.responsavel_contact_id) ?? null
+              : null,
             expected,
             received: Math.max(0, expected - balance),
             balance,
@@ -200,6 +212,18 @@ export default function PaymentsPage() {
 
   const selectedInline = rows.find(({ shift }) => shift.id === inlineShiftId);
   const inlineRemaining = selectedInline?.balance ?? 0;
+  const inlineAmountValue = Number(inlineAmount);
+  const inlineAmountMissing = inlineAmount.trim() === "" || !Number.isFinite(inlineAmountValue) || inlineAmountValue <= 0;
+  const inlineButtonDisabled =
+    inlineSaving || !selectedInline || inlineRemaining === 0 || inlineAmountMissing || !inlineDate;
+  // O que falta para habilitar o "Registrar" (nunca regra financeira: só orientação).
+  const inlineMissingHint = !selectedInline
+    ? "Escolha o plantão com saldo em aberto para registrar o pagamento."
+    : inlineRemaining === 0
+      ? "Este plantão não tem saldo em aberto."
+      : inlineAmountMissing || !inlineDate
+        ? "Informe o valor e a data do pagamento."
+        : "";
   const registered = payments.filter((p) => p.status === "registrado");
 
   useEffect(() => {
@@ -233,7 +257,7 @@ export default function PaymentsPage() {
 
   async function handleModalSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!modalRow) return;
+    if (!modalRow || modalSubmittingRef.current) return;
 
     setModalError("");
     const value = Number(modalAmount);
@@ -258,6 +282,7 @@ export default function PaymentsPage() {
       return;
     }
 
+    modalSubmittingRef.current = true;
     setModalSaving(true);
     try {
       await createPayment({
@@ -275,6 +300,7 @@ export default function PaymentsPage() {
     } catch (e: unknown) {
       setModalError(e instanceof Error ? e.message : "Não foi possível registrar o pagamento.");
     } finally {
+      modalSubmittingRef.current = false;
       setModalSaving(false);
     }
   }
@@ -516,11 +542,19 @@ export default function PaymentsPage() {
           <Button
             type="submit"
             className="h-11 min-h-[44px] px-6 font-medium"
-            disabled={inlineSaving || !selectedInline || inlineRemaining === 0}
+            disabled={inlineButtonDisabled}
+            aria-describedby="inline-submit-hint"
           >
             {inlineSaving ? "Salvando..." : "Registrar"}
           </Button>
         </form>
+        <p
+          id="inline-submit-hint"
+          aria-live="polite"
+          className={cn("mt-2 text-sm text-muted-foreground", !(inlineButtonDisabled && inlineMissingHint) && "sr-only")}
+        >
+          {inlineButtonDisabled ? inlineMissingHint : ""}
+        </p>
         {inlineError && (
           <p role="alert" className="mt-3 text-sm font-medium text-destructive">
             {inlineError}
@@ -620,8 +654,20 @@ export default function PaymentsPage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {visible.map((row) => {
-              const { shift, obligation, placeName, responsible, expected, received, balance, isOverdue: overdue } = row;
+              const { shift, obligation, placeName, responsible, whatsappPhone, expected, received, balance, isOverdue: overdue } = row;
               const isPaid = balance === 0;
+              const chargeUrl =
+                overdue && whatsappPhone
+                  ? buildWhatsAppUrl(
+                      whatsappPhone,
+                      buildChargeMessage({
+                        placeName,
+                        shiftDate: shift.data,
+                        balance,
+                        daysOverdue: daysSinceIso(obligation.data_prevista),
+                      }),
+                    )
+                  : null;
 
               return (
                 <article
@@ -701,13 +747,26 @@ export default function PaymentsPage() {
                         </p>
                       </div>
 
-                      <Link
-                        className="inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-primary hover:underline"
-                        href={`/calendario/plantao/${shift.id}`}
-                      >
-                        <span>Ver plantão</span>
-                        <ArrowUpRight className="size-4" />
-                      </Link>
+                      <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+                        {chargeUrl && (
+                          <a
+                            className="inline-flex min-h-[44px] min-w-[44px] items-center gap-1.5 rounded-md text-sm font-semibold text-emerald-700 transition-colors hover:underline dark:text-emerald-400"
+                            href={chargeUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <MessageCircle className="size-4 shrink-0" aria-hidden="true" />
+                            <span>Cobrar no WhatsApp</span>
+                          </a>
+                        )}
+                        <Link
+                          className="inline-flex min-h-[44px] items-center gap-1 text-sm font-semibold text-primary hover:underline"
+                          href={`/calendario/plantao/${shift.id}`}
+                        >
+                          <span>Ver plantão</span>
+                          <ArrowUpRight className="size-4" />
+                        </Link>
+                      </div>
                     </div>
 
                     {/* Registered Payments History */}

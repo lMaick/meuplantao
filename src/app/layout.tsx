@@ -5,6 +5,10 @@ import "./globals.css";
 import { getSiteUrl } from "../lib/seo/site-url";
 import { AppShell } from "@/components/ui/app-shell";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { ServiceWorkerRegister } from "@/components/pwa/service-worker-register";
+import { buildTwaBootstrapScript } from "@/lib/twa";
+
+const twaBootstrapScript = buildTwaBootstrapScript();
 
 const themeScript = `(() => {
   try {
@@ -31,7 +35,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL(getSiteUrl()),
   applicationName: "MeuPlantao",
-  title: { default: "MeuPlantao | Gestão de plantões", template: "%s | MeuPlantao" },
+  title: { default: "MeuPlantão | Gestão de plantões", template: "%s" },
   description: "Organize seus plantões, locais de trabalho e pagamentos. Acompanhe valores a receber, saldo e atrasos em um só lugar.",
   robots: { index: false, follow: false },
 };
@@ -53,8 +57,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: twaBootstrapScript }} />
       </head>
       <body className="min-h-full flex flex-col">
+        <ServiceWorkerRegister />
         <ThemeProvider>
           <AppShell>{children}</AppShell>
         </ThemeProvider>

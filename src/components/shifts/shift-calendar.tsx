@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Copy,
   Moon,
   Pencil,
   Plus,
@@ -23,10 +24,17 @@ import { Input, Select, Badge } from "@/components/ui/primitives";
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "cn";
 import { removeShift, saveShiftWithObligation, type Shift, type ShiftStatus } from "@/lib/shifts";
-import { ShiftCreationIntent, keyForShiftSave } from "@/lib/shifts/idempotency";
+import { ShiftCreationIntent, keyForShiftSave, newIdempotencyKey } from "@/lib/shifts/idempotency";
+import { BulkCreateSession, MAX_BULK_DATES, type BulkFailure } from "@/lib/shifts/bulk-create";
+import { applyPendingPlace, isAvailablePlace } from "@/lib/shifts/pending-place";
+import { resolveRealizedDefaults } from "@/lib/shifts/place-defaults";
 import { listObligations, type Obligation } from "@/lib/obligations";
 import type { Place } from "@/lib/places";
+import { InlinePlaceForm } from "@/components/shifts/inline-place-form";
+import { InlineContactForm } from "@/components/shifts/inline-contact-form";
 import { listContacts, type Contact } from "@/lib/contacts";
+import { isShiftFormDirty, type ShiftFormSnapshot } from "@/lib/shifts/form-dirty";
+import { useBackGuard } from "@/lib/shifts/use-back-guard";
 
 const months = [
   "Janeiro",
@@ -57,6 +65,16 @@ const colors: Record<ShiftStatus, string> = {
   cancelado: "bg-muted text-muted-foreground border border-border/50",
 };
 
+type ShiftSaveInput = Parameters<typeof saveShiftWithObligation>[1];
+
+/** Valores copiados de um plantão existente para abrir um NOVO plantão. */
+type ShiftDraft = Pick<Shift, "place_id" | "hora_inicio" | "hora_fim" | "valor_previsto">;
+
+/** Estado de um lote que salvou só parte das datas. */
+type BulkRetry = { input: ShiftSaveInput; failed: BulkFailure[] };
+
+const formatDate = (isoDate: string) => isoDate.split("-").reverse().join("/");
+
 const iso = (d: Date) => {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -66,7 +84,7 @@ const iso = (d: Date) => {
 
 export function ShiftCalendar({
   initialShifts,
-  places,
+  places: initialPlaces,
   initialOpen = false,
 }: {
   initialShifts: Shift[];
@@ -78,6 +96,8 @@ export function ShiftCalendar({
   const [cursor, setCursor] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const [selected, setSelected] = useState(iso(today));
   const [shifts, setShifts] = useState(initialShifts);
+  // Locais criados dentro do formulário entram aqui sem recarregar a página.
+  const [places, setPlaces] = useState(initialPlaces);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [obligations, setObligations] = useState<Obligation[]>([]);
   const [filter, setFilter] = useState<ShiftStatus | "todos">("todos");
@@ -88,13 +108,39 @@ export function ShiftCalendar({
     initialOpen || query.get("novo") === "1" ? ShiftCreationIntent.begin() : null
   );
 
+  const [draft, setDraft] = useState<ShiftDraft | null>(null);
+  const [bulkRetry, setBulkRetry] = useState<BulkRetry | null>(null);
+  const bulkRef = useRef<BulkCreateSession<Shift> | null>(null);
+
+  function resetBulk() {
+    bulkRef.current?.discard();
+    bulkRef.current = null;
+    setBulkRetry(null);
+  }
+
   function openNew() {
+    resetBulk();
+    setDraft(null);
+    setIntent(ShiftCreationIntent.begin());
+    setEditing(null);
+  }
+
+  function openDuplicate(source: Shift) {
+    resetBulk();
+    setDraft({
+      place_id: source.place_id,
+      hora_inicio: source.hora_inicio,
+      hora_fim: source.hora_fim,
+      valor_previsto: source.valor_previsto,
+    });
     setIntent(ShiftCreationIntent.begin());
     setEditing(null);
   }
 
   function closeForm() {
     intent?.markCancelled();
+    resetBulk();
+    setDraft(null);
     setIntent(null);
     setEditing(false);
   }
@@ -124,9 +170,57 @@ export function ShiftCalendar({
     .filter((s) => s.data === selected)
     .sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
 
+  function addPlace(place: Place) {
+    setPlaces((list) => (list.some((p) => p.id === place.id) ? list : [...list, place].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))));
+  }
+
+  function addContact(contact: Contact) {
+    setContacts((list) => (list.some((c) => c.id === contact.id) ? list : [...list, contact]));
+  }
+
   const name = (id: string) => places.find((p) => p.id === id)?.nome ?? "Local não encontrado";
 
-  async function save(data: FormData) {
+  async function runBulk(session: BulkCreateSession<Shift>, input: ShiftSaveInput, dates?: string[]) {
+    const result = await session.run(
+      ({ data: shiftDate, key }) =>
+        saveShiftWithObligation(null, {
+          ...input,
+          data: shiftDate,
+          status: "agendado",
+          data_prevista: null,
+          responsavel_place_id: null,
+          responsavel_contact_id: null,
+          idempotency_key: key,
+        }),
+      dates
+    );
+    if (result.saved.length > 0) {
+      const created = result.saved.map((item) => item.result);
+      setShifts((list) => [...created.reverse(), ...list]);
+      setSelected(result.saved.find((item) => item.data === input.data)?.data ?? result.saved[0].data);
+    }
+    if (!result.complete) {
+      setBulkRetry({ input, failed: result.failed });
+      const missing = result.failed.map((item) => formatDate(item.data)).join(", ");
+      throw new Error(
+        `${result.saved.length} plantão(ões) salvo(s). Faltam: ${missing}. ${result.failed[0].message} ` +
+          "Toque em reenviar para tentar só as datas pendentes."
+      );
+    }
+    intent?.markSucceeded();
+    resetBulk();
+    setDraft(null);
+    setIntent(null);
+    setEditing(false);
+  }
+
+  async function save(data: FormData, extraDates: string[] = [], pendingPlace?: Place | null) {
+    const retrySession = bulkRef.current;
+    if (bulkRetry && retrySession?.isActive) {
+      // Reenvio: só as datas pendentes, com as mesmas chaves e o mesmo conteúdo.
+      await runBulk(retrySession, bulkRetry.input);
+      return;
+    }
     const status = String(data.get("status")) as ShiftStatus;
     const rawValue = String(data.get("valor_previsto") ?? "").trim();
     const value = rawValue === "" ? null : Number(rawValue);
@@ -136,7 +230,7 @@ export function ShiftCalendar({
 
     const validResponsible =
       responsibleType === "local"
-        ? places.some((place) => place.id === responsibleId)
+        ? isAvailablePlace(responsibleId, places, pendingPlace)
         : responsibleType === "contato"
         ? contacts.some((contact) => contact.id === responsibleId)
         : false;
@@ -157,7 +251,20 @@ export function ShiftCalendar({
       throw new Error("Plantão realizado exige valor, data prevista e responsável.");
     }
 
+    if (!isAvailablePlace(input.place_id, places, pendingPlace)) {
+      throw new Error("Escolha ou salve o local do plantão antes de continuar.");
+    }
+
     const isNew = !editing;
+    if (isNew && status === "agendado" && extraDates.length > 0) {
+      if (extraDates.length > MAX_BULK_DATES) {
+        throw new Error(`Escolha no máximo ${MAX_BULK_DATES} datas extras.`);
+      }
+      const session = (bulkRef.current ??= new BulkCreateSession<Shift>(newIdempotencyKey));
+      session.keyFor(input.data, keyForShiftSave(true, intent) ?? undefined);
+      await runBulk(session, input, [input.data, ...extraDates]);
+      return;
+    }
     const result = await saveShiftWithObligation(editing ? editing.id : null, {
       ...input,
       data_prevista: status === "realizado" ? dueDate : null,
@@ -276,7 +383,7 @@ export function ShiftCalendar({
                     type="button"
                     onClick={() => setSelected(date)}
                     aria-label={`${day.getDate()} de ${months[day.getMonth()]}${
-                      dayShifts.length > 0 ? `, ${dayShifts.length} plantões` : ""
+                      dayShifts.length > 0 ? `, ${dayShifts.length} ${dayShifts.length === 1 ? "plantão" : "plantões"}` : ""
                     }`}
                     aria-pressed={isSelected}
                     className={cn(
@@ -521,12 +628,23 @@ export function ShiftCalendar({
                           </span>
                         )}
                       </div>
-                      <Link
-                        href={`/calendario/plantao/${s.id}`}
-                        className="inline-flex min-h-[44px] items-center text-xs font-semibold text-primary hover:underline py-1"
-                      >
-                        Ver ficha
-                      </Link>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => openDuplicate(s)}
+                          aria-label={`Duplicar plantão em ${name(s.place_id)}`}
+                          className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation items-center gap-1 text-xs font-semibold text-primary hover:underline py-1"
+                        >
+                          <Copy className="size-3.5 shrink-0" />
+                          Duplicar
+                        </button>
+                        <Link
+                          href={`/calendario/plantao/${s.id}`}
+                          className="inline-flex min-h-[44px] items-center text-xs font-semibold text-primary hover:underline py-1"
+                        >
+                          Ver ficha
+                        </Link>
+                      </div>
                     </div>
                   </div>
                 );
@@ -547,7 +665,11 @@ export function ShiftCalendar({
           obligation={editing ? obligations.find((item) => item.shift_id === editing.id) : undefined}
           places={places}
           contacts={contacts}
+          onPlaceCreated={addPlace}
+          onContactCreated={addContact}
           date={selected}
+          draft={editing ? null : draft}
+          retry={editing ? null : bulkRetry}
           close={closeForm}
           save={save}
           remove={remove}
@@ -562,8 +684,12 @@ function Form({
   obligation,
   places,
   contacts,
+  onPlaceCreated,
+  onContactCreated,
   date,
-  close,
+  draft,
+  retry,
+  close: discardAndClose,
   save,
   remove,
 }: {
@@ -571,13 +697,20 @@ function Form({
   obligation?: Obligation;
   places: Place[];
   contacts: Contact[];
+  onPlaceCreated: (place: Place) => void;
+  onContactCreated: (contact: Contact) => void;
   date: string;
+  draft: ShiftDraft | null;
+  retry: BulkRetry | null;
   close: () => void;
-  save: (data: FormData) => Promise<void>;
+  save: (data: FormData, extraDates?: string[], pendingPlace?: Place | null) => Promise<void>;
   remove: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
+  const submitPendingPlaceRef = useRef<(() => Promise<Place | null>) | null>(null);
   const initialResponsibleType = obligation?.responsavel_contact_id
     ? "contato"
     : obligation?.responsavel_place_id
@@ -591,10 +724,118 @@ function Form({
   const [responsibleId, setResponsibleId] = useState(
     obligation?.responsavel_contact_id ?? obligation?.responsavel_place_id ?? ""
   );
+  const isNewShift = !shift;
+  const [placeId, setPlaceId] = useState(shift?.place_id ?? draft?.place_id ?? places[0]?.id ?? "");
+  const [horaInicio, setHoraInicio] = useState(shift?.hora_inicio ?? draft?.hora_inicio ?? "");
+  const [horaFim, setHoraFim] = useState(shift?.hora_fim ?? draft?.hora_fim ?? "");
+  const [dataValue, setDataValue] = useState(shift?.data ?? (draft ? "" : date));
+  const [valor, setValor] = useState(() => {
+    const existing = obligation?.valor_devido ?? shift?.valor_previsto ?? draft?.valor_previsto;
+    if (existing !== null && existing !== undefined) return String(existing);
+    if (!isNewShift) return "";
+    const defaultValue = places.find((p) => p.id === (draft?.place_id ?? places[0]?.id))?.valor_padrao;
+    return defaultValue === null || defaultValue === undefined ? "" : String(defaultValue);
+  });
+  const [dueDate, setDueDate] = useState(obligation?.data_prevista ?? "");
+  const [addingPlace, setAddingPlace] = useState(false);
+  const [addingContact, setAddingContact] = useState(false);
+  const showPlaceForm = places.length === 0 || addingPlace;
+  const pendingPlaceWillPay = showPlaceForm && !responsibleType && !responsibleId;
+  const [repeatOpen, setRepeatOpen] = useState(false);
+  const [extraDates, setExtraDates] = useState<string[]>([]);
+  const canRepeat = isNewShift && status === "agendado";
+  const locked = retry !== null;
+
+  const currentSnapshot: ShiftFormSnapshot = {
+    placeId,
+    data: dataValue,
+    horaInicio,
+    horaFim,
+    valor,
+    status,
+    responsibleType,
+    responsibleId,
+    dueDate,
+    extraDates,
+  };
+  const [initialSnapshot] = useState<ShiftFormSnapshot>(() => currentSnapshot);
+  const dirty = isShiftFormDirty(initialSnapshot, currentSnapshot, {
+    hasBulkRetry: retry !== null,
+    hasOpenSubform: addingContact || (addingPlace && places.length > 0),
+  });
+
+  // Fechar/Escape/clique fora/voltar: com alterações, pede confirmação antes de descartar.
+  function close() {
+    if (busy) return;
+    if (dirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    discardAndClose();
+  }
+
+  useBackGuard(dirty, () => {
+    if (!busy) setConfirmDiscard(true);
+  });
+
+  useEffect(() => {
+    if (confirmDiscard) keepEditingRef.current?.focus();
+  }, [confirmDiscard]);
+  const bulkLabel = retry
+    ? `Reenviar ${retry.failed.length} pendente${retry.failed.length > 1 ? "s" : ""}`
+    : canRepeat && extraDates.length > 0
+      ? `Salvar ${extraDates.length + 1} plantões`
+      : null;
 
   const isBecomingCanceled = status === "cancelado" && (!shift || shift.status !== "cancelado");
 
+  function handlePlaceChange(nextPlaceId: string) {
+    setPlaceId(nextPlaceId);
+    // Só sugere em plantão novo e nunca sobrescreve o que a pessoa digitou.
+    if (!isNewShift || valor.trim() !== "") return;
+    const suggested = places.find((p) => p.id === nextPlaceId)?.valor_padrao;
+    if (suggested !== null && suggested !== undefined) setValor(String(suggested));
+  }
+
+  function handlePlaceCreated(place: Place) {
+    onPlaceCreated(place);
+    setPlaceId(place.id);
+    setAddingPlace(false);
+    if (isNewShift && valor.trim() === "" && place.valor_padrao !== null && place.valor_padrao !== undefined) {
+      setValor(String(place.valor_padrao));
+    }
+    if (status === "realizado" && !responsibleType && !responsibleId) {
+      setResponsibleType("local");
+      setResponsibleId(place.id);
+    }
+  }
+
+  function handleContactCreated(contact: Contact) {
+    onContactCreated(contact);
+    setResponsibleType("contato");
+    setResponsibleId(contact.id);
+    setAddingContact(false);
+  }
+
+  function applyRealizedDefaults() {
+    const place = places.find((p) => p.id === placeId);
+    if (!place) return;
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dataValue);
+    const parsed = valor.trim() === "" ? null : Number(valor);
+    const suggestion = resolveRealizedDefaults(
+      { data: validDate ? dataValue : date, valor_previsto: parsed !== null && Number.isFinite(parsed) ? parsed : null },
+      place
+    );
+    if (valor.trim() === "" && suggestion.valor !== null) setValor(String(suggestion.valor));
+    if (!dueDate && validDate && suggestion.dataPrevista) setDueDate(suggestion.dataPrevista);
+    if (!responsibleType && !responsibleId) {
+      setResponsibleType("local");
+      setResponsibleId(place.id);
+    }
+  }
+
   function handleStatusChange(newStatus: ShiftStatus) {
+    if (newStatus === "realizado" && status !== "realizado") applyRealizedDefaults();
     setStatus(newStatus);
     if (newStatus !== "cancelado") {
       setConfirmCancel(false);
@@ -614,19 +855,28 @@ function Form({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-xs sm:items-center">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 backdrop-blur-xs sm:items-center"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) close();
+      }}
+    >
       <form
         role="dialog"
         aria-modal="true"
         aria-label={shift ? "Editar plantão" : "Novo plantão"}
         onKeyDown={(event) => {
-          if (event.key === "Escape" && !busy) close();
+          if (event.key === "Escape" && !busy) {
+            event.stopPropagation();
+            if (confirmDiscard) setConfirmDiscard(false);
+            else close();
+          }
           if (event.key === "Tab") {
             const controls = Array.from(
               event.currentTarget.querySelectorAll<HTMLElement>(
                 "button:not(:disabled), input:not(:disabled), select:not(:disabled)"
               )
-            );
+            ).filter((control) => !control.closest("[inert]"));
             const first = controls[0];
             const last = controls[controls.length - 1];
             if (event.shiftKey && document.activeElement === first) {
@@ -646,8 +896,17 @@ function Form({
             setConfirmCancel(true);
             return;
           }
+          // Capture antes de busy desabilitar o fieldset durante a criacao do local.
           const data = new FormData(event.currentTarget);
-          void run(() => save(data));
+          void run(async () => {
+            const submitPendingPlace = submitPendingPlaceRef.current;
+            const pendingPlace = await submitPendingPlace?.();
+            if (submitPendingPlace && !pendingPlace) {
+              throw new Error("Não foi possível salvar o local. Confira os dados e tente novamente.");
+            }
+            if (pendingPlace) applyPendingPlace(data, pendingPlace);
+            await save(data, canRepeat ? extraDates : [], pendingPlace);
+          });
         }}
         className="max-h-[90dvh] overflow-y-auto w-full max-w-md rounded-t-2xl border border-border bg-card p-5 sm:p-6 shadow-xl text-card-foreground sm:rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]"
       >
@@ -669,7 +928,7 @@ function Form({
           </button>
         </div>
 
-        <fieldset disabled={busy} className="mt-5 grid gap-5">
+        <fieldset disabled={busy || locked} className="mt-5 grid gap-5">
           <div className="grid gap-3">
             <div>
               <h3 className="text-sm font-semibold text-foreground">Quando e onde?</h3>
@@ -677,53 +936,76 @@ function Form({
                 Informe o local e o horário do plantão.
               </p>
             </div>
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Local</span>
-            {places.length === 0 ? (
-              <div className="space-y-1">
-                <p className="text-xs text-destructive">Nenhum local cadastrado.</p>
-                <Link
-                  href="/locais"
-                  className="inline-block text-xs font-semibold text-primary underline"
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-place-select">Local</label>
+            {places.length > 0 && (
+              <div className="flex items-start gap-2">
+                <Select name="place_id"
+                  id="shift-place-select"
+                  autoFocus
+                  required
+                  value={placeId}
+                  onChange={(event) => handlePlaceChange(event.target.value)}
                 >
-                  Cadastrar local agora
-                </Link>
+                  {places.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome}
+                    </option>
+                  ))}
+                </Select>
+                {!addingPlace && (
+                  <button
+                    type="button"
+                    onClick={() => setAddingPlace(true)}
+                    className="inline-flex min-h-[44px] min-w-[44px] shrink-0 cursor-pointer touch-manipulation items-center rounded-lg px-2 text-sm font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    + Novo local
+                  </button>
+                )}
               </div>
-            ) : (
-              <Select name="place_id" autoFocus required defaultValue={shift?.place_id ?? places[0]?.id}>
-                {places.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nome}
-                  </option>
-                ))}
-              </Select>
             )}
-          </label>
+            {showPlaceForm && (
+              <InlinePlaceForm
+                onCreated={handlePlaceCreated}
+                onSubmitReady={(submit) => { submitPendingPlaceRef.current = submit; }}
+                onCancel={places.length > 0 ? () => setAddingPlace(false) : undefined}
+              />
+            )}
+          </div>
 
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Data</span>
-            <Input name="data" type="date" required defaultValue={shift?.data ?? date} />
-          </label>
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-data">Data</label>
+            <Input name="data" type="date"
+              id="shift-data"
+              required
+              value={dataValue}
+              onChange={(event) => setDataValue(event.target.value)}
+            />
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <label className="grid gap-1.5 text-sm font-medium text-foreground">
-              <span>Início</span>
+            <div className="grid gap-1.5 text-sm font-medium text-foreground">
+              <label htmlFor="shift-hora-inicio">Início</label>
               <Input
                 name="hora_inicio"
                 type="time"
+                id="shift-hora-inicio"
                 required
-                defaultValue={shift?.hora_inicio}
+                value={horaInicio}
+                onChange={(event) => setHoraInicio(event.target.value)}
               />
-            </label>
-            <label className="grid gap-1.5 text-sm font-medium text-foreground">
-              <span>Fim</span>
+            </div>
+            <div className="grid gap-1.5 text-sm font-medium text-foreground">
+              <label htmlFor="shift-hora-fim">Fim</label>
               <Input
                 name="hora_fim"
                 type="time"
+                id="shift-hora-fim"
                 required
-                defaultValue={shift?.hora_fim}
+                value={horaFim}
+                onChange={(event) => setHoraFim(event.target.value)}
               />
-            </label>
+            </div>
           </div>
 
           </div>
@@ -736,42 +1018,48 @@ function Form({
               </p>
             </div>
 
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Valor do plantão (R$)</span>
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-valor">Valor do plantão (R$)</label>
             <Input
               name="valor_previsto"
               type="number"
+              id="shift-valor"
               min="0"
               step="0.01"
               placeholder="0,00"
-              defaultValue={obligation?.valor_devido ?? shift?.valor_previsto ?? ""}
+              value={valor}
+              onChange={(event) => setValor(event.target.value)}
             />
-          </label>
+          </div>
 
           {status === "realizado" && (
             <div className="grid gap-4 rounded-xl border border-border/70 bg-muted/20 p-3.5 sm:p-4">
               <p className="text-xs leading-relaxed text-muted-foreground">
                 Preencha estes dados para acompanhar o recebimento deste plantão.
               </p>
-          <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Quando você espera receber?</span>
+          <div className="grid gap-1.5 text-sm font-medium text-foreground">
+            <label htmlFor="shift-data-prevista">Data prevista: quando você espera receber?</label>
             <Input
               name="data_prevista"
               type="date"
+              id="shift-data-prevista"
               required
-              defaultValue={obligation?.data_prevista ?? ""}
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
             />
-          </label>
+          </div>
 
           <label className="grid gap-1.5 text-sm font-medium text-foreground">
-            <span>Tipo de responsável</span>
+            <span>Quem deve pagar?</span>
             <Select
               name="responsavel_tipo"
               value={responsibleType}
-              required
+              required={!pendingPlaceWillPay}
               onChange={(event) => {
-                setResponsibleType(event.target.value as "" | "local" | "contato");
+                const nextType = event.target.value as "" | "local" | "contato";
+                setResponsibleType(nextType);
                 setResponsibleId("");
+                setAddingContact(nextType === "contato" && contacts.length === 0);
               }}
             >
               <option value="">Selecione...</option>
@@ -788,7 +1076,7 @@ function Form({
             <Select
               name="responsavel_id"
               value={responsibleId}
-              required
+              required={!pendingPlaceWillPay}
               disabled={!responsibleType}
               onChange={(event) => setResponsibleId(event.target.value)}
             >
@@ -807,6 +1095,22 @@ function Form({
               ))}
             </Select>
           </label>
+
+          {!addingContact ? (
+            <button
+              type="button"
+              onClick={() => {
+                setResponsibleType("contato");
+                setResponsibleId("");
+                setAddingContact(true);
+              }}
+              className="inline-flex min-h-[44px] w-fit cursor-pointer touch-manipulation items-center rounded-lg px-2 text-sm font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              + Novo pagador
+            </button>
+          ) : (
+            <InlineContactForm onCreated={handleContactCreated} onCancel={() => setAddingContact(false)} />
+          )}
             </div>
           )}
 
@@ -905,6 +1209,75 @@ function Form({
           </div>
         </fieldset>
 
+        {retry && (
+          <div
+            role="status"
+            className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-sm text-amber-950 dark:text-amber-100"
+          >
+            <p className="font-semibold">Datas pendentes</p>
+            <ul className="mt-2 flex flex-wrap gap-1.5">
+              {retry.failed.map((item) => (
+                <li
+                  key={item.data}
+                  className="rounded-md border border-amber-600/40 bg-background px-2 py-1 text-xs font-semibold text-foreground"
+                >
+                  {formatDate(item.data)}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs leading-relaxed">
+              O que já foi salvo não será duplicado. Reenviar usa as mesmas chaves, só para estas datas.
+            </p>
+          </div>
+        )}
+
+        {canRepeat && !retry && (
+          <fieldset disabled={busy} className="mt-5 border-t border-border pt-4">
+            <button
+              type="button"
+              id="repeat-toggle"
+              aria-expanded={repeatOpen}
+              aria-controls="repeat-panel"
+              onClick={() => setRepeatOpen((value) => !value)}
+              className="flex min-h-[44px] w-full cursor-pointer touch-manipulation items-center justify-between gap-2 rounded-lg text-left text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <span>
+                Repetir em outras datas
+                {extraDates.length > 0 && (
+                  <span className="ml-2 rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-bold text-primary">
+                    {extraDates.length}
+                  </span>
+                )}
+              </span>
+              <ChevronRight
+                aria-hidden="true"
+                className={cn(
+                  "size-4 shrink-0 text-muted-foreground transition-transform duration-[190ms] ease-out motion-reduce:transition-none",
+                  repeatOpen && "rotate-90"
+                )}
+              />
+            </button>
+            <div
+              id="repeat-panel"
+              role="region"
+              aria-labelledby="repeat-toggle"
+              className={cn(
+                "grid transition-[grid-template-rows,opacity] duration-[190ms] ease-out motion-reduce:transition-none",
+                repeatOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+              )}
+            >
+              <div className="overflow-hidden" inert={!repeatOpen}>
+                <RepeatDatesPicker
+                  mainDate={dataValue}
+                  selected={extraDates}
+                  onChange={setExtraDates}
+                  max={MAX_BULK_DATES}
+                />
+              </div>
+            </div>
+          </fieldset>
+        )}
+
         {isBecomingCanceled && confirmCancel && (
           <div
             role="alert"
@@ -928,6 +1301,38 @@ function Form({
           <p role="alert" className="mt-4 text-sm font-medium text-destructive">
             {error}
           </p>
+        )}
+
+        {confirmDiscard && (
+          <div
+            role="alert"
+            className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-4 animate-in fade-in duration-200 motion-reduce:animate-none"
+          >
+            <p className="text-sm font-semibold text-destructive">Descartar alterações?</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              O que você preencheu neste formulário será perdido.
+            </p>
+            <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={busy}
+                onClick={discardAndClose}
+                className="min-h-[44px] w-full sm:w-auto"
+              >
+                Descartar
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                ref={keepEditingRef}
+                onClick={() => setConfirmDiscard(false)}
+                className="min-h-[44px] w-full sm:w-auto"
+              >
+                Continuar editando
+              </Button>
+            </div>
+          </div>
         )}
 
         <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:items-center sm:justify-between">
@@ -982,19 +1387,146 @@ function Form({
                 >
                   Fechar
                 </Button>
-                <Button
-                  type="submit"
-                  size="default"
-                  disabled={busy}
-                  className="min-h-[44px] w-full sm:w-auto font-semibold"
-                >
-                  {busy ? "Salvando..." : "Salvar alterações"}
-                </Button>
+                {bulkLabel ? (
+                  <Button
+                    type="submit"
+                    size="default"
+                    disabled={busy}
+                    className="min-h-[44px] w-full sm:w-auto font-semibold"
+                  >
+                    {busy ? "Salvando..." : bulkLabel}
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    size="default"
+                    disabled={busy}
+                    className="min-h-[44px] w-full sm:w-auto font-semibold"
+                  >
+                    {busy ? "Salvando..." : isNewShift ? "Cadastrar plantão" : "Salvar alterações"}
+                  </Button>
+                )}
               </>
             )}
           </div>
         </div>
       </form>
+    </div>
+  );
+}
+
+function RepeatDatesPicker({
+  mainDate,
+  selected,
+  onChange,
+  max,
+}: {
+  mainDate: string;
+  selected: string[];
+  onChange: (dates: string[]) => void;
+  max: number;
+}) {
+  const [month, setMonth] = useState(() => {
+    const base = /^\d{4}-\d{2}-\d{2}$/.test(mainDate) ? new Date(`${mainDate}T12:00:00`) : new Date();
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+
+  const cells = useMemo(() => {
+    const start = month.getDay();
+    const count = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+    return Array.from({ length: Math.ceil((start + count) / 7) * 7 }, (_, i) =>
+      i < start || i >= start + count ? null : new Date(month.getFullYear(), month.getMonth(), i - start + 1)
+    );
+  }, [month]);
+
+  const atLimit = selected.length >= max;
+
+  function toggle(date: string) {
+    onChange(
+      selected.includes(date)
+        ? selected.filter((item) => item !== date)
+        : atLimit
+          ? selected
+          : [...selected, date].sort()
+    );
+  }
+
+  return (
+    <div className="pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          aria-label="Mês anterior das datas extras"
+          onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+          className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ChevronLeft className="size-4" />
+        </button>
+        <p className="text-sm font-semibold text-foreground" aria-live="polite">
+          {months[month.getMonth()]} {month.getFullYear()}
+        </p>
+        <button
+          type="button"
+          aria-label="Próximo mês das datas extras"
+          onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
+          className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ChevronRight className="size-4" />
+        </button>
+      </div>
+
+      <div className="mt-1 grid grid-cols-7 text-center text-xs font-bold uppercase text-muted-foreground">
+        {weekShort.map((day, index) => (
+          <span key={index} className="py-1">
+            {day}
+          </span>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((day, index) => {
+          if (!day) return <div key={`blank-${index}`} className="min-h-[44px]" aria-hidden="true" />;
+          const date = iso(day);
+          const isMain = date === mainDate;
+          const isOn = selected.includes(date);
+          return (
+            <button
+              key={date}
+              type="button"
+              disabled={isMain || (!isOn && atLimit)}
+              aria-pressed={isMain ? true : isOn}
+              aria-label={`${day.getDate()} de ${months[day.getMonth()]}${isMain ? ", data principal" : ""}`}
+              onClick={() => toggle(date)}
+              className={cn(
+                "min-h-[44px] min-w-[44px] cursor-pointer touch-manipulation rounded-lg text-sm font-medium transition-colors duration-[190ms] motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed",
+                isMain
+                  ? "border border-primary/50 bg-primary/10 font-bold text-foreground"
+                  : isOn
+                    ? "bg-primary font-bold text-primary-foreground"
+                    : "text-foreground hover:bg-muted disabled:text-muted-foreground disabled:opacity-60"
+              )}
+            >
+              {day.getDate()}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-2 flex min-h-[44px] items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span aria-live="polite">
+          {selected.length === 0
+            ? "Toque nos dias para repetir este plantão."
+            : `${selected.length} ${selected.length === 1 ? "data extra marcada" : "datas extras marcadas"} · máximo de ${max}`}
+        </span>
+        {selected.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="inline-flex min-h-[44px] cursor-pointer items-center px-2 font-semibold text-primary hover:underline"
+          >
+            Limpar
+          </button>
+        )}
+      </div>
     </div>
   );
 }

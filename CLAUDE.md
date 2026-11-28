@@ -1,12 +1,11 @@
 # MeuPlantão — Claude Code Guidelines
 
-> As regras canônicas do projeto estão em **`AGENTS.md`**. Este arquivo é um ponteiro — leia `AGENTS.md` antes de qualquer tarefa.
+As regras canônicas estão em **[AGENTS.md](AGENTS.md)**. O fluxo principal é o da equipe MeuPlantão Code (Davi, Bruno, Nina, Iara e Téo); Orca e Gravity não são intermediários obrigatórios.
 
-## Resumo dos contratos obrigatórios
+- Davi planeja, delega e verifica. Cada worker editor usa branch/worktree exclusiva e abre PR para `main`; apenas o dono faz merge.
+- Mudanças de código são registradas no Linear quando disponível, sem usar o Orca como passagem obrigatória.
+- Preserve RLS, integridade financeira, segredos, arquitetura DAL, Motion Principles e gates de produção definidos em `AGENTS.md`.
+- Valide código com `npm test && npm run lint && npx tsc --noEmit && npm run build`, além de testes reais isolados quando relevantes. Relate falhas com clareza.
+- A skill `orca-worker-protocol` se aplica apenas quando este agente estiver trabalhando efetivamente no Orca.
 
-1. **Ciclo Git & Deploys via PR** — Issue no Linear (`MAI-XXX`) → branch dedicada → commit convencional → `git push` → `gh pr create --base main`. Nunca faça merge ou deploy direto.
-2. **Motion Principles** — Toda interface: skeletons proporcionais, lazy loading, smooth animations (entrada < 300ms, saída < 200ms), `prefers-reduced-motion`, touch targets 44×44px.
-3. **Observabilidade & Testes** — Sentry SDK + logs estruturados (`src/lib/observability/`), arch-contract (DAL em `src/lib/<modulo>/` — assinatura em `src/lib/subscription/queries.ts`, MAI-143), ESLint (`src/`) + `tsc` estrito, `npm test` offline + reais opt-in (Supabase local descartável; `test:security-real` usa Postgres 16 local, não Supabase). Sem Biome/Playwright/Codecov/APM dedicado instalados — não exigir.
-4. **Padrões técnicos** — Next.js App Router, TypeScript strict, Tailwind CSS v4, shadcn/ui, Supabase RLS.
-
-Validação pré-PR: `npm test && npm run lint && npx tsc --noEmit && npm run build`.
+Em conflito, os requisitos de segurança e engenharia do `AGENTS.md` prevalecem.

@@ -92,7 +92,7 @@ export function InteractivePreview() {
               <div className="size-3 rounded-full bg-rose-500/80" />
               <div className="size-3 rounded-full bg-amber-500/80" />
               <div className="size-3 rounded-full bg-emerald-500/80" />
-              <span className="ml-2 text-xs font-mono text-slate-400">meuplantao.app/dashboard</span>
+              <span className="ml-2 text-xs font-mono text-slate-400">meuplantao.pro/dashboard</span>
             </div>
 
             {/* Quick Metrics Bar */}

@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { useIsTwa } from "@/lib/twa/use-is-twa";
 
 interface FaqItem {
   question: string;
   answer: string;
+  hideInTwa?: boolean;
 }
 
 const faqs: FaqItem[] = [
@@ -13,6 +15,7 @@ const faqs: FaqItem[] = [
     question: "Posso conhecer o MeuPlantão antes de assinar?",
     answer:
       "Sim! Você pode criar sua conta gratuitamente e conhecer o app antes de assinar. O plano completo custa R$ 12,90 por mês, sem precisar cadastrar cartão no primeiro acesso.",
+    hideInTwa: true,
   },
   {
     question: "Serve apenas para médicos ou outros profissionais de saúde?",
@@ -28,21 +31,25 @@ const faqs: FaqItem[] = [
     question: "Preciso baixar da App Store ou Google Play?",
     answer:
       "O MeuPlantão é um web app moderno (PWA) de alta velocidade. Basta abrir no navegador do seu smartphone e selecionar 'Adicionar à tela de início' para usá-lo com ícone direto no celular, ocupando pouco espaço no aparelho.",
+    hideInTwa: true,
   },
   {
     question: "Como funciona a cobrança do plano Pro?",
     answer:
       "O plano Pro é uma compra avulsa pré-paga do período de acesso: você paga apenas pelo período selecionado. Acesso por período fixo. Sem renovação automática. Sem cobranças recorrentes no cartão.",
+    hideInTwa: true,
   },
   {
     question: "Meus dados financeiros e de plantões estão seguros?",
     answer:
-      "Seus registros ficam associados apenas à sua conta e protegidos por políticas de Row Level Security (RLS) e controles de acesso em banco Postgres. Os Termos e a Política de Privacidade detalham responsabilidades, limitações e como exercer seus direitos.",
+      "Seus registros ficam associados apenas à sua conta e protegidos por controles de acesso. Os Termos e a Política de Privacidade detalham responsabilidades, limitações e como exercer seus direitos.",
   },
 ];
 
 export function FaqSection() {
+  const isTwa = useIsTwa();
   const [openIndex, setOpenIndex] = useState<number | null>(0);
+  const visibleFaqs = isTwa ? faqs.filter((item) => !item.hideInTwa) : faqs;
 
   const toggleFaq = (index: number) => {
     setOpenIndex(openIndex === index ? null : index);
@@ -64,11 +71,12 @@ export function FaqSection() {
         </div>
 
         <div className="flex flex-col gap-3">
-          {faqs.map((faq, index) => {
+          {visibleFaqs.map((faq, index) => {
             const isOpen = openIndex === index;
             return (
               <div
-                key={index}
+                key={faq.question}
+                data-twa-hide={faq.hideInTwa ? "true" : undefined}
                 className="rounded-2xl border border-border bg-card overflow-hidden transition-all shadow-xs"
               >
                 <button

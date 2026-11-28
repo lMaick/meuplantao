@@ -18,6 +18,7 @@ export function AuthForm({ mode, next = "/dashboard", authOrigin }: { mode: Mode
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -89,7 +90,10 @@ export function AuthForm({ mode, next = "/dashboard", authOrigin }: { mode: Mode
             </Link>
           )}
         </div>
-        <input id="password" name="password" type="password" minLength={mode === "signup" ? MIN_PASSWORD_LENGTH : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
+        <div className="relative">
+          <input id="password" name="password" type={showPassword ? "text" : "password"} minLength={mode === "signup" ? MIN_PASSWORD_LENGTH : undefined} aria-describedby={mode === "signup" ? "password-help" : undefined} autoComplete={mode === "login" ? "current-password" : "new-password"} required value={password} onChange={(event) => setPassword(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 pr-14 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring" />
+          <button type="button" className="absolute right-1 top-1 h-9 min-h-[44px] min-w-[44px] -translate-y-0.5 rounded-md text-xs font-medium" aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? "Ocultar" : "Mostrar"}</button>
+        </div>
       </div>
       {mode === "signup" && <p id="password-help" className="text-sm text-muted-foreground">Use pelo menos 8 caracteres. Podemos pedir a confirmação do seu e-mail antes do primeiro acesso.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

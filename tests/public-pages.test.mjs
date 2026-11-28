@@ -74,7 +74,16 @@ test("unauthenticated visitor to protected route is redirected to /login with ne
     },
   };
 
-  const protectedPaths = ["/dashboard", "/calendario", "/pagamentos", "/historico", "/perfil"];
+  const protectedPaths = [
+    "/dashboard",
+    "/calendario",
+    "/pagamentos",
+    "/historico",
+    "/perfil",
+    "/api/mercadopago/checkout",
+    "/api/mercadopago/sync",
+    "/api/mercadopago/verify",
+  ];
 
   for (const path of protectedPaths) {
     const res = await updateSession(createReq(path));
@@ -82,6 +91,26 @@ test("unauthenticated visitor to protected route is redirected to /login with ne
     const location = res.headers.get("location");
     assert.ok(location?.startsWith("http://localhost/login"));
     assert.ok(location?.includes(`next=${encodeURIComponent(path)}`));
+  }
+});
+
+test("unknown routes reach Next's not-found page without weakening protected routes", async () => {
+  globalThis.publicPagesClient = {
+    auth: {
+      getUser: async () => ({ data: { user: null }, error: null }),
+    },
+  };
+
+  for (const path of ["/rota-que-nao-existe", "/dashboardfoo", "/api/rota-que-nao-existe"]) {
+    const res = await updateSession(createReq(path));
+    assert.equal(res.status, 200, `${path} should continue to Next without a middleware redirect`);
+    assert.equal(res.headers.get("location"), null, `${path} must not redirect to login`);
+  }
+
+  for (const path of ["/dashboard", "/calendario", "/pagamentos", "/perfil", "/api/mercadopago/checkout"]) {
+    const res = await updateSession(createReq(path));
+    assert.equal(res.status, 307, `${path} must still require authentication`);
+    assert.ok(res.headers.get("location")?.startsWith("http://localhost/login"));
   }
 });
 
@@ -136,8 +165,8 @@ test("privacy policy accurately reflects data integrity, technical observability
     "Deve ressalvar que edição/exclusão depende da natureza do dado e regras de integridade"
   );
   assert.ok(
-    normalizedPrivacy.includes("Solicitações relacionadas à exclusão da conta e dos dados associados podem ser feitas pelo suporte"),
-    "Deve indicar que exclusão ampla de conta pode ser solicitada via suporte"
+    normalizedPrivacy.includes("Você pode excluir sua conta e os dados associados a qualquer momento"),
+    "Deve indicar que o titular pode excluir a própria conta"
   );
   assert.ok(
     normalizedPrivacy.includes("necessidades legítimas de integridade, segurança e retenção"),

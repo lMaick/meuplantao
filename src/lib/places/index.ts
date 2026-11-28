@@ -1,8 +1,8 @@
 import { createClient } from "@/lib/supabase/client";
 import { getAuthenticatedUserId, throwOnError } from "@/lib/dal";
 
-export type Place = { id: string; user_id: string; nome: string; endereco: string | null; created_at: string; updated_at: string };
-export type PlaceInput = Pick<Place, "nome" | "endereco">;
+export type Place = { id: string; user_id: string; nome: string; endereco: string | null; valor_padrao: number | null; prazo_recebimento_dias: number | null; responsavel_contact_id: string | null; created_at: string; updated_at: string };
+export type PlaceInput = Pick<Place, "nome" | "endereco"> & Partial<Pick<Place, "valor_padrao" | "prazo_recebimento_dias" | "responsavel_contact_id">>;
 export type PlaceUpdate = Partial<PlaceInput>;
 
 export async function listPlaces(): Promise<Place[]> { const userId = await getAuthenticatedUserId(); const { data, error } = await createClient().from("places").select("*").eq("user_id", userId).order("nome"); await throwOnError(error); return (data ?? []) as Place[]; }

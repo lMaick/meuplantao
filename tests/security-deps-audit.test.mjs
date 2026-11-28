@@ -12,18 +12,18 @@ function parsePinned(version) {
   return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
 }
 
-test("next stays on the patched 16.3.x line (MAI-157, GHSA-vcvr-r3jv-pc5j)", () => {
+test("next stays on the patched 16.4.x line (MAI-168, GHSA-673q-mjm6-r5xr)", () => {
   const next = parsePinned(pkg.dependencies.next);
   assert.equal(next.major, 16, "no Next 17 major upgrade in this issue");
-  assert.equal(next.minor, 3, "must stay on the 16.3.x line");
-  assert.ok(next.patch >= 6, `16.3.6+ patches the critical next/og RCE, got: ${pkg.dependencies.next}`);
+  assert.equal(next.minor, 4, "must stay on the 16.4.x line");
+  assert.ok(next.patch >= 5, `16.4.5+ patches the critical use cache RCE, got: ${pkg.dependencies.next}`);
   const eslintPlugin = parsePinned(pkg.devDependencies["eslint-config-next"]);
   assert.equal(
     pkg.devDependencies["eslint-config-next"],
     pkg.dependencies.next,
     "eslint-config-next must stay pinned to the exact next version",
   );
-  assert.ok(eslintPlugin.patch >= 6);
+  assert.ok(eslintPlugin.patch >= 5);
 });
 
 test("shadcn CLI lives in devDependencies, never in runtime dependencies (MAI-157)", () => {

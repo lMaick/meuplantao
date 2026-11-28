@@ -1,6 +1,7 @@
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
+import { EmailAlertsToggle } from "@/components/notifications/email-alerts-toggle";
 import { SubscriptionCard } from "@/components/subscription";
 
 interface SettingsPageProps {
@@ -22,6 +23,13 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
 
       {/* Subscription & Plan Section */}
       <SubscriptionCard payment={payment} paymentId={paymentId ?? collectionId} />
+
+      <Card className="p-5 sm:p-6">
+        <h2 className="text-lg font-bold tracking-tight text-foreground">Notificações</h2>
+        <div className="mt-5 border-t border-border/80 pt-5">
+          <EmailAlertsToggle />
+        </div>
+      </Card>
 
       {/* App Preferences */}
       <Card className="p-5 sm:p-6">

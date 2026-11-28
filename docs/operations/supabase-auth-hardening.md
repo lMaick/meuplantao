@@ -35,7 +35,7 @@ Os conversores `mapLoginAuthError`, `mapSignupAuthError` e `mapPasswordUpdateErr
      > *"Muitas tentativas em sequência. Aguarde alguns instantes antes de tentar novamente."*
 2. **Cadastro (Signup):**
    - Caso o e-mail já esteja cadastrado no Supabase (`user_already_exists`, `identity_already_exists`, `email_exists`), a aplicação não expõe o erro do provider, exibindo a mesma mensagem neutra de fluxo com link para login:
-     > *"Confira seu e-mail para confirmar a conta, se o cadastro foi aceito. Veja também a pasta de spam. Após confirmar, volte aqui e entre com sua senha. Se já possui conta, tente entrar."*
+     > *"Agora abra seu e-mail e toque no link de confirmação para ativar sua conta. Não chegou? Confira o spam. Se você já tem conta, é só entrar."*
    - Falha de senha fraca (`weak_password`): exibe `"A senha deve ter pelo menos 8 caracteres."`.
    - Outros erros inesperados: retornam fallback genérico sem expor stack traces ou detalhes internos.
 3. **Recuperação de Senha (`/esqueci-senha`):**

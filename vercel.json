@@ -1,4 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "node scripts/vercel-production-build.mjs"
+  "buildCommand": "node scripts/vercel-production-build.mjs",
+  "crons": [{ "path": "/api/cron/email-alerts", "schedule": "0 11 * * *" }]
 }

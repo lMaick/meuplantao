@@ -27,14 +27,21 @@ export const MACHINE_TO_MACHINE_PATHS = [
   "/api/webhooks/mercadopago",
   "/api/webhooks/mercadopago/ipn",
   "/api/csp-report",
+  // Avisos por e-mail: o cron é autenticado por `Authorization: Bearer CRON_SECRET`
+  // (fail-closed no handler) e o descadastro por token opaco no POST (RFC 8058).
+  "/api/cron/email-alerts",
+  "/api/email/unsubscribe",
+  // Formulário público de suporte; rate limit, honeypot e validação vivem no handler.
+  "/api/support",
 ] as const;
 
 /**
- * MAI-151: rotas machine-to-machine (webhooks Mercado Pago + relatório CSP).
- * Chamadores server-to-server/browser-beacon sem sessão Supabase. A
+ * MAI-151: rotas sem sessão Supabase (webhooks/M2M, relatório CSP e formulário
+ * público de suporte). A
  * autenticação/autorização vive nos handlers (HMAC x-signature, consulta
- * autenticada Mercado Pago, idempotência, rate limit, sanitização) — nunca
- * em cookie de sessão. Comparação exata: sem prefixo genérico `/api/*`.
+ * autenticada Mercado Pago, idempotência, rate limit, honeypot, validação e
+ * sanitização) — nunca em cookie de sessão. Comparação exata: sem prefixo
+ * genérico `/api/*`.
  */
 export function isMachineToMachineRoute(pathname: string): boolean {
   return (MACHINE_TO_MACHINE_PATHS as readonly string[]).includes(pathname);
@@ -53,7 +60,7 @@ export function isPublicSeoRoute(pathname: string): boolean {
   return (PUBLIC_SEO_PATHS as readonly string[]).includes(pathname);
 }
 
-export const PUBLIC_CONTENT_PATHS = ["/", "/privacidade", "/termos", "/suporte"] as const;
+export const PUBLIC_CONTENT_PATHS = ["/", "/privacidade", "/termos", "/suporte", "/descadastrar"] as const;
 
 /**
  * MAI-160: páginas públicas de conteúdo servidas sem sessão (não precisam de
@@ -67,6 +74,24 @@ export const PUBLIC_CONTENT_PATHS = ["/", "/privacidade", "/termos", "/suporte"]
  */
 export function isPublicContentRoute(pathname: string): boolean {
   return (PUBLIC_CONTENT_PATHS as readonly string[]).includes(pathname);
+}
+
+const PROTECTED_ROUTE_PREFIXES = [
+  "/alertas",
+  "/assinatura",
+  "/calendario",
+  "/configuracoes",
+  "/contatos",
+  "/dashboard",
+  "/historico",
+  "/locais",
+  "/pagamentos",
+  "/perfil",
+  "/api/mercadopago",
+] as const;
+
+function isProtectedRoute(pathname: string): boolean {
+  return PROTECTED_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 export async function updateSession(request: NextRequest) {
@@ -92,6 +117,14 @@ export async function updateSession(request: NextRequest) {
   if (isPublicContentRoute(pathname)) {
     return NextResponse.next({ request });
   }
+  const isAuthEntryPage = pathname === "/login" || pathname === "/cadastro" || pathname === "/esqueci-senha";
+  const isSessionFlowRoute = isAuthEntryPage || pathname === "/redefinir-senha" || pathname === "/auth/callback";
+  // Rotas desconhecidas devem chegar ao Next para renderizar not-found.tsx.
+  // Só as áreas privadas explicitamente listadas exigem sessão; as páginas de
+  // entrada de Auth continuam passando pela checagem para redirecionar usuários logados.
+  if (!isProtectedRoute(pathname) && !isSessionFlowRoute) {
+    return NextResponse.next({ request });
+  }
   const config = getSupabaseConfig();
   if (!config) {
     return new NextResponse(`<!doctype html>
@@ -111,7 +144,6 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isLandingPage = pathname === "/";
-  const isAuthEntryPage = pathname === "/login" || pathname === "/cadastro" || pathname === "/esqueci-senha";
   const isPublicLegalOrSupport = pathname === "/privacidade" || pathname === "/termos" || pathname === "/suporte";
   const isPasswordResetPage = pathname === "/redefinir-senha";
   const isPublicAuthCallback = pathname === "/auth/callback";

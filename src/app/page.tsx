@@ -10,7 +10,7 @@ import { LandingFooter } from "@/components/landing/landing-footer";
 import { PricingSection } from "@/components/landing/pricing-section";
 
 export const metadata: Metadata = {
-  title: "MeuPlantão | Controle financeiro inteligente para quem vive de plantão",
+  title: "MeuPlantão | Controle financeiro para profissionais de saúde",
   description:
     "Organize seus plantões médicos e de saúde, identifique repasses atrasados e controle pagamentos parciais em múltiplos hospitais sem planilhas confusas.",
   robots: {

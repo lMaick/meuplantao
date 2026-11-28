@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   ALL_PLACES,
   ALL_PERIODS,
   currentMonthValue,
+  formatPeriodLabel,
   isMonthValue,
   matchesPeriod,
   matchesPlace,
@@ -86,4 +88,22 @@ test("filtros nao alteram saldo nem status derivado", () => {
 test("rotulo do recebido acompanha o periodo sem expor dados", () => {
   assert.equal(receivedLabel(ALL_PERIODS), "Recebido (todos)");
   assert.match(receivedLabel("2026-09"), /^Recebido em /);
+});
+
+test("formatPeriodLabel mostra o proprio mes, sem recuar pelo fuso (MAI-182)", () => {
+  assert.match(formatPeriodLabel("2026-11"), /^nov/);
+  assert.match(formatPeriodLabel("2026-01"), /^jan/);
+});
+
+test("painel e A Receber abrem com todos os periodos (MAI-182)", () => {
+  const dashboard = readFileSync(new URL("../src/components/dashboard/dashboard.tsx", import.meta.url), "utf8");
+  const payments = readFileSync(new URL("../src/components/payments/payments-page.tsx", import.meta.url), "utf8");
+  assert.match(dashboard, /useState<string>\(ALL_PERIODS\)/);
+  assert.match(payments, /userPeriod \?\? paramPeriod \?\? ALL_PERIODS/);
+});
+
+test("fonte sans aponta para a variavel Geist, sem autorreferencia (MAI-182)", () => {
+  const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /--font-sans:\s*var\(--font-geist-sans\)/);
+  assert.doesNotMatch(css, /--font-sans:\s*var\(--font-sans\)/);
 });
